@@ -42,6 +42,7 @@
 #include "features/arena/Arena.h"
 
 #include "common/api/protocol/Protocol.h"
+#include "common/lib/ini/Ini.h"
 #include "common/lib/log/Log.h"
 #include "common/lib/util/Util.h"
 #include "entities/ped/Peds.h"
@@ -179,7 +180,8 @@ int Lang() { return Cfg().english ? 1 : 0; }
 // A_SCORE .. A_TWINS: the zombies mode (points, barricades, the box, the perks, the power-ups, the Twins' look)
 enum ArenaOp : uint8_t {
     A_START = 1, A_WAVE, A_LEFT, A_BOSS, A_END, A_ITEMS, A_PREP, A_MARK, A_SKIP,
-    A_SCORE, A_BARS, A_BOARD, A_REPAIR, A_BOX, A_BOXUSE, A_BOXROLL, A_PERKS, A_PSPAWN, A_GRAB, A_POWER, A_TWINS
+    A_SCORE, A_BARS, A_BOARD, A_REPAIR, A_BOX, A_BOXUSE, A_BOXROLL, A_PERKS, A_PSPAWN, A_GRAB, A_POWER, A_TWINS,
+    A_WALLS, A_DROP, A_TAKE, A_TAKEN, A_BUILD
 };
 struct Arena {
     bool on = false, host = false;
@@ -222,6 +224,8 @@ struct Bar {
     float lift = 0, height = 1.2f;
     uint64_t tearMs = 0;
     int usedWave = 0;  // host: the last wave that came through it
+    bool built = false;  // a player built it (no one comes from behind it)
+    int breaks = 0;      // host: how often shots smashed its fence (3 smashes: a board)
 };
 std::vector<Bar> g_bars;
 
@@ -803,6 +807,7 @@ int PickBarricade(int wave) {
     float bestScore = -1e9f;
     for (size_t i = 0; i < g_bars.size(); ++i) {
         const Bar& b = g_bars[i];
+        if (b.built) continue;
         float score = std::min(DistToPlayers(b.spawn, players), 30.0f) + Rand(0.0f, 8.0f);
         if (b.usedWave == wave) score -= 25.0f;  // one squad a barricade a wave, when there are enough
         if (b.usedWave == wave - 1) score -= 6.0f;
@@ -1212,6 +1217,19 @@ void ShowBar(Bar& b) {
     float sink = (1.0f - (float)b.boards / (float)kBoards) * b.height * 0.85f;
     Cmd(0x01BC).I(b.handle).F(b.pos.x).F(b.pos.y).F(b.pos.z + b.lift - sink).Run();  // SET_OBJECT_COORDINATES
 }
+void SetBoards(int i, int boards, uint8_t by);
+// Shots smash the fence (a breakable one): it is put up again at once, and only every 3rd smash costs a board (host)
+void CheckSmashed() {
+    for (size_t i = 0; i < g_bars.size(); ++i) {
+        Bar& b = g_bars[i];
+        CObject* o = b.handle >= 0 ? GetObject(b.handle) : nullptr;
+        if (!o || o->IsVisible() || (o->Flags() & 1)) continue;  // smashed: no rendering, no collision
+        DelObj(b.handle);
+        if (g_arena.host && ++b.breaks % 3 == 0) SetBoards((int)i, b.boards - 1, 0xFF);
+        else ShowBar(b);
+    }
+}
+
 void ClearBars() {
     for (Bar& b : g_bars) DelObj(b.handle);
     g_bars.clear();
@@ -1224,6 +1242,7 @@ void SendBars() {
             w.Vec({b.spawn.x, b.spawn.y, b.spawn.z});
             w.F32(b.heading);
             w.U8((uint8_t)b.boards);
+            w.U8(b.built);
         }
     });
 }
@@ -1305,11 +1324,13 @@ struct BoxState {
     bool teddy = false;
 } g_box;
 
+void PreloadBoxGuns();
 void ShowBox() {
     DelObj(g_box.handle);
     if (!g_box.placed) return;
     int model = PickModel({3014, 1271, 964});  // cr_guncrate, gunbox, CJ_METAL_CRATE
     if (model >= 0) g_box.handle = MakeObj(model, g_box.pos, g_box.heading, g_box.lift, g_box.height);
+    PreloadBoxGuns();  // its weapons turn over it, without a hitch then
 }
 void SendBox() {
     Send(A_BOX, [](Writer& w) {
@@ -1397,8 +1418,417 @@ void UpdateBox(uint64_t now) {
     }
 }
 
+// ---- the box's turning weapon: over the open box the models of its weapons go round, then the one it gives
+int g_spinHandle = -1, g_spinModel = -1;
+int WeaponModel(int weapon) {
+    int wm = -1;
+    Cmd(0x0781).I(weapon).Out(&wm).Run();  // GET_WEAPONTYPE_MODEL
+    return wm;
+}
+// an object hanging free (no collision, no physics) at `at`
+int MakeFloating(int model, const CVector& at, float heading) {
+    if (model <= 0 || !IsModelLoaded(model) || !HasRoom(ObjectPool(), kKeepObjects, "object")) return -1;
+    int h = -1;
+    Cmd(0x0107).I(model).F(at.x).F(at.y).F(at.z).Out(&h).Run();  // CREATE_OBJECT
+    if (h < 0) return -1;
+    Cmd(0x0382).I(h).I(0).Run();                            // SET_OBJECT_COLLISION off
+    Cmd(0x0392).I(h).I(0).Run();
+    Cmd(0x0566).I(h).I(kPlaces[g_arena.place].area).Run();  // LINK_OBJECT_TO_INTERIOR
+    Cmd(0x01BC).I(h).F(at.x).F(at.y).F(at.z).Run();         // SET_OBJECT_COORDINATES (as it is, not on the floor)
+    Cmd(0x0177).I(h).F(heading).Run();
+    return h;
+}
+void PreloadBoxGuns() {
+    for (const BoxGun& g : kBoxGuns) {
+        int m = WeaponModel(g.weapon);
+        if (m > 0 && !IsModelLoaded(m)) LoadModelNow(m);
+    }
+}
+void SpinBox(uint64_t now) {
+    bool show = g_box.placed && g_box.handle >= 0 && (g_box.rolling || (g_box.rollEnd && now < g_box.rollEnd + 1500 && !g_box.teddy));
+    if (!show) {
+        DelObj(g_spinHandle);
+        g_spinModel = -1;
+        return;
+    }
+    int n = (int)(sizeof(kBoxGuns) / sizeof(kBoxGuns[0]));
+    bool final = now + 500 >= g_box.rollEnd;
+    int gun = final ? g_box.gun : (int)((now / 140) % (uint64_t)n);
+    int model = WeaponModel(kBoxGuns[(size_t)gun].weapon);
+    if (final && model > 0 && !IsModelLoaded(model)) LoadModelNow(model);
+    float rise = std::min(1.0f, (float)(now + 3200 - std::min<uint64_t>(g_box.rollEnd, now + 3200)) / 1200.0f);
+    CVector at = g_box.pos + CVector{0, 0, g_box.height + 0.25f + 0.45f * rise};
+    float heading = (float)(now % 2000) * 0.18f;  // a turn in 2 s
+    if (model != g_spinModel || g_spinHandle < 0 || !GetObject(g_spinHandle)) {
+        DelObj(g_spinHandle);
+        g_spinModel = model;
+        g_spinHandle = MakeFloating(model, at, heading);
+        return;
+    }
+    Cmd(0x01BC).I(g_spinHandle).F(at.x).F(at.y).F(at.z).Run();
+    Cmd(0x0177).I(g_spinHandle).F(heading).Run();
+}
+
+// ---- weapons on the walls: bought for points (again: its ammo for half the price)
+struct WallGun {
+    int weapon, ammo, price;
+};
+const WallGun kWallGuns[] = {
+    {22, 68, 250},   {24, 42, 700},   {25, 40, 500},   {26, 40, 800},  {28, 240, 600}, {32, 240, 600}, {29, 240, 1000},
+    {30, 200, 1200}, {31, 200, 1500}, {27, 50, 1500},  {33, 30, 600},  {34, 20, 1500}, {16, 4, 250},   {18, 4, 250},
+};
+constexpr int kWallGunCount = (int)(sizeof(kWallGuns) / sizeof(kWallGuns[0]));
+struct Wall {
+    int gun = 0;   // index into kWallGuns
+    CVector pos;   // on the wall
+    CVector stand; // where the buyer stands
+    float heading = 0;
+    int handle = -1;
+};
+std::vector<Wall> g_walls;
+void ShowWall(Wall& w) {
+    DelObj(w.handle);
+    int model = WeaponModel(kWallGuns[(size_t)w.gun].weapon);
+    if (model > 0 && !IsModelLoaded(model)) LoadModelNow(model);
+    w.handle = MakeFloating(model, w.pos, w.heading);
+}
+void ClearWalls() {
+    for (Wall& w : g_walls) DelObj(w.handle);
+    g_walls.clear();
+}
+void SendWalls() {
+    Send(A_WALLS, [](Writer& wr) {
+        wr.U8((uint8_t)g_walls.size());
+        for (const Wall& w : g_walls) {
+            wr.U8((uint8_t)w.gun);
+            wr.Vec({w.pos.x, w.pos.y, w.pos.z});
+            wr.Vec({w.stand.x, w.stand.y, w.stand.z});
+            wr.F32(w.heading);
+        }
+    });
+}
+// a wall by a floor cell: the nearest of 8 rays at the chest; the gun 6 cm off it, along it
+bool WallBy(const CVector& floor, Wall& out) {
+    CVector chest = floor + CVector{0, 0, 1.3f};
+    float best = 1.7f;
+    bool found = false;
+    for (int k = 0; k < 8; ++k) {
+        float a = 6.2831853f * (float)k / 8.0f;
+        CVector d{std::cos(a), std::sin(a), 0.0f}, hit;
+        if (!Ray(chest, chest + d * 1.7f, hit)) continue;
+        float l = (hit - chest).Length();
+        if (l < 0.35f || l >= best) continue;
+        best = l;
+        out.pos = hit - d * 0.06f;
+        out.stand = floor;
+        out.heading = std::atan2(-d.x, d.y) * 57.29578f + 90.0f;  // lying along the wall
+        found = true;
+    }
+    return found;
+}
+bool AwayFromAll(const CVector& c, float apart) {
+    for (const Wall& w : g_walls)
+        if ((w.stand - c).Length() < apart) return false;
+    for (const Bar& b : g_bars)
+        if ((b.pos - c).Length() < 3.0f) return false;
+    if (g_box.placed && (g_box.pos - c).Length() < 3.0f) return false;
+    return true;
+}
+int RandomWallGun() {
+    for (int t = 0; t < 10; ++t) {
+        int g = RandInt(0, kWallGunCount - 1);
+        bool taken = false;
+        for (const Wall& w : g_walls) taken |= w.gun == g;
+        if (!taken) return g;
+    }
+    return RandInt(0, kWallGunCount - 1);
+}
+void PlaceWalls(int want) {
+    if (!GridUsable()) return;
+    for (int t = 0; t < 400 && (int)g_walls.size() < want; ++t) {
+        const Cell& c = g_cells[(size_t)RandInt(0, (int)g_cells.size() - 1)];
+        Wall w;
+        if (!AwayFromAll(c.p, 5.0f) || !WallBy(c.p, w)) continue;
+        w.gun = RandomWallGun();
+        g_walls.push_back(w);
+    }
+}
+// host, at a new wave: now and then one of the walls gets another gun
+void ShuffleWalls() {
+    if (g_walls.empty() || RandInt(0, 99) >= 35) return;
+    Wall& w = g_walls[(size_t)RandInt(0, (int)g_walls.size() - 1)];
+    w.gun = RandomWallGun();
+    ShowWall(w);
+    SendWalls();
+}
+void BuyWall(int i) {
+    const WallGun& g = kWallGuns[(size_t)g_walls[(size_t)i].gun];
+    CPlayerPed* me = FindPlayerPed(0);
+    if (!me) return;
+    bool have = false;
+    for (int k = 0; k < NUM_WEAPON_SLOTS; ++k) have |= me->Weapons()[k].type == g.weapon;
+    int price = have ? g.price / 2 : g.price;
+    if (g_points < price) {
+        ui::TheChat().AddError(Format(TR("Нужно %d очков.", "You need %d points."), price));
+        return;
+    }
+    AddPoints(-price);
+    int h = GetPedRef(me);
+    Give(h, g.weapon, g.ammo);
+    Cmd(0x01B9).I(h).I(g.weapon).Run();  // SET_CURRENT_CHAR_WEAPON
+}
+
+// ---- what the special enemies drop (the flamethrower man, the Twins, the medics, the boss): ammo for everyone, or
+// health for everyone; whoever comes up to it takes it (the host decides who was first)
+enum DropType : uint8_t { D_AMMO, D_HEALTH };
+struct Drop {
+    uint8_t id = 0, type = 0;
+    CVector pos;
+    int handle = -1;
+    uint64_t until = 0;
+    bool asked = false;
+};
+std::vector<Drop> g_drops;
+uint8_t g_nextDrop = 1;
+const char* DropName(int t) { return t == D_AMMO ? TR("Пополнение патронов", "Ammo refill") : TR("Пополнение здоровья", "Health refill"); }
+void ShowDrop(Drop& d) {
+    int model = d.type == D_AMMO ? PickModel({2358, 2969, 2040}) : PickModel({1240, 1580});  // ammo box; the heart
+    if (model > 0 && !IsModelLoaded(model)) LoadModelNow(model);
+    d.handle = MakeFloating(model, d.pos, 0.0f);
+}
+void AddDrop(uint8_t id, uint8_t type, const CVector& at) {
+    Drop d;
+    d.id = id, d.type = type, d.pos = at;
+    d.until = NowMs() + 30000;
+    ShowDrop(d);
+    g_drops.push_back(d);
+}
+void SpawnDrop(uint8_t type, const CVector& at) {  // host
+    uint8_t id = g_nextDrop++;
+    if (!g_nextDrop) g_nextDrop = 1;
+    Send(A_DROP, [&](Writer& w) {
+        w.U8(id);
+        w.U8(type);
+        w.Vec({at.x, at.y, at.z});
+    });
+    AddDrop(id, type, at);
+}
+void ApplyDrop(uint8_t type, uint8_t by) {
+    CPlayerPed* me = FindPlayerPed(0);
+    std::string who = by == Net().MyId() || !Net().Online() ? std::string(TR("Вы", "You")) : Net().PeerName(by);
+    ui::TheChat().AddSystem(Format(TR("%s: %s — для всех!", "%s: %s for everyone!"), who.c_str(), DropName(type)));
+    if (!me || me->Health() <= 0.0f || !arena::On()) return;
+    if (type == D_HEALTH) {
+        me->Health() = std::max(me->Health(), (float)std::max<int>(PlayerInfos()[0].maxHealth, 100));
+        return;
+    }
+    for (int k = 0; k < NUM_WEAPON_SLOTS; ++k) {
+        CWeapon& w = me->Weapons()[k];
+        if (w.type < 16 || w.type > 38) continue;  // no melee, no cameras or sprays
+        int clip = 0;
+        if (void* info = Call<0x743C60, void*>(w.type, (uint8_t)1)) clip = Field<int16_t>(info, 0x20);  // m_nAmmoClip
+        int full = w.type <= 18 ? 8 : w.type == 35 || w.type == 36 ? 10 : w.type == 37 ? 500 : w.type == 38 ? 500 : std::max(30, clip * 8);
+        w.ammoTotal = std::max(w.ammoTotal, full);
+    }
+}
+void TakeDrop(uint8_t id, uint8_t by) {  // host
+    for (size_t i = 0; i < g_drops.size(); ++i)
+        if (g_drops[i].id == id) {
+            uint8_t type = g_drops[i].type;
+            DelObj(g_drops[i].handle);
+            g_drops.erase(g_drops.begin() + (long)i);
+            Send(A_TAKEN, [&](Writer& w) {
+                w.U8(id);
+                w.U8(type);
+                w.U8(by);
+            });
+            ApplyDrop(type, by);
+            return;
+        }
+}
+void UpdateDrops(uint64_t now) {
+    CPlayerPed* me = FindPlayerPed(0);
+    for (size_t i = 0; i < g_drops.size();) {
+        Drop& d = g_drops[i];
+        if (now > d.until) {
+            DelObj(d.handle);
+            g_drops.erase(g_drops.begin() + (long)i);
+            continue;
+        }
+        if (d.handle >= 0 && GetObject(d.handle)) {
+            CVector at = d.pos + CVector{0, 0, 0.15f * std::sin((float)(now % 3000) / 3000.0f * 6.2831853f)};
+            Cmd(0x01BC).I(d.handle).F(at.x).F(at.y).F(at.z).Run();
+            Cmd(0x0177).I(d.handle).F((float)(now % 3000) * 0.12f).Run();
+        }
+        if (me && me->Health() > 0.0f && !d.asked && (me->GetPosition() - d.pos).Length() < 1.5f) {
+            d.asked = true;
+            if (g_arena.host) {
+                TakeDrop(d.id, Net().MyId());
+                continue;
+            }
+            uint8_t id = d.id;
+            Send(A_TAKE, [id](Writer& w) { w.U8(id); });
+        }
+        ++i;
+    }
+}
+void ClearDrops() {
+    for (Drop& d : g_drops) DelObj(d.handle);
+    g_drops.clear();
+}
+
+// ---- barricades the players build: B with 300 points puts one up in front of the player (12 in all at most)
+constexpr int kBuildCost = 300, kMaxBars = 12;
+void BuildBar(const CVector& at, float heading, uint8_t by) {  // host
+    if ((int)g_bars.size() >= kMaxBars) return;
+    Bar b;
+    b.pos = at;
+    b.spawn = at;
+    b.heading = heading;
+    b.built = true;
+    g_bars.push_back(b);
+    ShowBar(g_bars.back());
+    SendBars();
+    LOGI("Arena: player %d built a barricade", by);
+}
+bool TryBuild() {
+    CPlayerPed* me = FindPlayerPed(0);
+    if (!me || me->Health() <= 0.0f || me->InVehicle() || me->AreaCode() != kPlaces[g_arena.place].area || g_arena.endAt) return false;
+    if ((int)g_bars.size() >= kMaxBars) {
+        ui::TheChat().AddError(TR("Баррикад уже слишком много.", "There are too many barricades already."));
+        return true;
+    }
+    if (g_points < kBuildCost) {
+        ui::TheChat().AddError(Format(TR("Нужно %d очков.", "You need %d points."), kBuildCost));
+        return true;
+    }
+    CVector f = cam::Front();
+    f.z = 0;
+    float l = f.Length();
+    f = l > 0.01f ? f * (1.0f / l) : CVector{0, 1, 0};
+    CVector front = me->GetPosition() + f * 1.6f;
+    float z = 0;
+    if (!FloorBelow(front.x, front.y, front.z + 0.5f, z) || std::fabs(z - (me->GetPosition().z - 1.0f)) > 1.0f ||
+        !Clear(me->GetPosition(), front)) {
+        ui::TheChat().AddError(TR("Здесь баррикаду не поставить.", "No barricade can go here."));
+        return true;
+    }
+    CVector at{front.x, front.y, z};
+    float heading = std::atan2(-f.x, f.y) * 57.29578f;
+    AddPoints(-kBuildCost);
+    if (g_arena.host) BuildBar(at, heading, Net().MyId());
+    else Send(A_BUILD, [&](Writer& w) {
+        w.Vec({at.x, at.y, at.z});
+        w.F32(heading);
+    });
+    return true;
+}
+
+// ---- the host's own spots for a place (coop\arena-spots.ini, a section a place): /arena ящик, /arena баррикада,
+// /arena стена put the box, a barricade, a wall gun where the host stands; the next arenas there use them
+std::wstring SpotsPath() { return Cfg().coopDir + L"arena-spots.ini"; }
+std::string PlaceSection() { return kPlaces[g_arena.place].keys[0][1]; }  // its English word
+bool ReadVec(const std::string& v, CVector& p, float& h, int* extra = nullptr) {
+    int e = 0;
+    int n = extra ? std::sscanf(v.c_str(), "%d %f %f %f %f", &e, &p.x, &p.y, &p.z, &h) - 1
+                  : std::sscanf(v.c_str(), "%f %f %f %f", &p.x, &p.y, &p.z, &h);
+    if (extra) *extra = e;
+    return n == 4;
+}
+// host: the saved spots instead of the mod's own; true when there were some
+bool LoadSpots() {
+    Ini ini;
+    if (!ini.Load(SpotsPath())) return false;
+    std::string sec = PlaceSection();
+    bool any = false;
+    CVector p;
+    float h = 0;
+    if (ReadVec(ini.Get(sec, "box"), p, h)) {
+        g_box.placed = true, g_box.pos = p, g_box.heading = h;
+        ShowBox();
+        SendBox();
+        any = true;
+    }
+    std::vector<Bar> bars;
+    for (int k = 1; k <= kMaxBars; ++k) {
+        if (!ReadVec(ini.Get(sec, Format("bar%d", k)), p, h)) continue;
+        Bar b;
+        b.pos = p;
+        b.heading = h;
+        float r = h / 57.29578f;
+        b.spawn = p - CVector{-std::sin(r), std::cos(r), 0.0f} * 2.5f;  // behind it, against the way it faces
+        bars.push_back(b);
+    }
+    if (!bars.empty()) {
+        ClearBars();
+        g_bars = bars;
+        for (Bar& b : g_bars) ShowBar(b);
+        SendBars();
+        any = true;
+    }
+    for (int k = 1; k <= 8; ++k) {
+        int gun = 0;
+        if (!ReadVec(ini.Get(sec, Format("wall%d", k)), p, h, &gun)) continue;
+        Wall w;
+        w.gun = std::clamp(gun, 0, kWallGunCount - 1);
+        w.pos = p + CVector{0, 0, 1.3f};
+        w.stand = p;
+        float r = h / 57.29578f;
+        w.pos = w.pos + CVector{-std::sin(r), std::cos(r), 0.0f} * 0.8f;  // a little ahead of where the host stood
+        w.heading = h + 90.0f;
+        g_walls.push_back(w);
+        any = true;
+    }
+    return any;
+}
+void SaveSpot(const std::string& what) {
+    CPlayerPed* me = FindPlayerPed(0);
+    if (!me) return;
+    Ini ini;
+    ini.Load(SpotsPath());
+    std::string sec = PlaceSection();
+    CVector p = me->GetPosition() - CVector{0, 0, 1.0f};
+    float h = me->CurrentRotation() * 57.29578f;
+    std::string line = Format("%.2f %.2f %.2f %.1f", p.x, p.y, p.z, h);
+    if (what == "box") {
+        ini.Set(sec, "box", line);
+        g_box.placed = true, g_box.pos = p, g_box.heading = h;
+        ShowBox();
+        SendBox();
+        ui::TheChat().AddSystem(TR("Ящик теперь здесь (сохранено для этого места).", "The box is here now (kept for this place)."));
+    } else if (what == "bar") {
+        int k = 1;
+        while (k <= kMaxBars && !ini.Get(sec, Format("bar%d", k)).empty()) ++k;
+        if (k > kMaxBars) {
+            ui::TheChat().AddError(TR("Уже 12 баррикад для этого места.", "12 barricades for this place already."));
+            return;
+        }
+        ini.Set(sec, Format("bar%d", k), line);
+        ui::TheChat().AddSystem(Format(TR("Баррикада %d сохранена: враги придут из-за вашей спины. Появится со следующей арены.",
+                                          "Barricade %d kept: the enemies come from behind your back. It is there from the next arena on."), k));
+    } else if (what == "wall") {
+        int k = 1;
+        while (k <= 8 && !ini.Get(sec, Format("wall%d", k)).empty()) ++k;
+        if (k > 8) {
+            ui::TheChat().AddError(TR("Уже 8 оружий на стенах для этого места.", "8 wall guns for this place already."));
+            return;
+        }
+        int gun = RandomWallGun();
+        ini.Set(sec, Format("wall%d", k), Format("%d %s", gun, line.c_str()));
+        ui::TheChat().AddSystem(Format(TR("Оружие на стене %d сохранено (стена — перед вами). Появится со следующей арены.",
+                                          "Wall gun %d kept (the wall in front of you). It is there from the next arena on."), k));
+    } else if (what == "reset") {
+        for (const char* key : {"box"}) ini.Set(sec, key, "");
+        for (int k = 1; k <= kMaxBars; ++k) ini.Set(sec, Format("bar%d", k), "");
+        for (int k = 1; k <= 8; ++k) ini.Set(sec, Format("wall%d", k), "");
+        ui::TheChat().AddSystem(TR("Свои места для этого места забыты: мод снова расставит всё сам.",
+                                   "The spots of this place are forgotten: the mod sets everything out itself again."));
+    }
+    ini.Save(SpotsPath());
+}
+
 // ---- E near a barricade or the box
-enum NearKind : uint8_t { N_NONE, N_BAR, N_BOX };
+enum NearKind : uint8_t { N_NONE, N_BAR, N_BOX, N_WALL };
 NearKind g_nearKind = N_NONE;
 int g_nearIdx = -1;
 void FindNear() {
@@ -1412,6 +1842,10 @@ void FindNear() {
         CVector d = g_bars[i].pos - at;
         if (g_bars[i].boards >= kBoards || std::fabs(d.z) > 2.0f) continue;
         if (d.Length2D() < best) best = d.Length2D(), g_nearKind = N_BAR, g_nearIdx = (int)i;
+    }
+    for (size_t i = 0; i < g_walls.size(); ++i) {
+        CVector d = g_walls[i].pos - me->GetPosition();
+        if (d.Length2D() < 1.8f && std::fabs(d.z) < 1.5f && d.Length2D() < best) best = d.Length2D(), g_nearKind = N_WALL, g_nearIdx = (int)i;
     }
     if (g_box.placed && g_box.handle >= 0 && !g_box.moveAt) {
         CVector d = g_box.pos - at;
@@ -1441,6 +1875,10 @@ void ResetCod() {
     g_box.placed = false;
     DelObj(g_box.handle);
     g_box = BoxState{};
+    DelObj(g_spinHandle);
+    g_spinModel = -1;
+    ClearWalls();
+    ClearDrops();
     g_points = kStartPoints;
     g_scores.clear();
     g_popups.clear();
@@ -1485,12 +1923,12 @@ void MakeMedic(int wave) {
     MakeEnemy(model, weapon, 100 + 15 * wave, ArmourFor(wave, 0), 45, SpawnSpot(Rand(0.0f, 6.2831853f), 3.2f, 6.0f),
               (int)g_squads.size() - 1, R_MEDIC, false);
 }
-// The flamethrower man (Bikers, Vagos): huge health and armour, slow, a flamethrower close by and molotovs from afar
+// The flamethrower man (Bikers, Vagos): 700 health and armour, slow, comes unannounced, a flamethrower close by and molotovs from afar
 void MakeFlamer(int wave) {
     const Faction& f = kFactions[g_arena.faction];
     g_squads.push_back(Squad{});
     int model = f.models[3];
-    int h = MakeEnemy(model, WEAPON_FLAMETHROWER, 1500 + 150 * wave, 100, 60, SpawnSpot(Rand(0.0f, 6.2831853f), 3.2f, 8.0f),
+    int h = MakeEnemy(model, WEAPON_FLAMETHROWER, 700, 100, 60, SpawnSpot(Rand(0.0f, 6.2831853f), 3.2f, 8.0f),
                       (int)g_squads.size() - 1, R_FLAMER, true);
     if (CPed* p = h >= 0 ? GetPed(h) : nullptr) g_flamers.push_back(p);
 }
@@ -1532,6 +1970,7 @@ void SpawnWave() {
     g_spawnsNow.clear();
     Rejoin();
     SendBars();
+    if (g_arena.wave > 1) ShuffleWalls();
     int w = g_arena.wave;
     const Faction& fac = kFactions[g_arena.faction];
     int count = std::min(14, 2 + w * 2 + PlayersIn());
@@ -1589,7 +2028,6 @@ void SpawnWave() {
         wr.U8((uint8_t)n);
     });
     ui::TheChat().AddSystem(Format(TR("Арена: %s — врагов %d.", "Arena: %s, %d enemies."), WaveOf(wave).c_str(), n));
-    if (!g_flamers.empty()) ui::TheChat().AddSystem(TR("С ними огнемётчик!", "A flamethrower man with them!"));
     if (!bossLine.empty())
         ui::TheChat().AddSystem(Format(TR("Волна с боссом! Босс: %s.", "The boss wave! The boss: %s."), bossLine.c_str()));
     LOGI("Arena: wave %d, %d enemies in %d squads", wave, n, (int)g_squads.size());
@@ -1968,7 +2406,7 @@ void Breach(CPed* p, Enemy& e, CPed* t, uint64_t now) {
         SetOn(p, e, t);
         return;
     }
-    CVector way = b->pos - b->spawn;
+    CVector way = b->built ? b->pos - (p->GetPosition() - CVector{0, 0, 1.0f}) : b->pos - b->spawn;  // built: from its own side
     float l = std::max(0.1f, way.Length2D());
     CVector spot = b->pos - CVector{way.x / l, way.y / l, 0.0f} * 0.9f;  // its own side of the boards
     if ((p->GetPosition() - CVector{0, 0, 1.0f} - spot).Length2D() > 1.2f) {
@@ -1980,7 +2418,8 @@ void Breach(CPed* p, Enemy& e, CPed* t, uint64_t now) {
         e.tearing = true;
         e.routing = false;
         e.setOnMs = now;
-        Cmd(0x0173).I(h).F(b->heading).Run();  // SET_CHAR_HEADING: at the boards
+        CVector to = b->pos - (p->GetPosition() - CVector{0, 0, 1.0f});
+        Cmd(0x0173).I(h).F(std::atan2(-to.x, to.y) * 57.29578f).Run();  // SET_CHAR_HEADING: at the boards
         Cmd(0x0605).I(h).S("FightA_1").S("PED").F(6.0f).I(1).I(0).I(0).I(0).I(-1).Run();  // TASK_PLAY_ANIM, looped
     }
 }
@@ -2141,6 +2580,18 @@ void Tactics() {
             Snipe(p, e, t, sees, now);
             continue;
         }
+        // a barricade in its way (one the players built, or one it came up against): it tears it down first
+        if (e.mode != M_BREACH && !sees && !e.cprUntil && !e.grenadeUntil)
+            for (size_t i = 0; i < g_bars.size(); ++i) {
+                CVector bd = g_bars[i].pos - (p->GetPosition() - CVector{0, 0, 1.0f});
+                if (g_bars[i].boards > 0 && bd.Length2D() < 2.2f && std::fabs(bd.z) < 2.0f) {
+                    e.mode = M_BREACH;
+                    e.barricade = (int)i;
+                    e.breachSince = now;
+                    e.tearing = false;
+                    break;
+                }
+            }
         if (e.mode == M_BREACH) {
             Breach(p, e, t, now);
             continue;
@@ -2356,6 +2807,8 @@ void Start(int faction, int place, int waves) {
                                       "Points: %d. Hits and kills give points; E at a barricade nails a board on (+10), "
                                       "E at the weapon box: a random weapon for %d."),
                                    kStartPoints, kBoxCost));
+    ui::TheChat().AddSystem(Format(TR("B — построить баррикаду перед собой (%d очков), E у оружия на стене — купить его.",
+                                      "B builds a barricade in front of you (%d points), E at a gun on a wall buys it."), kBuildCost));
 }
 
 void Skip(uint8_t by);
@@ -2386,6 +2839,17 @@ void Handle(uint8_t from, Reader& r) {
     if (r.Ok() && op == A_SCORE) {
         int32_t pts = r.I32();
         if (r.Ok() && g_arena.on) g_scores[from] = pts;
+        return;
+    }
+    if (r.Ok() && op == A_TAKE) {
+        uint8_t id = r.U8();
+        if (r.Ok() && g_arena.on && g_arena.host) TakeDrop(id, from);
+        return;
+    }
+    if (r.Ok() && op == A_BUILD) {
+        Vec3 v = r.Vec();
+        float heading = r.F32();
+        if (r.Ok() && g_arena.on && g_arena.host) BuildBar({v.x, v.y, v.z}, heading, from);
         return;
     }
     if (r.Ok() && (op == A_REPAIR || op == A_BOXUSE)) {
@@ -2446,13 +2910,14 @@ void Handle(uint8_t from, Reader& r) {
     } else if (op == A_BARS) {
         uint8_t n = r.U8();
         std::vector<Bar> bars;
-        for (int k = 0; k < n && k < 8; ++k) {
+        for (int k = 0; k < n && k < 16; ++k) {
             Bar b;
             Vec3 v = r.Vec(), sp = r.Vec();
             b.pos = {v.x, v.y, v.z};
             b.spawn = {sp.x, sp.y, sp.z};
             b.heading = r.F32();
             b.boards = std::min<int>(r.U8(), kBoards);
+            b.built = r.U8() != 0;
             bars.push_back(b);
         }
         if (!r.Ok()) return;
@@ -2463,6 +2928,32 @@ void Handle(uint8_t from, Reader& r) {
             g_bars = bars;
         }
         for (size_t i = 0; i < g_bars.size(); ++i) g_bars[i].boards = bars[i].boards, ShowBar(g_bars[i]);
+    } else if (op == A_WALLS) {
+        uint8_t n = r.U8();
+        std::vector<Wall> walls;
+        for (int k = 0; k < n && k < 16; ++k) {
+            Wall w;
+            w.gun = std::min<int>(r.U8(), kWallGunCount - 1);
+            Vec3 v = r.Vec(), st = r.Vec();
+            w.pos = {v.x, v.y, v.z};
+            w.stand = {st.x, st.y, st.z};
+            w.heading = r.F32();
+            walls.push_back(w);
+        }
+        if (!r.Ok()) return;
+        ClearWalls();
+        g_walls = walls;
+        for (Wall& w : g_walls) ShowWall(w);
+    } else if (op == A_DROP) {
+        uint8_t id = r.U8(), type = r.U8();
+        Vec3 v = r.Vec();
+        if (r.Ok() && type <= D_HEALTH) AddDrop(id, type, {v.x, v.y, v.z});
+    } else if (op == A_TAKEN) {
+        uint8_t id = r.U8(), type = r.U8(), by = r.U8();
+        if (!r.Ok()) return;
+        for (size_t i = 0; i < g_drops.size(); ++i)
+            if (g_drops[i].id == id) DelObj(g_drops[i].handle), g_drops.erase(g_drops.begin() + (long)i), i = g_drops.size();
+        ApplyDrop(type, by);
     } else if (op == A_BOARD) {
         uint8_t i = r.U8(), boards = r.U8(), by = r.U8();
         if (r.Ok()) SetBoards(i, boards, by);
@@ -2502,6 +2993,9 @@ void Update() {
     }
     // every game: the box, what is near this player, its death (back at the next wave, 10% of its points gone)
     UpdateBox(now);
+    SpinBox(now);
+    UpdateDrops(now);
+    CheckSmashed();
     FindNear();
     TwinCopies();
     for (auto it = g_popups.begin(); it != g_popups.end();) it = now - it->at > 1500 ? g_popups.erase(it) : std::next(it);
@@ -2520,6 +3014,24 @@ void Update() {
         g_placed = true;
         PlaceBarricades();
         PlaceBox();
+        bool own = LoadSpots();  // the host's own spots for this place (/arena ящик, баррикада, стена)
+        if (g_walls.empty()) PlaceWalls(kPlaces[g_arena.place].big ? 5 : 3);
+        for (Wall& w : g_walls) ShowWall(w);
+        SendWalls();
+        if (own) LOGI("Arena: the host's own spots used");
+    }
+    // the special ones dropped what they had: ammo or health for everyone (the boss both)
+    for (auto& [q, qe] : g_info) {
+        if (qe.counted || !IsPedValid(q) || q->Health() > 0.0f) continue;
+        qe.counted = true;
+        if (qe.role != R_FLAMER && qe.role != R_TWIN && qe.role != R_MEDIC && qe.role != R_BOSS) continue;
+        CVector at = q->GetPosition() + CVector{0, 0, -0.3f};
+        if (qe.role == R_BOSS) {
+            SpawnDrop(D_AMMO, at + CVector{0.6f, 0, 0});
+            SpawnDrop(D_HEALTH, at - CVector{0.6f, 0, 0});
+        } else {
+            SpawnDrop(RandInt(0, 1) ? D_AMMO : D_HEALTH, at);
+        }
     }
     if (g_arena.itemsFor && (g_gridDone || now - g_arena.startMs > 6000)) {
         PlaceItems(g_arena.itemsFor);
@@ -2642,6 +3154,11 @@ void DrawCod() {
         Label(b.pos + CVector{0, 0, 1.6f}, Format(TR("Баррикада [%s]", "Barricade [%s]"), pips.c_str()),
               b.boards ? 0xFFE0C080 : 0xFFFF5050);
     }
+    for (const Wall& w : g_walls) {
+        const WallGun& g = kWallGuns[(size_t)w.gun];
+        Label(w.pos + CVector{0, 0, 0.35f}, Format("%s · %d", WeaponName(g.weapon), g.price), 0xFFB0FFB0, 15.0f);
+    }
+    for (const Drop& d : g_drops) Label(d.pos + CVector{0, 0, 0.6f}, DropName(d.type), d.type == D_AMMO ? 0xFFFFE060 : 0xFF60FF60, 30.0f);
     if (g_box.placed && g_box.handle >= 0) {
         std::string t = Format(TR("Ящик с оружием · %d", "Weapon box · %d"), kBoxCost);
         if (g_box.rolling) {
@@ -2742,6 +3259,17 @@ public:
             }
             return true;
         }
+        // the host's own spots for this place: where it stands now
+        const char* spot = a0 == "ящик" || a0 == "box"               ? "box"
+                           : a0 == "баррикада" || a0 == "barricade" ? "bar"
+                           : a0 == "стена" || a0 == "wall"          ? "wall"
+                           : a0 == "сброс" || a0 == "reset"         ? "reset"
+                                                                    : nullptr;
+        if (spot) {
+            if (!g_arena.on || !g_arena.taken) ui::TheChat().AddError(TR("Сначала начните арену в этом месте.", "Start an arena at that place first."));
+            else SaveSpot(spot);
+            return true;
+        }
         if (g_arena.on) {
             ui::TheChat().AddError(TR("Арена уже идёт (/arena stop — закончить).", "An arena is on already (/arena stop ends it)."));
             return true;
@@ -2798,6 +3326,10 @@ bool UnlimitedRevives() { return g_arena.on && g_arena.taken; }
 bool QuickRevive() { return false; }
 void UseQuickRevive() {}
 float ReloadFactor() { return 1.0f; }
+int IncomingDamage(int weapon, int damage) {
+    if (!On() || weapon != WEAPON_FLAMETHROWER) return damage;  // the flamethrower's and the fire's (burning) damage
+    return std::max(1, damage * 35 / 100);
+}
 
 // is it an enemy of the arena: the host's own, or a copy of one (an armed man of the arena's place, no player)
 bool IsEnemy(CPed* p) {
@@ -2830,7 +3362,9 @@ void OnLocalKill(CPed* victim, int weapon, bool headshot) {
 
 bool KeyDown(int vk, bool repeat) {
     std::string hint;
-    if (!On() || !ReviveText(hint).empty() || g_nearKind == N_NONE) return false;
+    if (!On() || !ReviveText(hint).empty()) return false;
+    if (vk == 'B') return !repeat && TryBuild();
+    if (g_nearKind == N_NONE) return false;
     uint64_t now = NowMs();
     if (g_nearKind == N_BAR) {
         if (now - g_lastRepairMs < 650) return true;  // held: one board at a time
@@ -2840,6 +3374,10 @@ bool KeyDown(int vk, bool repeat) {
         return true;
     }
     if (repeat) return true;
+    if (g_nearKind == N_WALL) {
+        BuyWall(g_nearIdx);
+        return true;
+    }
     if (g_nearKind == N_BOX) {
         if (g_box.rolling) return true;
         if (g_points < kBoxCost) {
@@ -2860,6 +3398,11 @@ std::string PromptText(std::string& hint) {
         hint = g_repairedThisWave < kRepairCap ? Format(TR("%s — прибить доску (+10 очков)", "%s — nail a board on (+10 points)"), key.c_str())
                                                : Format(TR("%s — прибить доску", "%s — nail a board on"), key.c_str());
         return Format(TR("Баррикада · досок %d из %d", "Barricade · %d of %d boards"), g_bars[(size_t)g_nearIdx].boards, kBoards);
+    }
+    if (g_nearKind == N_WALL) {
+        const WallGun& g = kWallGuns[(size_t)g_walls[(size_t)g_nearIdx].gun];
+        hint = Format(TR("%s — купить за %d (патроны к нему — за %d)", "%s — buy for %d (its ammo for %d)"), key.c_str(), g.price, g.price / 2);
+        return Format(TR("%s на стене · у вас %d очков", "%s on the wall · you have %d points"), WeaponName(g.weapon), g_points);
     }
     if (g_box.rolling) return TR("Ящик открыт...", "The box is open...");
     hint = Format(TR("%s — случайное оружие за %d очков (у вас %d)", "%s — a random weapon for %d points (you have %d)"), key.c_str(),

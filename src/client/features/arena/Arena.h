@@ -19,7 +19,10 @@ float ReloadFactor();      // Speed Cola: reloads take this part of their time (
 void OnLocalHit(game::CPed* victim, int weapon, int damage, int piece);
 void OnLocalKill(game::CPed* victim, int weapon, bool headshot);
 
-// the interaction key (E): a barricade to repair, the mystery box, a perk machine; true when it was used here
+// the damage that comes to this player: the flamethrower's fire weaker in the arena
+int IncomingDamage(int weapon, int damage);
+
+// the interaction key (E; B builds a barricade): a barricade to repair, the mystery box, a perk machine; true when it was used here
 bool KeyDown(int vk, bool repeat);
 // the box in the middle of the screen: what can be done here ("E — починить баррикаду (+10)"); empty: nothing
 std::string PromptText(std::string& hint);

@@ -10,6 +10,8 @@
 #include <cmath>
 #include <vector>
 
+#include "features/throw/Throw.h"
+
 #include "common/lib/log/Log.h"
 #include "common/lib/util/Util.h"
 #include "shared/game/Challenge.h"
@@ -193,10 +195,47 @@ void Draw() {
     }
 }
 
+// ---- blasts behind walls: where each grenade, rocket and satchel charge was last seen (kept a second after it is
+// gone, it went off there); a blast hurting the player is dropped when the nearest of them within 12 m is behind a
+// wall or a floor from both its chest and its head (the game's own blast went through walls)
+constexpr uintptr_t kProjectileInfos = 0xC891A8;  // gaProjectileInfo[32], 0x24 bytes: m_eWeaponType +0, m_bActive +0x10
+constexpr uintptr_t kProjectiles = 0xC89110;      // CProjectileInfo::ms_apProjectile[32]
+struct Seen {
+    CVector at;
+    uint64_t ms = 0;
+    bool live = false;
+};
+Seen g_seen[32];
+void TrackProjectiles() {
+    uint64_t now = NowMs();
+    for (int i = 0; i < 32; ++i) {
+        uintptr_t info = kProjectileInfos + (uintptr_t)i * 0x24;
+        int type = Ref<int32_t>(info);
+        bool blast = type == 16 || type == 19 || type == 20 || type == 39;  // grenade, rocket, heat-seeker, satchel
+        auto* obj = Ref<CEntity*>(kProjectiles + (uintptr_t)i * 4);
+        if (Ref<uint8_t>(info + 0x10) && blast && obj) {
+            g_seen[i].at = obj->GetPosition();
+            g_seen[i].ms = now;
+            g_seen[i].live = true;
+        } else {
+            g_seen[i].live = false;
+        }
+    }
+}
+bool WallBetween(const CVector& a, const CVector& b) {
+    return !Call<0x56A490, bool>(&a, &b, true, false, false, false, false, false, false);  // GetIsLineOfSightClear: buildings
+}
+
 class ThrowModule : public Module {
 public:
     const char* Name() const override { return "Throw"; }
-    void OnPostProcess() override { Update(); }
+    void OnPreProcess() override {
+        if (core::IsPlayerReady()) TrackProjectiles();
+    }
+    void OnPostProcess() override {
+        Update();
+        if (core::IsPlayerReady()) TrackProjectiles();
+    }
     void OnRender() override { Draw(); }
     void OnGameShutdown() override {
         g_holding = false;
@@ -211,5 +250,20 @@ struct Reg {
     Reg() { core::RegisterModule(&g_module); }
 } g_reg;
 }  // namespace
+
+bool ExplosionBehindWall(CPed* victim) {
+    uint64_t now = NowMs();
+    CVector body = victim->GetPosition();
+    const Seen* best = nullptr;
+    float bestD = 12.0f;
+    for (const Seen& s : g_seen) {
+        if (!s.ms || now - s.ms > 1000) continue;
+        float d = (s.at - body).Length();
+        if (d < bestD) bestD = d, best = &s;
+    }
+    if (!best) return false;
+    CVector from = best->at + CVector{0, 0, 0.3f};
+    return WallBetween(from, body + CVector{0, 0, 0.3f}) && WallBetween(from, body + CVector{0, 0, 0.7f});
+}
 
 }  // namespace coop
