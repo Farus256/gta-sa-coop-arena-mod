@@ -81,7 +81,7 @@ struct Faction {
     int models[4];
     int weapons[4][2];  // by wave: the first ones get the first, later ones better (one of two at each step)
     int boss[3];        // the bosses that fit (index into kBosses, -1: none)
-    bool medics;        // its squads have medics (Grove, Ballas, the police, SWAT)
+    bool medics;        // its squads have medics (Rifa, Ballas, the police, SWAT)
     bool flamers;       // its waves bring a flamethrower man (Bikers, Vagos)
 };
 // weapons: 22 pistol, 23 silenced, 24 desert eagle, 25 shotgun, 26 sawn-off, 27 combat shotgun, 28 uzi, 29 mp5,
@@ -93,12 +93,11 @@ const Faction kFactions[] = {
     {{TRP("ацтекас", "aztecas"), TRP("ацтеки", "aztecas")}, TRP("Ацтекас", "Aztecas"), {114, 115, 116, 114}, {{22, 24}, {28, 32}, {25, 26}, {30, 29}}, {6, -1, -1}, false, false},
     {{TRP("триады", "triads"), TRP("триада", "triads")}, TRP("Триады", "Triads"), {117, 118, 120, 117}, {{22, 23}, {28, 32}, {29, 27}, {30, 31}}, {7, -1, -1}, false, false},
     {{TRP("мафия", "mafia"), TRP("мафия", "mafia")}, TRP("Мафия", "Mafia"), {111, 112, 113, 111}, {{22, 24}, {29, 28}, {27, 25}, {30, 31}}, {8, 0, -1}, false, false},
-    {{TRP("рифа", "rifa"), TRP("рифа", "rifa")}, TRP("Сан-Фиеро Рифа", "San Fierro Rifa"), {173, 174, 175, 173}, {{22, 24}, {32, 28}, {25, 26}, {30, 29}}, {6, -1, -1}, false, false},
+    {{TRP("рифа", "rifa"), TRP("рифа", "rifa")}, TRP("Сан-Фиеро Рифа", "San Fierro Rifa"), {173, 174, 175, 173}, {{22, 24}, {32, 28}, {25, 26}, {30, 29}}, {6, -1, -1}, true, false},
     {{TRP("байкеры", "bikers"), TRP("байкеры", "bikers")}, TRP("Байкеры", "Bikers"), {247, 248, 254, 100}, {{22, 24}, {25, 26}, {30, 33}, {27, 30}}, {-1, -1, -1}, false, true},
     {{TRP("полиция", "police"), TRP("копы", "cops")}, TRP("Полиция", "Police"), {280, 281, 282, 284}, {{22, 24}, {25, 29}, {29, 27}, {31, 27}}, {0, 1, 2}, true, false},
     {{TRP("спецназ", "swat"), TRP("фбр", "fbi")}, TRP("Спецназ", "SWAT"), {285, 286, 285, 286}, {{29, 24}, {29, 27}, {31, 27}, {31, 29}}, {0, 1, 8}, true, false},
     {{TRP("армия", "army"), TRP("военные", "army")}, TRP("Армия", "Army"), {287, 287, 287, 287}, {{29, 31}, {31, 30}, {31, 27}, {31, 33}}, {8, -1, -1}, false, false},
-    {{TRP("грув", "grove"), TRP("грувы", "gsf")}, TRP("Грув-стрит", "Grove Street"), {105, 106, 107, 105}, {{22, 24}, {28, 32}, {25, 26}, {30, 29}}, {9, 3, 4}, true, false},
 };
 struct Boss {
     const char* special;  // the special character's name
@@ -115,7 +114,6 @@ const Boss kBosses[] = {
     {"TBONE", TRP("Ти-Бон Мендез", "T-Bone Mendez"), 30},  // 6
     {"JIZZY", TRP("Джиззи Би", "Jizzy B"), 30},            // 7
     {"TORENO", TRP("Майк Торено", "Mike Toreno"), 31},     // 8
-    {"SWEET", TRP("Свит", "Sweet"), 30},                   // 9
 };
 constexpr int kBossCount = (int)(sizeof(kBosses) / sizeof(kBosses[0]));
 
@@ -1476,7 +1474,7 @@ void TwinEagles(bool on) {
 }
 
 // the new kinds of enemies (armed men of the gang or the force, as the others)
-// A medic (Grove, Ballas, the police, SWAT): heals by 20% every one of its own within 5 m, runs to the fallen and the
+// A medic (Rifa, Ballas, the police, SWAT): heals by 20% every one of its own within 5 m, runs to the fallen and the
 // hurt first, and gets up to 5 of the fallen on their feet again (CPR). The police's and SWAT's are paramedics.
 void MakeMedic(int wave) {
     const Faction& f = kFactions[g_arena.faction];
