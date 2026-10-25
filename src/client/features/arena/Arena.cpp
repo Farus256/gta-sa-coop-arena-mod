@@ -138,7 +138,6 @@ const Place kPlaces[] = {
     {{TRP("либерти", "liberty"), TRP("бистро", "liberty")}, TRP("Либерти-Сити (бистро Марко)", "Liberty City (Marco's bistro)"), 1, {-794.81f, 497.74f, 1376.20f}, 14.0f, false, false},
     {{TRP("полиция", "police"), TRP("участок", "police")}, TRP("Полицейский участок", "The police station"), 6, {246.78f, 63.90f, 1003.64f}, 14.0f, false, true},
     {{TRP("дамба", "dam"), TRP("шерман", "dam")}, TRP("Дамба Шерман", "The Sherman dam"), 17, {-959.56f, 1848.58f, 9.00f}, 30.0f, true, false},
-    {{TRP("дом", "house"), TRP("сиджей", "cj")}, TRP("Дом CJ", "CJ's house"), 3, {2496.05f, -1695.24f, 1014.74f}, 9.0f, false, false},
     {{TRP("кикстарт", "kickstart"), TRP("кикстарт", "kickstart")}, TRP("Стадион «Кикстарт»", "The Kickstart stadium"), 14, {-1465.27f, 1557.87f, 1052.53f}, 35.0f, true, true},
 };
 constexpr int kPlaceCount = (int)(sizeof(kPlaces) / sizeof(kPlaces[0]));
@@ -184,7 +183,7 @@ int Lang() { return Cfg().english ? 1 : 0; }
 enum ArenaOp : uint8_t {
     A_START = 1, A_WAVE, A_LEFT, A_BOSS, A_END, A_ITEMS, A_PREP, A_MARK, A_SKIP,
     A_SCORE, A_BARS, A_BOARD, A_REPAIR, A_BOX, A_BOXUSE, A_BOXROLL, A_PERKS, A_PSPAWN, A_GRAB, A_POWER, A_TWINS,
-    A_WALLS, A_DROP, A_TAKE, A_TAKEN, A_BUILD, A_LOBBY
+    A_WALLS, A_DROP, A_TAKE, A_TAKEN, A_BUILD, A_LOBBY, A_FLAMER, A_STAGE, A_VOTE, A_VOTES
 };
 struct Arena {
     bool on = false, host = false;
@@ -238,6 +237,15 @@ struct Bar {
     int breaks = 0;      // host: how often shots smashed its fence (3 smashes: a board)
 };
 std::vector<Bar> g_bars;
+// the wait between the waves (every game): the barricades let everyone through, a vote (Y) skips it
+bool g_break = true;
+uint64_t g_breakEndMs = 0;
+bool g_barsSolid = true;
+std::set<uint8_t> g_votes;    // host: who voted to skip
+int g_voteCount = 0, g_voteNeed = 1;
+bool g_iVoted = false;
+void SetBreak(bool on, uint64_t endMs);
+void Vote(uint8_t by);
 
 bool Hosting() { return !Net().Online() || Net().IsHost(); }
 
@@ -559,6 +567,7 @@ struct Enemy {
     CVector cover;
     uint64_t grenadeUntil = 0;  // throwing till then
     uint64_t throwAt = 0;       // the grenade leaves the hand then
+    uint64_t swingAt = 0;       // the wind-up over: the throw's swing then
     float throwFlight = 1.0f;
     int grenades = 0;
     CPed* throwTarget = nullptr;
@@ -763,6 +772,7 @@ int MakeEnemy(int model, int weapon, int health, int armour, int accuracy, const
         weapon = WEAPON_KNIFE;
         Cmd(0x0245).I(h).S8("player").Run();  // SET_ANIM_GROUP_FOR_CHAR: it runs as CJ does
     } else if (role == R_FLAMER) {
+        Give(h, WEAPON_MOLOTOV, 5);  // the bottles it throws (in hand only for the throw)
         Give(h, WEAPON_FLAMETHROWER, 5000);
         weapon = GunFor(WEAPON_FLAMETHROWER);
         Cmd(0x0245).I(h).S8("fatman").Run();                       // SET_ANIM_GROUP_FOR_CHAR: heavy and slow
@@ -788,7 +798,7 @@ int MakeEnemy(int model, int weapon, int health, int armour, int accuracy, const
     e.accuracy = accuracy;
     e.armour = armour;
     e.silent = silent;
-    e.grenades = role == R_GRENADIER ? 6 : role == R_FLAMER ? 5 : 0;
+    e.grenades = role == R_GRENADIER ? 3 : role == R_FLAMER ? 5 : 0;  // 3 grenades a man, the flamethrower man's 5 molotovs
     e.throwWeapon = role == R_FLAMER ? WEAPON_MOLOTOV : WEAPON_GRENADE;
     e.nextThrowMs = NowMs() + (uint64_t)RandInt(5000, 8000);
     e.mode = role == R_KNIFE ? M_SNEAK : role == R_TWIN ? M_PUSH : g_squads[(size_t)squad].flank ? M_FLANK : M_FIGHT;
@@ -1235,6 +1245,7 @@ void ShowBar(Bar& b) {
         b.handle = MakeObj(model, b.pos, b.heading, b.lift, b.height);
         if (b.handle < 0) return;
     }
+    Cmd(0x0382).I(b.handle).I(g_barsSolid ? 1 : 0).Run();  // SET_OBJECT_COLLISION: none between the waves
     float sink = (1.0f - (float)b.boards / (float)kBoards) * b.height * 0.85f;
     Cmd(0x01BC).I(b.handle).F(b.pos.x).F(b.pos.y).F(b.pos.z + b.lift - sink).Run();  // SET_OBJECT_COORDINATES
 }
@@ -1985,6 +1996,71 @@ void EagleModel(CPed* p) {
 }
 const char* TwinName(int k) { return k == 0 ? TR("Отто", "Otto") : TR("Эрнандо", "Ernando"); }
 
+// ---- the flamethrower man's body armour: the armour's model worn on its chest, every frame put on its upper torso's
+// bone (CPed::m_apBones +0x488, the skin's world matrices: as CTaskSimpleHoldEntity holds a thing), upright and turned
+// with it, so it moves with the body as Big Smoke's vest in the last mission. Every game puts it on its own ped or copy.
+struct Vest {
+    CPed* ped = nullptr;
+    int obj = -1;
+};
+std::vector<Vest> g_vests;
+std::vector<uint16_t> g_vestIds;  // a partner's: the flamethrower men whose copies are not here yet
+uint64_t g_vestIdsUntil = 0;
+void AddVest(CPed* p) {
+    for (const Vest& v : g_vests)
+        if (v.ped == p) return;
+    if (!IsObjectModel(1242) || !LoadModelNow(1242) || !HasRoom(ObjectPool(), kKeepObjects, "object")) return;
+    int o = -1;
+    CVector at = p->GetPosition();
+    Cmd(0x0107).I(1242).F(at.x).F(at.y).F(at.z).Out(&o).Run();  // CREATE_OBJECT: the body armour
+    if (o < 0) return;
+    Cmd(0x0382).I(o).I(0).Run();  // SET_OBJECT_COLLISION off
+    Cmd(0x0392).I(o).I(0).Run();
+    Cmd(0x0566).I(o).I(kPlaces[g_arena.place].area).Run();
+    g_vests.push_back({p, o});
+}
+void ClearVests() {
+    for (Vest& v : g_vests)
+        if (v.obj >= 0 && GetObject(v.obj)) Cmd(0x0108).I(v.obj).Run();
+    g_vests.clear();
+    g_vestIds.clear();
+}
+void UpdateVests() {
+    for (auto it = g_vestIds.begin(); it != g_vestIds.end();) {
+        int h = Peds::Instance().HandleOf(*it);
+        if (h >= 0 && GetPed(h)) AddVest(GetPed(h)), it = g_vestIds.erase(it);
+        else ++it;
+    }
+    if (NowMs() > g_vestIdsUntil) g_vestIds.clear();
+    for (auto it = g_vests.begin(); it != g_vests.end();) {
+        CObject* o = it->obj >= 0 ? GetObject(it->obj) : nullptr;
+        CPed* p = it->ped;
+        if (!o || !IsPedValid(p) || p->Health() <= 0.0f) {
+            if (o) Cmd(0x0108).I(it->obj).Run();  // DELETE_OBJECT: the vest goes with its man
+            it = g_vests.erase(it);
+            continue;
+        }
+        auto* clump = (uint8_t*)p->RwObject();
+        CMatrix *m = o->Matrix(), *pm = p->Matrix();
+        void* node = Field<void*>(p, 0x488 + 1 * 4);  // PED_NODE_UPPER_TORSO
+        void* hier = clump && clump[0] == 2 ? Call<0x734A40, void*>(clump) : nullptr;  // GetAnimHierarchyFromSkinClump
+        int i = node && hier ? Call<0x7C51A0, int>(hier, Field<int32_t>(node, 0x14)) : -1;  // RpHAnimIDGetIndex
+        auto* bones = hier ? Call<0x7C5120, uint8_t*>(hier) : nullptr;                     // RpHAnimHierarchyGetMatrixArray
+        if (m && pm && i >= 0 && bones) {
+            const CMatrix& bm = *(const CMatrix*)(bones + (size_t)i * 0x40);
+            WorldRemove(o);
+            m->right = pm->right;
+            m->forward = pm->forward;
+            m->up = pm->up;
+            m->pos = bm.pos + pm->forward * 0.04f - pm->up * 0.12f;  // over the chest and the belly
+            CallMethod<0x446F90>(o);  // CEntity::UpdateRW
+            CallMethod<0x532B00>(o);  // CEntity::UpdateRwFrame
+            WorldAdd(o);
+        }
+        ++it;
+    }
+}
+
 // the new kinds of enemies (armed men of the gang or the force, as the others)
 // A medic (Rifa, Ballas, the police, SWAT): heals by 20% every one of its own within 5 m, runs to the fallen and the
 // hurt first, and gets up to 5 of the fallen on their feet again (CPR). The police's and SWAT's are paramedics.
@@ -2006,16 +2082,10 @@ void MakeFlamer(int wave) {
                       (int)g_squads.size() - 1, R_FLAMER, true);
     if (CPed* p = h >= 0 ? GetPed(h) : nullptr) {
         g_flamers.push_back(p);
-        // the body armour on its chest: the armour's own model, held on the ped (Props shows it in the other games too)
-        if (IsObjectModel(1242) && LoadModelNow(1242) && HasRoom(ObjectPool(), kKeepObjects, "object")) {
-            int o = -1;
-            CVector at = p->GetPosition();
-            Cmd(0x0107).I(1242).F(at.x).F(at.y).F(at.z).Out(&o).Run();  // CREATE_OBJECT
-            if (o >= 0) {
-                Cmd(0x0382).I(o).I(0).Run();                                                // SET_OBJECT_COLLISION off
-                Cmd(0x069B).I(o).I(h).F(0.0f).F(0.06f).F(0.22f).F(0.0f).F(0.0f).F(0.0f).Run();  // ATTACH_OBJECT_TO_CHAR
-                g_info[p].vest = o;
-            }
+        AddVest(p);
+        if (NetPed* np = Peds::Instance().Find(p)) {  // the other games put one on their copy of it
+            uint16_t id = np->netId;
+            Send(A_FLAMER, [id](Writer& w) { w.U16(id); });
         }
     }
 }
@@ -2187,11 +2257,14 @@ bool StartThrow(CPed* p, Enemy& e, CPed* t) {
     int h = GetPedRef(p);
     CVector to = t->GetPosition() - p->GetPosition();
     Cmd(0x0173).I(h).F(std::atan2(-to.x, to.y) * 57.29578f).Run();  // SET_CHAR_HEADING: at the player
-    if (EnsureBlock("GRENADE")) Cmd(0x0605).I(h).S("WEAPON_throw").S("GRENADE").F(8.0f).I(0).I(0).I(0).I(0).I(-1).Run();  // TASK_PLAY_ANIM
-    e.throwAt = NowMs() + 380;
+    // the wind-up first (WEAPON_start_throw, held 0.8 s: the arm drawn back, the thing in the hand), then the swing
+    if (e.throwWeapon == WEAPON_MOLOTOV) Cmd(0x01B9).I(h).I(WEAPON_MOLOTOV).Run();  // SET_CURRENT_CHAR_WEAPON: the bottle in hand
+    if (EnsureBlock("GRENADE")) Cmd(0x0605).I(h).S("WEAPON_start_throw").S("GRENADE").F(8.0f).I(0).I(0).I(0).I(1).I(-1).Run();  // TASK_PLAY_ANIM, held
+    e.swingAt = NowMs() + 800;
+    e.throwAt = e.swingAt + 380;
     e.throwTarget = t;
     e.throwFlight = flight;
-    e.grenadeUntil = NowMs() + 1300;
+    e.grenadeUntil = NowMs() + 2100;
     --e.grenades;
     return true;
 }
@@ -2220,10 +2293,26 @@ void Release(CPed* p, Enemy& e) {
     if (ok) LOGD("Arena: a grenade thrown %.0f m, %.2f s", (aim - from).Length2D(), flight);
 }
 
-void Throws() {  // every frame: the grenades that leave the hand now
+void Throws() {  // every frame: the swings that start now, the grenades that leave the hand now
     uint64_t now = NowMs();
-    for (auto& [p, e] : g_info)
-        if (e.throwAt && now >= e.throwAt) Release(p, e);
+    for (auto& [p, e] : g_info) {
+        if (e.swingAt && now >= e.swingAt) {
+            e.swingAt = 0;
+            if (IsPedValid(p) && p->Health() > 0.0f && EnsureBlock("GRENADE")) {
+                int h = GetPedRef(p);
+                if (e.throwTarget && IsPedValid(e.throwTarget)) {
+                    CVector to = e.throwTarget->GetPosition() - p->GetPosition();
+                    Cmd(0x0173).I(h).F(std::atan2(-to.x, to.y) * 57.29578f).Run();  // still at the player
+                }
+                Cmd(0x0605).I(h).S("WEAPON_throw").S("GRENADE").F(8.0f).I(0).I(0).I(0).I(0).I(-1).Run();  // the swing
+            }
+        }
+        if (e.throwAt && now >= e.throwAt) {
+            Release(p, e);
+            if (e.throwWeapon == WEAPON_MOLOTOV && IsPedValid(p) && e.weapon)
+                Cmd(0x01B9).I(GetPedRef(p)).I(e.weapon).Run();  // the flamethrower back in hand
+        }
+    }
 }
 
 // ---- how they fight
@@ -2854,6 +2943,7 @@ void Clear() {
     g_twinIds.clear();
     g_flamers.clear();
     g_toRaise.clear();
+    ClearVests();
     RemoveItems();
     ResetCod();
     SetMarks({});
@@ -2889,6 +2979,9 @@ void Start(int faction, int place, int waves) {
     g_arena.startMs = NowMs();
     g_arena.nextWaveMs = NowMs() + PrepMs(true);
     ResetCod();
+    g_break = false;
+    g_barsSolid = true;
+    SetBreak(true, g_arena.nextWaveMs);
     game::challenge::Begin();
     TakeIn();
     g_lastSpawns.clear(), g_spawnsNow.clear(), g_lastItemsAt.clear();
@@ -2911,6 +3004,15 @@ void Start(int faction, int place, int waves) {
 }
 
 void Skip(uint8_t by);
+// The arena's game mode: everyone waits in CJ's house (area 3) before the arena takes them in, and comes back there
+// after it (a lost one's lobby too); each a little apart from the others
+void Stage() {
+    CPlayerPed* me = FindPlayerPed(0);
+    if (g_arena.on || !me || me->Health() <= 0.0f || PlayerInfos()[0].playerState != 0) return;
+    const CVector kHouse{2496.05f, -1695.24f, 1014.74f};
+    float a = (float)Net().MyId() * 1.1f;
+    Teleport(3, kHouse + CVector{std::cos(a) * 0.8f, std::sin(a) * 0.8f, 0.0f}, Rand(0.0f, 360.0f));
+}
 // a partner's game: the Twins' copies, to be given their weapon skill once they are here (they come a moment later)
 void TwinCopies() {
     for (size_t k = 0; k < g_twinIds.size() && k < 2; ++k) {
@@ -2939,6 +3041,10 @@ void Handle(uint8_t from, Reader& r) {
     if (r.Ok() && op == A_SCORE) {
         int32_t pts = r.I32();
         if (r.Ok() && g_arena.on) g_scores[from] = pts;
+        return;
+    }
+    if (r.Ok() && op == A_VOTE) {
+        if (g_arena.on && g_arena.host) Vote(from);
         return;
     }
     if (r.Ok() && op == A_TAKE) {
@@ -2975,6 +3081,7 @@ void Handle(uint8_t from, Reader& r) {
         g_arena.left = n;
         g_killed.clear();
         g_repairedThisWave = 0;
+        SetBreak(false, 0);
         Rejoin();
         ui::TheChat().AddSystem(Format(TR("Арена: %s — врагов %d.", "Arena: %s, %d enemies."), WaveOf(w).c_str(), n));
     } else if (op == A_LEFT) {
@@ -3008,7 +3115,11 @@ void Handle(uint8_t from, Reader& r) {
         if (r.Ok()) SetMarks(at);
     } else if (op == A_PREP) {
         uint8_t secs = r.U8();
-        if (r.Ok()) ui::TheChat().AddSystem(Format(TR("Волна отбита! Следующая через %d секунд.", "The wave is beaten! The next one in %d seconds."), (int)secs));
+        if (r.Ok()) {
+            SetBreak(true, NowMs() + (uint64_t)secs * 1000);
+            ui::TheChat().AddSystem(Format(TR("Волна отбита! Следующая через %d секунд. Y — проголосовать за пропуск.",
+                                              "The wave is beaten! The next one in %d seconds. Y votes to skip it."), (int)secs));
+        }
     } else if (op == A_BARS) {
         uint8_t n = r.U8();
         std::vector<Bar> bars;
@@ -3030,6 +3141,14 @@ void Handle(uint8_t from, Reader& r) {
             g_bars = bars;
         }
         for (size_t i = 0; i < g_bars.size(); ++i) g_bars[i].boards = bars[i].boards, ShowBar(g_bars[i]);
+    } else if (op == A_VOTES) {
+        uint8_t c = r.U8(), n = r.U8();
+        if (r.Ok()) g_voteCount = c, g_voteNeed = std::max<int>(1, n);
+    } else if (op == A_FLAMER) {
+        uint16_t id = r.U16();
+        if (r.Ok()) g_vestIds.push_back(id), g_vestIdsUntil = NowMs() + 15000;
+    } else if (op == A_STAGE) {
+        Stage();
     } else if (op == A_LOBBY) {
         uint8_t open = r.U8();
         if (r.Ok() && open) OpenLobby(true);
@@ -3128,9 +3247,49 @@ void HideSaves(bool hide) {
     }
 }
 
+// the barricades solid in a wave, open between the waves; the vote shown and counted
+int Voters() {  // the live players in the place
+    int n = 0, area = kPlaces[g_arena.place].area;
+    if (CPlayerPed* me = FindPlayerPed(0); me && me->Health() > 0.0f && me->AreaCode() == area) ++n;
+    for (auto& [id, rp] : Players::Instance().All())
+        if (rp.hasState && !(rp.state.flags & OnFootState::F_DEAD) && rp.state.area == area) ++n;
+    return std::max(1, n);
+}
+void SendVotes() {
+    g_voteCount = (int)g_votes.size();
+    g_voteNeed = Voters();
+    Send(A_VOTES, [](Writer& w) {
+        w.U8((uint8_t)g_voteCount);
+        w.U8((uint8_t)g_voteNeed);
+    });
+}
+void Vote(uint8_t by) {  // host
+    if (!g_break || !g_arena.nextWaveMs) return;
+    g_votes.insert(by);
+    SendVotes();
+    if (g_voteCount >= g_voteNeed) Skip(by);
+}
+void SetBreak(bool on, uint64_t endMs) {
+    if (on && !g_break) g_votes.clear(), g_voteCount = 0, g_iVoted = false;
+    g_break = on;
+    if (on) g_breakEndMs = endMs;
+    if (g_barsSolid == !on) return;
+    g_barsSolid = !on;
+    for (Bar& b : g_bars)
+        if (b.handle >= 0 && GetObject(b.handle)) Cmd(0x0382).I(b.handle).I(g_barsSolid ? 1 : 0).Run();  // SET_OBJECT_COLLISION
+}
+
 void Update() {
     uint64_t now = NowMs();
     ShortFires();
+    UpdateVests();
+    if (g_arena.host) {
+        bool brk = g_arena.wave == 0 || g_arena.nextWaveMs != 0;
+        if (brk != g_break) SetBreak(brk, g_arena.nextWaveMs);
+        if (brk && g_arena.nextWaveMs) g_breakEndMs = g_arena.nextWaveMs;
+        static uint64_t votersMs = 0;
+        if (brk && now - votersMs > 2000 && Voters() != g_voteNeed) votersMs = now, SendVotes();  // someone came or fell
+    }
     static uint64_t savesMs = 0;
     if (now - savesMs > 1000) savesMs = now, HideSaves(true);
     game::challenge::Tick();
@@ -3247,7 +3406,8 @@ void Update() {
             g_arena.nextWaveMs = now + PrepMs(false);
             g_arena.itemsFor = g_arena.wave + 1;
             Send(A_PREP, [secs](Writer& w) { w.U8((uint8_t)secs); });
-            ui::TheChat().AddSystem(Format(TR("Волна отбита! Следующая через %d секунд.", "The wave is beaten! The next one in %d seconds."), secs));
+            ui::TheChat().AddSystem(Format(TR("Волна отбита! Следующая через %d секунд. Y — проголосовать за пропуск.",
+                                              "The wave is beaten! The next one in %d seconds. Y votes to skip it."), secs));
         }
         if (now >= g_arena.nextWaveMs) {
             g_arena.nextWaveMs = 0;
@@ -3290,6 +3450,20 @@ void DrawCod() {
     auto& g = ui::Gfx();
     float s = g.Scale();
     uint64_t now = NowMs();
+    if (g_break && !g_arena.endAt && g_breakEndMs > now) {  // the wait: its seconds and the vote, on the right
+        float pw = 330 * s, ph = g.LineHeight(ui::FONT_NORMAL) * 2 + g.LineHeight(ui::FONT_SMALL) + 28 * s;
+        float px = g.Width() - pw - 24 * s, py = g.Height() * 0.36f;
+        g.Rect(px, py, pw, ph, 0xC0000000);
+        g.Text(ui::FONT_NORMAL, px + 14 * s, py + 10 * s,
+               Format(TR("Следующая волна через %d с", "The next wave in %d s"), (int)((g_breakEndMs - now + 999) / 1000)), 0xFFFFD060,
+               ui::TEXT_SHADOW);
+        g.Text(ui::FONT_NORMAL, px + 14 * s, py + 14 * s + g.LineHeight(ui::FONT_NORMAL),
+               Format(TR("Пропустить: %d из %d", "Skip: %d of %d"), g_voteCount, g_voteNeed), 0xFFFFFFFF, ui::TEXT_SHADOW);
+        g.Text(ui::FONT_SMALL, px + 14 * s, py + 18 * s + g.LineHeight(ui::FONT_NORMAL) * 2,
+               g_iVoted ? TR("Вы проголосовали · сквозь баррикады можно пройти", "You voted · the barricades let you through")
+                        : TR("Y — голосовать за пропуск · сквозь баррикады можно пройти", "Y votes to skip · the barricades let you through"),
+               0xFFB0B0B0, ui::TEXT_SHADOW);
+    }
     float x = g.Width() - 40 * s, y = g.Height() * 0.62f;
     g.Text(ui::FONT_BIG, x, y, Format("%d", g_points), 0xFFFFFFFF, ui::TEXT_RIGHT | ui::TEXT_OUTLINE);
     for (const Popup& p : g_popups) {
@@ -3359,6 +3533,7 @@ void WearPicked() {
 void OpenLobby(bool open) {
     g_lobby = open;
     if (open) {
+        Stage();  // whoever is not there (back from the hospital) waits in CJ's house too
         ui::SetConnectMenuVisible(true);
         ui::TheChat().AddSystem(TR("Арена проиграна — все в лобби. Выберите персонажа; хост выберет врагов, место и волны.",
                                    "The arena is lost: everyone is in the lobby. Pick a character; the host picks the enemies, the place and the waves."));
@@ -3375,6 +3550,8 @@ void GameMode() {
     uint64_t now = NowMs();
     if (!g_modeReadyMs) {
         g_modeReadyMs = now;
+        Send(A_STAGE);  // everyone into CJ's house first
+        Stage();
         g_modeNextMs = now + 15000;
         ui::TheChat().AddSystem(TR("Режим «Арена»: бой начнётся через 15 секунд.", "The arena mode: the battle begins in 15 seconds."));
     }
@@ -3420,6 +3597,8 @@ public:
         g_walls.clear();
         g_drops.clear();
         g_hiddenSaves.clear();
+        g_vests.clear();
+        g_vestIds.clear();
         g_spinHandle = -1;
         g_box = BoxState{};
             g_arena = Arena{};
@@ -3624,6 +3803,16 @@ bool KeyDown(int vk, bool repeat) {
     std::string hint;
     if (!On() || !ReviveText(hint).empty()) return false;
     if (vk == 'H') return !repeat && TryBuild();
+    if (vk == 'Y') {  // the vote to skip the wait between the waves
+        if (!g_break || repeat) return g_break;
+        if (!g_iVoted) {
+            g_iVoted = true;
+            ui::TheChat().AddSystem(TR("Вы проголосовали за пропуск ожидания.", "You voted to skip the wait."));
+            if (g_arena.host) Vote(Net().MyId());
+            else Send(A_VOTE);
+        }
+        return true;
+    }
     if (g_nearKind == N_NONE) return false;
     uint64_t now = NowMs();
     if (g_nearKind == N_BAR) {
