@@ -52,6 +52,7 @@
 #include "features/progress/SkinChoice.h"
 #include "features/revive/Revive.h"
 #include "entities/session/Flow.h"
+#include "pages/connect-menu/ConnectMenu.h"
 #include "shared/api/net-session/Session.h"
 #include "shared/config/Config.h"
 #include "shared/game/Challenge.h"
@@ -137,6 +138,7 @@ const Place kPlaces[] = {
     {{TRP("либерти", "liberty"), TRP("бистро", "liberty")}, TRP("Либерти-Сити (бистро Марко)", "Liberty City (Marco's bistro)"), 1, {-794.81f, 497.74f, 1376.20f}, 14.0f, false, false},
     {{TRP("полиция", "police"), TRP("участок", "police")}, TRP("Полицейский участок", "The police station"), 6, {246.78f, 63.90f, 1003.64f}, 14.0f, false, true},
     {{TRP("дамба", "dam"), TRP("шерман", "dam")}, TRP("Дамба Шерман", "The Sherman dam"), 17, {-959.56f, 1848.58f, 9.00f}, 30.0f, true, false},
+    {{TRP("дом", "house"), TRP("сиджей", "cj")}, TRP("Дом CJ", "CJ's house"), 3, {2496.05f, -1695.24f, 1014.74f}, 9.0f, false, false},
     {{TRP("кикстарт", "kickstart"), TRP("кикстарт", "kickstart")}, TRP("Стадион «Кикстарт»", "The Kickstart stadium"), 14, {-1465.27f, 1557.87f, 1052.53f}, 35.0f, true, true},
 };
 constexpr int kPlaceCount = (int)(sizeof(kPlaces) / sizeof(kPlaces[0]));
@@ -182,7 +184,7 @@ int Lang() { return Cfg().english ? 1 : 0; }
 enum ArenaOp : uint8_t {
     A_START = 1, A_WAVE, A_LEFT, A_BOSS, A_END, A_ITEMS, A_PREP, A_MARK, A_SKIP,
     A_SCORE, A_BARS, A_BOARD, A_REPAIR, A_BOX, A_BOXUSE, A_BOXROLL, A_PERKS, A_PSPAWN, A_GRAB, A_POWER, A_TWINS,
-    A_WALLS, A_DROP, A_TAKE, A_TAKEN, A_BUILD
+    A_WALLS, A_DROP, A_TAKE, A_TAKEN, A_BUILD, A_LOBBY
 };
 struct Arena {
     bool on = false, host = false;
@@ -199,6 +201,8 @@ struct Arena {
 std::set<CPed*> g_enemies;  // the host's: this wave's (and the boss)
 CPed* g_bossPed = nullptr;
 CPed* g_twinPeds[2] = {nullptr, nullptr};  // the host's: the mini-boss of this wave
+bool g_lobby = false, g_modeLost = false;  // the arena's game mode: in its lobby now; the last one lost (GameMode)
+void OpenLobby(bool open);
 std::vector<std::pair<int, uint8_t>> g_hiddenSaves;  // the save disks hidden meanwhile (HideSaves): the pickup, its type
 // a partner's: the Twins' copies (by index: Otto, Ernando) and their net ids till the copies are here
 std::vector<uint16_t> g_twinIds;  // by index: Otto, Ernando
@@ -1593,7 +1597,7 @@ bool WallBy(const CVector& floor, Wall& out) {
         flatN = flatN * (1.0f / nl);
         out.pos = hit + flatN * 0.08f;
         out.stand = floor;
-        out.heading = std::atan2(-flatN.x, flatN.y) * 57.29578f + 90.0f;  // lying along the wall
+        out.heading = std::atan2(-flatN.x, flatN.y) * 57.29578f;  // the model's barrel (its X) along the wall
         found = true;
     }
     return found;
@@ -1850,7 +1854,7 @@ bool LoadSpots() {
         w.stand = p;
         float r = h / 57.29578f;
         w.pos = w.pos + CVector{-std::sin(r), std::cos(r), 0.0f} * 0.8f;  // a little ahead of where the host stood
-        w.heading = h + 90.0f;
+        w.heading = h;
         g_walls.push_back(w);
         any = true;
     }
@@ -2960,6 +2964,7 @@ void Handle(uint8_t from, Reader& r) {
         uint8_t f = r.U8(), p = r.U8(), w = r.U8();
         if (!r.Ok() || f >= kFactionCount || p >= kPlaceCount || w > 10) return;  // 0: no end
         if (g_arena.on) End(false);
+        if (g_lobby) OpenLobby(false);
         Start(f, p, w);
     } else if (!g_arena.on) {
         return;
@@ -3025,6 +3030,9 @@ void Handle(uint8_t from, Reader& r) {
             g_bars = bars;
         }
         for (size_t i = 0; i < g_bars.size(); ++i) g_bars[i].boards = bars[i].boards, ShowBar(g_bars[i]);
+    } else if (op == A_LOBBY) {
+        uint8_t open = r.U8();
+        if (r.Ok() && open) OpenLobby(true);
     } else if (op == A_WALLS) {
         uint8_t n = r.U8();
         std::vector<Wall> walls;
@@ -3324,6 +3332,7 @@ void DrawCod() {
 
 // the host starts one (the command, or the arena's game mode): every game hears of it
 void Launch(int faction, int place, int waves) {
+    if (g_lobby) OpenLobby(false);
     Send(A_START, [&](Writer& w) {
         w.U8((uint8_t)faction);
         w.U8((uint8_t)place);
@@ -3338,6 +3347,26 @@ void Launch(int faction, int place, int waves) {
 // character it picked in the lobby too (the partners get theirs as always).
 uint64_t g_modeReadyMs = 0, g_modeNextMs = 0;
 bool g_modeSkinDone = false;
+// After a lost arena in this mode everyone is back in the lobby (the F9 window opens with it): the host picks the
+// enemies, the place and the waves again and starts the next one, each player may pick another character there
+void WearPicked() {
+    if (!skin::Picked()) return;
+    int count = 0;
+    const skin::Choice* list = skin::Choices(count);
+    int k = std::clamp(skin::ChosenIndex(), 0, count - 1);
+    skin::Wear(list[k].model);
+}
+void OpenLobby(bool open) {
+    g_lobby = open;
+    if (open) {
+        ui::SetConnectMenuVisible(true);
+        ui::TheChat().AddSystem(TR("Арена проиграна — все в лобби. Выберите персонажа; хост выберет врагов, место и волны.",
+                                   "The arena is lost: everyone is in the lobby. Pick a character; the host picks the enemies, the place and the waves."));
+    } else {
+        ui::SetConnectMenuVisible(false);
+        WearPicked();
+    }
+}
 void GameMode() {
     if (Cfg().gameMode != 2 || !Net().Online() || !Net().IsHost() || !core::IsPlayerReady() || flow::InLobby()) {
         g_modeReadyMs = 0;
@@ -3357,9 +3386,16 @@ void GameMode() {
         if (list[k].model) skin::Wear(list[k].model);
     }
     if (g_arena.on) {
-        g_modeNextMs = now + 20000;  // the next one 20 s after this one is over
+        g_modeNextMs = now + 20000;  // the next one 20 s after a won one
+        g_modeLost = g_arena.endAt && !g_arena.won;
         return;
     }
+    if (g_modeLost) {  // lost: back to the lobby, the host starts the next one there
+        g_modeLost = false;
+        Send(A_LOBBY, [](Writer& w) { w.U8(1); });
+        OpenLobby(true);
+    }
+    if (g_lobby) return;
     CPlayerPed* me = FindPlayerPed(0);
     if (now < g_modeNextMs || !me || me->Health() <= 0.0f || PlayerInfos()[0].playerState != 0) return;
     int faction = std::clamp(Cfg().arenaFaction, 0, kFactionCount - 1);
@@ -3389,6 +3425,7 @@ public:
             g_arena = Arena{};
     }
     void OnSessionEnd() override {
+        g_lobby = g_modeLost = false;
         g_modeReadyMs = 0;
         g_modeSkinDone = false;
         if (g_arena.on) End(false);
@@ -3570,6 +3607,14 @@ void OnLocalKill(CPed* victim, int weapon, bool headshot) {
     AddPoints(pts, headshot ? 0xFFFF8040 : 0xFFFFE060);
 }
 
+bool InLobby() { return g_lobby && Net().Online(); }
+void LobbyStart() {
+    if (!g_lobby || !Net().IsHost()) return;
+    int faction = std::clamp(Cfg().arenaFaction, 0, kFactionCount - 1);
+    int place = Cfg().arenaPlace >= 0 && Cfg().arenaPlace < kPlaceCount ? Cfg().arenaPlace : RandInt(0, kPlaceCount - 1);
+    flow::SaveConnectSettings();
+    Launch(faction, place, std::clamp(Cfg().arenaWaves, 0, 10));
+}
 int FactionCount() { return kFactionCount; }
 std::string FactionTitle(int i) { return i >= 0 && i < kFactionCount ? FactionName(i) : std::string("?"); }
 int PlaceCount() { return kPlaceCount; }

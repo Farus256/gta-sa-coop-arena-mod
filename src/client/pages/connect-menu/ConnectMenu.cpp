@@ -172,7 +172,8 @@ void CharacterWindow(float x, float y, float W, float H) {
         float foot = by + cardH * 0.86f, standH = cardH * 0.80f;
         g.Ellipse(bx + cardW * 0.5f, foot, cardW * 0.34f, cardH * 0.04f, WithAlpha(c.shirt, lit ? 0.35f : 0.15f));
         int pw = 0, ph = 0;
-        const uint32_t* px = c.model ? skin::Picture(c.model, pw, ph) : nullptr;
+        const uint32_t* px = nullptr;  // every one drawn as a figure in its colours (the Families' pictures too)
+        (void)pw, (void)ph;
         if (px && pw > 0 && ph > 0) {
             auto it = images.find(c.model);
             if (it == images.end()) it = images.emplace(c.model, g.AddImage(px, pw, ph)).first;
@@ -186,6 +187,10 @@ void CharacterWindow(float x, float y, float W, float H) {
         g.Text(FONT_SMALL, bx + 6 * s, by + 4 * s, label, lit ? w::kSaBlue : w::kSaMuted, TEXT_SHADOW);
         g.RectOutline(bx, by, cardW, cardH, lit ? w::kSaBlue : hover ? 0xFF6A7A8B : w::kSaLine, std::max(1.0f, (lit ? 2.0f : 1.0f) * s));
         if (hover && st.lmbPressed && !lit) skin::SetChoice(k);
+        else if (hover && st.lmbPressed && lit) skin::NextVariant(k);  // clicked again: the next look of that kind (fam1, fam2...)
+        if (c.variants > 1)
+            g.Text(FONT_SMALL, bx + cardW - 6 * s, by + 4 * s, Format("%d/%d", c.variant + 1, c.variants), lit ? w::kSaBlue : w::kSaMuted,
+                   TEXT_RIGHT | TEXT_SHADOW);
     }
     cy += areaH + 10 * s;
     const skin::Choice& c = list[std::clamp(skin::ChosenIndex(), 0, count - 1)];
@@ -393,7 +398,7 @@ void RenderConnectMenu() {
     float x = (g.Width() - W) * 0.5f, y = (g.Height() - H) * 0.5f;
     // everyone in the lobby (the host too, for now: to try the characters): the character window right of the lobby
     // (the lobby stays in the middle while both fit)
-    bool picker = online && flow::InLobby();
+    bool picker = online && (flow::InLobby() || arena::InLobby());
     float pickW = 380 * s, pickGap = 24 * s, pickH = H;
     if (picker) {
         float need = W + pickGap + pickW, margin = 16 * s;
@@ -442,8 +447,9 @@ void RenderConnectMenu() {
         // ---- in a session: who we are, the address for friends, the players
         bool host = net.IsHost();
         bool lobby = flow::InLobby();
+        bool arenaLobby = arena::InLobby();
         g.Text(FONT_BIG, cx, cy,
-               lobby ? TR("Лобби", "Lobby") : host ? TR("Сервер запущен", "Server running") : TR("Вы в игре", "Connected"), kSaBlue,
+               lobby || arenaLobby ? TR("Лобби", "Lobby") : host ? TR("Сервер запущен", "Server running") : TR("Вы в игре", "Connected"), kSaBlue,
                TEXT_SHADOW);
         cy += bh + 2 * s;
         if (!host) para(Format(TR("Сервер «%s»", "Server \"%s\""), net.ServerName().c_str()), kSaMuted, FONT_NORMAL);
@@ -520,6 +526,32 @@ void RenderConnectMenu() {
         row(net.MyId(), Cfg().nickname, host, net.Rtt(), true);
         for (auto& [id, p] : net.Peers()) row(id, p.name, p.isHost, p.ping, false);
         if (host && net.Peers().empty()) para(TR("Ждём друзей...", "Waiting for your friends..."), kSaMuted);
+        if (arenaLobby) {  // after a lost arena: the host picks the next one and starts it, everyone picks a character
+            cy += 10 * s;
+            auto& c = Cfg();
+            if (host) {
+                int fc = arena::FactionCount(), pc = arena::PlaceCount();
+                c.arenaFaction = std::clamp(c.arenaFaction, 0, fc - 1);
+                c.arenaPlace = std::clamp(c.arenaPlace, -1, pc - 1);
+                float third = (cw - 28 * s) / 3.0f;
+                caption(cx, TR("Враги", "Enemies"));
+                caption(cx + third + 14 * s, TR("Место", "Place"));
+                caption(cx + (third + 14 * s) * 2, TR("Волны", "Waves"));
+                cy += ch + 6 * s;
+                if (int d = w::Selector("lfac", cx, cy, third, rowH, arena::FactionTitle(c.arenaFaction))) c.arenaFaction = (c.arenaFaction + d + fc) % fc;
+                if (int d = w::Selector("lplace", cx + third + 14 * s, cy, third, rowH, arena::PlaceTitle(c.arenaPlace)))
+                    c.arenaPlace = (c.arenaPlace + 1 + d + pc + 1) % (pc + 1) - 1;
+                std::string wv = c.arenaWaves ? Format("%d", c.arenaWaves) : std::string(TR("без конца", "no end"));
+                if (int d = w::Selector("lwaves", cx + (third + 14 * s) * 2, cy, third, rowH, wv)) c.arenaWaves = (c.arenaWaves + d + 11) % 11;
+                cy += rowH + 14 * s;
+                if (w::Button("arstart", cx, cy, cw, bh + 10 * s, TR("Начать арену", "Start the arena"), true, true, true)) arena::LobbyStart();
+                cy += bh + 16 * s;
+            } else {
+                para(TR("Хост выбирает следующую арену. Выберите персонажа справа.",
+                        "The host picks the next arena. Pick a character on the right."),
+                     kSaMuted, FONT_NORMAL, true);
+            }
+        }
         if (lobby) {  // the host starts the game for everyone, a partner says it is ready
             cy += 10 * s;
             int ready = 0;
@@ -697,8 +729,11 @@ void RenderConnectMenu() {
     if (online || busy) {
         if (item("leave", cx, by, online ? TR("Отключиться", "Disconnect") : TR("Отмена", "Cancel"))) flow::Leave();
     }
-    std::string close = online || busy || inGame ? TR("Закрыть", "Close") : TR("Одиночная игра", "Single player");
-    if (item("close", cx + cw - g.TextWidth(FONT_MENU, close), by, close)) SetConnectMenuVisible(false);
+    // closing it in the main menu ("Single player") is gone: F9 / Esc still close it
+    if (online || busy || inGame) {
+        std::string close = TR("Закрыть", "Close");
+        if (item("close", cx + cw - g.TextWidth(FONT_MENU, close), by, close)) SetConnectMenuVisible(false);
+    }
     g.Text(FONT_SMALL, cx, fy,
            TR("{ACCBF1}F9{8D9CAD}  окно     {ACCBF1}T{8D9CAD}  чат     {ACCBF1}B{8D9CAD}  голос     "
               "{ACCBF1}G{8D9CAD}  сесть пассажиром     {ACCBF1}F2{8D9CAD}  игроки",

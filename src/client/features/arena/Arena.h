@@ -25,7 +25,10 @@ int IncomingDamage(game::CEntity* creator, int weapon, int damage);
 
 // the interaction key (E; B builds a barricade): a barricade to repair, the mystery box, a perk machine; true when it was used here
 bool KeyDown(int vk, bool repeat);
-// the arena's game mode (F9: "Режим: Арена"): its choices for the menu
+// the arena's game mode (F9: "Режим: Арена"): its choices for the menu; after a lost arena everyone is in its lobby
+// (the F9 window): the host starts the next one from there
+bool InLobby();
+void LobbyStart();  // host
 int FactionCount();
 std::string FactionTitle(int i);
 int PlaceCount();
