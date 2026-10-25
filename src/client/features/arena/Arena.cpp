@@ -49,7 +49,9 @@
 #include "entities/player/Players.h"
 #include "entities/radar-icons/RadarIcons.h"
 #include "entities/stealth-knife/StealthKnife.h"
+#include "features/progress/SkinChoice.h"
 #include "features/revive/Revive.h"
+#include "entities/session/Flow.h"
 #include "shared/api/net-session/Session.h"
 #include "shared/config/Config.h"
 #include "shared/game/Challenge.h"
@@ -82,23 +84,23 @@ struct Faction {
     int models[4];
     int weapons[4][2];  // by wave: the first ones get the first, later ones better (one of two at each step)
     int boss[3];        // the bosses that fit (index into kBosses, -1: none)
-    bool medics;        // its squads have medics (Rifa, Ballas, the police, SWAT)
-    bool flamers;       // its waves bring a flamethrower man (Bikers, Vagos)
+    bool medics;        // its squads have medics (every faction now)
+    bool flamers;       // its waves bring a flamethrower man (every faction now)
 };
 // weapons: 22 pistol, 23 silenced, 24 desert eagle, 25 shotgun, 26 sawn-off, 27 combat shotgun, 28 uzi, 29 mp5,
 // 30 ak-47, 31 m4, 32 tec-9, 33 country rifle
 const Faction kFactions[] = {
-    {{TRP("якудза", "yakuza"), TRP("дананг", "danang")}, TRP("Якудза", "Yakuza"), {121, 122, 123, 186}, {{22, 23}, {28, 32}, {29, 26}, {30, 31}}, {7, -1, -1}, false, false},
-    {{TRP("баллас", "ballas"), TRP("балласы", "ballas")}, TRP("Баллас", "Ballas"), {102, 103, 104, 102}, {{22, 24}, {32, 28}, {25, 26}, {30, 29}}, {3, 4, 5}, true, false},
-    {{TRP("вагос", "vagos"), TRP("вагос", "vagos")}, TRP("Вагос", "Vagos"), {108, 109, 110, 108}, {{22, 24}, {32, 28}, {25, 26}, {30, 27}}, {3, 5, -1}, false, true},
-    {{TRP("ацтекас", "aztecas"), TRP("ацтеки", "aztecas")}, TRP("Ацтекас", "Aztecas"), {114, 115, 116, 114}, {{22, 24}, {28, 32}, {25, 26}, {30, 29}}, {6, -1, -1}, false, false},
-    {{TRP("триады", "triads"), TRP("триада", "triads")}, TRP("Триады", "Triads"), {117, 118, 120, 117}, {{22, 23}, {28, 32}, {29, 27}, {30, 31}}, {7, -1, -1}, false, false},
-    {{TRP("мафия", "mafia"), TRP("мафия", "mafia")}, TRP("Мафия", "Mafia"), {111, 112, 113, 111}, {{22, 24}, {29, 28}, {27, 25}, {30, 31}}, {8, 0, -1}, false, false},
-    {{TRP("рифа", "rifa"), TRP("рифа", "rifa")}, TRP("Сан-Фиеро Рифа", "San Fierro Rifa"), {173, 174, 175, 173}, {{22, 24}, {32, 28}, {25, 26}, {30, 29}}, {6, -1, -1}, true, false},
-    {{TRP("байкеры", "bikers"), TRP("байкеры", "bikers")}, TRP("Байкеры", "Bikers"), {247, 248, 254, 100}, {{22, 24}, {25, 26}, {30, 33}, {27, 30}}, {-1, -1, -1}, false, true},
-    {{TRP("полиция", "police"), TRP("копы", "cops")}, TRP("Полиция", "Police"), {280, 281, 282, 284}, {{22, 24}, {25, 29}, {29, 27}, {31, 27}}, {0, 1, 2}, true, false},
-    {{TRP("спецназ", "swat"), TRP("фбр", "fbi")}, TRP("Спецназ", "SWAT"), {285, 286, 285, 286}, {{29, 24}, {29, 27}, {31, 27}, {31, 29}}, {0, 1, 8}, true, false},
-    {{TRP("армия", "army"), TRP("военные", "army")}, TRP("Армия", "Army"), {287, 287, 287, 287}, {{29, 31}, {31, 30}, {31, 27}, {31, 33}}, {8, -1, -1}, false, false},
+    {{TRP("якудза", "yakuza"), TRP("дананг", "danang")}, TRP("Якудза", "Yakuza"), {121, 122, 123, 186}, {{22, 23}, {28, 32}, {29, 26}, {30, 31}}, {7, -1, -1}, true, true},
+    {{TRP("баллас", "ballas"), TRP("балласы", "ballas")}, TRP("Баллас", "Ballas"), {102, 103, 104, 102}, {{22, 24}, {32, 28}, {25, 26}, {30, 29}}, {3, 4, 5}, true, true},
+    {{TRP("вагос", "vagos"), TRP("вагос", "vagos")}, TRP("Вагос", "Vagos"), {108, 109, 110, 108}, {{22, 24}, {32, 28}, {25, 26}, {30, 27}}, {3, 5, -1}, true, true},
+    {{TRP("ацтекас", "aztecas"), TRP("ацтеки", "aztecas")}, TRP("Ацтекас", "Aztecas"), {114, 115, 116, 114}, {{22, 24}, {28, 32}, {25, 26}, {30, 29}}, {6, -1, -1}, true, true},
+    {{TRP("триады", "triads"), TRP("триада", "triads")}, TRP("Триады", "Triads"), {117, 118, 120, 117}, {{22, 23}, {28, 32}, {29, 27}, {30, 31}}, {7, -1, -1}, true, true},
+    {{TRP("мафия", "mafia"), TRP("мафия", "mafia")}, TRP("Мафия", "Mafia"), {111, 112, 113, 111}, {{22, 24}, {29, 28}, {27, 25}, {30, 31}}, {8, 0, -1}, true, true},
+    {{TRP("рифа", "rifa"), TRP("рифа", "rifa")}, TRP("Сан-Фиеро Рифа", "San Fierro Rifa"), {173, 174, 175, 173}, {{22, 24}, {32, 28}, {25, 26}, {30, 29}}, {6, -1, -1}, true, true},
+    {{TRP("байкеры", "bikers"), TRP("байкеры", "bikers")}, TRP("Байкеры", "Bikers"), {247, 248, 254, 100}, {{22, 24}, {25, 26}, {30, 33}, {27, 30}}, {-1, -1, -1}, true, true},
+    {{TRP("полиция", "police"), TRP("копы", "cops")}, TRP("Полиция", "Police"), {280, 281, 282, 284}, {{22, 24}, {25, 29}, {29, 27}, {31, 27}}, {0, 1, 2}, true, true},
+    {{TRP("спецназ", "swat"), TRP("фбр", "fbi")}, TRP("Спецназ", "SWAT"), {285, 286, 285, 286}, {{29, 24}, {29, 27}, {31, 27}, {31, 29}}, {0, 1, 8}, true, true},
+    {{TRP("армия", "army"), TRP("военные", "army")}, TRP("Армия", "Army"), {287, 287, 287, 287}, {{29, 31}, {31, 30}, {31, 27}, {31, 33}}, {8, -1, -1}, true, true},
 };
 struct Boss {
     const char* special;  // the special character's name
@@ -197,6 +199,11 @@ struct Arena {
 std::set<CPed*> g_enemies;  // the host's: this wave's (and the boss)
 CPed* g_bossPed = nullptr;
 CPed* g_twinPeds[2] = {nullptr, nullptr};  // the host's: the mini-boss of this wave
+std::vector<std::pair<int, uint8_t>> g_hiddenSaves;  // the save disks hidden meanwhile (HideSaves): the pickup, its type
+// a partner's: the Twins' copies (by index: Otto, Ernando) and their net ids till the copies are here
+std::vector<uint16_t> g_twinIds;  // by index: Otto, Ernando
+uint64_t g_twinIdsUntil = 0;
+CPed* g_twinCopies[2] = {nullptr, nullptr};
 std::vector<CPed*> g_flamers;              // the host's: this wave's flamethrower men
 
 // waves = 0: no end (the zombies' rounds): a boss every 5th wave, the Twins every 5th from the 3rd
@@ -1326,6 +1333,7 @@ struct BoxState {
     float heading = 0;
     int handle = -1;
     float lift = 0, height = 1.0f;
+    int handle2 = -1;  // the second crate of it
     int uses = 0;  // host: since it last moved
     bool rolling = false;
     uint64_t rollEnd = 0, moveAt = 0;
@@ -1335,11 +1343,33 @@ struct BoxState {
 } g_box;
 
 void PreloadBoxGuns();
+// The box is big: two crates side by side, each half as big again (CObject::m_fScale +0x15C): three crates wide and
+// one and a half high
 void ShowBox() {
     DelObj(g_box.handle);
+    DelObj(g_box.handle2);
     if (!g_box.placed) return;
     int model = PickModel({3014, 1271, 964});  // cr_guncrate, gunbox, CJ_METAL_CRATE
-    if (model >= 0) g_box.handle = MakeObj(model, g_box.pos, g_box.heading, g_box.lift, g_box.height);
+    if (model < 0) return;
+    constexpr float kScale = 1.5f;
+    float lift = 0, height = 1.0f;
+    ColOf(model, lift, height);
+    float width = 0.8f;
+    if (void* info = Ref<void*>(0xA9B0C8 + (uintptr_t)model * 4))
+        if (void* col = Field<void*>(info, 0x14)) width = std::clamp(Field<CVector>(col, 0x0C).x - Field<CVector>(col, 0x00).x, 0.3f, 3.0f);
+    float r = g_box.heading / 57.29578f;
+    CVector right{std::cos(r), std::sin(r), 0.0f};
+    for (int k = 0; k < 2; ++k) {
+        CVector at = g_box.pos + right * (width * kScale * 0.5f * (k ? 1.0f : -1.0f));
+        float l2 = 0, h2 = 0;
+        int h = MakeObj(model, at - CVector{0, 0, 0.0f}, g_box.heading, l2, h2);
+        if (h < 0) continue;
+        Cmd(0x01BC).I(h).F(at.x).F(at.y).F(at.z + lift * kScale).Run();  // SET_OBJECT_COORDINATES: on the floor, grown
+        if (CObject* o = GetObject(h)) Field<float>(o, 0x15C) = kScale;    // CObject::m_fScale
+        (k ? g_box.handle2 : g_box.handle) = h;
+    }
+    g_box.lift = lift * kScale;
+    g_box.height = height * kScale;
     PreloadBoxGuns();  // its weapons turn over it, without a hitch then
 }
 void SendBox() {
@@ -1411,6 +1441,7 @@ void UpdateBox(uint64_t now) {
             ui::TheChat().AddSystem(TR("В ящике плюшевый мишка! Очки вернулись, ящик переезжает.",
                                        "A teddy bear in the box! The points are back, the box moves."));
             DelObj(g_box.handle);
+            DelObj(g_box.handle2);
             if (g_arena.host) g_box.moveAt = now + 6000;
         } else if (mine) {
             const BoxGun& g = kBoxGuns[(size_t)g_box.gun % (sizeof(kBoxGuns) / sizeof(kBoxGuns[0]))];
@@ -1517,21 +1548,52 @@ void SendWalls() {
         }
     });
 }
-// a wall by a floor cell: the nearest of 8 rays at the chest; the gun 6 cm off it, along it
+// a wall by a floor cell: of 8 rays at the chest the nearest one that meets a building's wall (not an object, not a
+// door) standing upright and flat there (the rays 30 cm higher and lower meet it as far off); the gun 8 cm off it,
+// lying along it
+bool WallRay(const CVector& a, const CVector& b, CVector& at, CVector& normal) {
+    struct {
+        CVector point;
+        float c;
+        CVector normal;
+        uint8_t rest[0x2C - 0x1C];
+    } cp{};
+    CEntity* hit = nullptr;
+    bool struck = Call<0x56BA00, bool>(&a, &b, &cp, &hit, true, false, false, false, false, false, false, false);  // buildings only
+    if (struck) at = cp.point, normal = cp.normal;
+    return struck;
+}
 bool WallBy(const CVector& floor, Wall& out) {
     CVector chest = floor + CVector{0, 0, 1.3f};
-    float best = 1.7f;
+    float best = 1.6f;
     bool found = false;
     for (int k = 0; k < 8; ++k) {
         float a = 6.2831853f * (float)k / 8.0f;
-        CVector d{std::cos(a), std::sin(a), 0.0f}, hit;
-        if (!Ray(chest, chest + d * 1.7f, hit)) continue;
+        CVector d{std::cos(a), std::sin(a), 0.0f}, hit, n;
+        if (!WallRay(chest, chest + d * 1.6f, hit, n)) continue;
         float l = (hit - chest).Length();
-        if (l < 0.35f || l >= best) continue;
+        if (l < 0.35f || l >= best || std::fabs(n.z) > 0.25f) continue;  // a wall stands upright
+        if (d.x * n.x + d.y * n.y > -0.7f) continue;                    // and faces the cell
+        CVector h2, n2, h3, n3;
+        if (!WallRay(chest + CVector{0, 0, 0.3f}, chest + CVector{0, 0, 0.3f} + d * 1.6f, h2, n2) ||
+            !WallRay(chest - CVector{0, 0, 0.3f}, chest - CVector{0, 0, 0.3f} + d * 1.6f, h3, n3))
+            continue;
+        if (std::fabs((h2 - chest - CVector{0, 0, 0.3f}).Length() - l) > 0.12f || std::fabs((h3 - chest + CVector{0, 0, 0.3f}).Length() - l) > 0.12f)
+            continue;  // not flat there (a ledge, a frame, a gap)
+        // and as flat 40 cm to each side, so the gun lies on the wall and not over a corner
+        CVector side{-n.y, n.x, 0.0f};
+        CVector h4, n4, h5, n5;
+        if (!WallRay(chest + side * 0.4f, chest + side * 0.4f + d * 1.6f, h4, n4) ||
+            !WallRay(chest - side * 0.4f, chest - side * 0.4f + d * 1.6f, h5, n5))
+            continue;
+        if (std::fabs((h4 - hit).x * n.x + (h4 - hit).y * n.y) > 0.08f || std::fabs((h5 - hit).x * n.x + (h5 - hit).y * n.y) > 0.08f) continue;
         best = l;
-        out.pos = hit - d * 0.06f;
+        CVector flatN{n.x, n.y, 0.0f};
+        float nl = std::max(0.01f, flatN.Length());
+        flatN = flatN * (1.0f / nl);
+        out.pos = hit + flatN * 0.08f;
         out.stand = floor;
-        out.heading = std::atan2(-d.x, d.y) * 57.29578f + 90.0f;  // lying along the wall
+        out.heading = std::atan2(-flatN.x, flatN.y) * 57.29578f + 90.0f;  // lying along the wall
         found = true;
     }
     return found;
@@ -1628,18 +1690,21 @@ void ApplyDrop(uint8_t type, uint8_t by) {
     std::string who = by == Net().MyId() || !Net().Online() ? std::string(TR("Вы", "You")) : Net().PeerName(by);
     ui::TheChat().AddSystem(Format(TR("%s: %s — для всех!", "%s: %s for everyone!"), who.c_str(), DropName(type)));
     if (!me || me->Health() <= 0.0f || !arena::On()) return;
+    int current = me->ActiveWeapon().type;
     if (type == D_HEALTH) {
         me->Health() = std::max(me->Health(), (float)std::max<int>(PlayerInfos()[0].maxHealth, 100));
         return;
     }
+    // every gun it has gets a full load more (GIVE_WEAPON_TO_CHAR adds to what it has), and it keeps the one in hand
     for (int k = 0; k < NUM_WEAPON_SLOTS; ++k) {
         CWeapon& w = me->Weapons()[k];
         if (w.type < 16 || w.type > 38) continue;  // no melee, no cameras or sprays
         int clip = 0;
         if (void* info = Call<0x743C60, void*>(w.type, (uint8_t)1)) clip = Field<int16_t>(info, 0x20);  // m_nAmmoClip
         int full = w.type <= 18 ? 8 : w.type == 35 || w.type == 36 ? 10 : w.type == 37 ? 500 : w.type == 38 ? 500 : std::max(30, clip * 8);
-        w.ammoTotal = std::max(w.ammoTotal, full);
+        if (w.ammoTotal < 9000) Cmd(0x01B2).I(GetPedRef(me)).I(w.type).I(full).Run();  // GIVE_WEAPON_TO_CHAR: that much more
     }
+    Cmd(0x01B9).I(GetPedRef(me)).I(current).Run();  // SET_CURRENT_CHAR_WEAPON: the one it held
 }
 void TakeDrop(uint8_t id, uint8_t by) {  // host
     for (size_t i = 0; i < g_drops.size(); ++i)
@@ -1687,7 +1752,7 @@ void ClearDrops() {
     g_drops.clear();
 }
 
-// ---- barricades the players build: B with 300 points puts one up in front of the player (12 in all at most)
+// ---- barricades the players build: H with 300 (B is the voice) points puts one up in front of the player (12 in all at most)
 constexpr int kBuildCost = 300, kMaxBars = 12;
 void BuildBar(const CVector& at, float heading, uint8_t by) {  // host
     if ((int)g_bars.size() >= kMaxBars) return;
@@ -1859,7 +1924,7 @@ void FindNear() {
     }
     if (g_box.placed && g_box.handle >= 0 && !g_box.moveAt) {
         CVector d = g_box.pos - at;
-        if (d.Length2D() < 2.2f && std::fabs(d.z) < 2.0f && d.Length2D() < best) g_nearKind = N_BOX, g_nearIdx = 0;
+        if (d.Length2D() < 2.8f && std::fabs(d.z) < 2.0f && d.Length2D() < best) g_nearKind = N_BOX, g_nearIdx = 0;
     }
 }
 
@@ -1889,6 +1954,7 @@ void ResetCod() {
     ClearBars();
     g_box.placed = false;
     DelObj(g_box.handle);
+    DelObj(g_box.handle2);
     g_box = BoxState{};
     DelObj(g_spinHandle);
     g_spinModel = -1;
@@ -1904,25 +1970,16 @@ void ResetCod() {
     g_repairedThisWave = 0;
 }
 
-// ---- the Twins' desert eagles: two pistols in two hands (the pistol's "pro" skill: the game's own dual pistols) that
-// look like desert eagles and hit as hard. While an arena is on, the pistol's pro skill shows the eagle's model
-// (CWeaponInfo::m_nModelId1, +0x0C: only the model, nothing of how it is held or fired), and the hits of an enemy with
-// two pistols are as an eagle's (IncomingDamage). Before, the eagle itself took the twin pistols' animations and flags:
-// that crashed the game.
-int g_coltProModel = -1;
-void TwinEagles(bool on) {
-    auto* colt = Call<0x743C60, uint8_t*>(WEAPON_PISTOL, (uint8_t)2);  // CWeaponInfo::GetWeaponInfo, pro
-    if (!colt) return;
-    int32_t& model = Ref<int32_t>((uintptr_t)colt + 0x0C);
-    if (on && g_coltProModel < 0) {
-        if (!LoadModelNow(348)) return;  // the desert eagle's model
-        g_coltProModel = model;
-        model = 348;
-    } else if (!on && g_coltProModel >= 0) {
-        model = g_coltProModel;
-        g_coltProModel = -1;
-    }
+// ---- the Twins: Otto with two sawn-offs, Ernando with two "eagles" (two pistols at the pro skill: the game's own dual
+// pistols; the model in his hands is the desert eagle's, put on him each frame: CPed::AddWeaponModel, m_nWeaponModelId
+// +0x740), each shot as hard as an eagle's (IncomingDamage)
+void EagleModel(CPed* p) {
+    if (!p || !IsPedValid(p) || p->Health() <= 0.0f || p->ActiveWeapon().type != WEAPON_PISTOL) return;
+    if (Field<int32_t>(p, 0x740) == 348) return;
+    if (!IsModelLoaded(348) && !LoadModelNow(348)) return;
+    CallMethod<0x5E5ED0>(p, 348);  // CPed::AddWeaponModel
 }
+const char* TwinName(int k) { return k == 0 ? TR("Отто", "Otto") : TR("Эрнандо", "Ernando"); }
 
 // the new kinds of enemies (armed men of the gang or the force, as the others)
 // A medic (Rifa, Ballas, the police, SWAT): heals by 20% every one of its own within 5 m, runs to the fallen and the
@@ -1981,8 +2038,8 @@ void MakeTwins(int wave) {
             w.U16(np ? np->netId : 0);
         }
     });
-    ui::TheChat().AddSystem(TR("Мини-босс: Близнецы! Один с двумя обрезами, другой с двумя диглами.",
-                               "A mini-boss: the Twins! One with two sawn-offs, the other with two desert eagles."));
+    ui::TheChat().AddSystem(TR("Мини-босс: Близнецы! Отто с двумя обрезами и Эрнандо с двумя диглами.",
+                               "A mini-boss: the Twins! Otto with two sawn-offs and Ernando with two desert eagles."));
 }
 
 void SpawnWave() {
@@ -2789,11 +2846,12 @@ void Clear() {
     g_squads.clear();
     g_bossPed = nullptr;
     g_twinPeds[0] = g_twinPeds[1] = nullptr;
+    g_twinCopies[0] = g_twinCopies[1] = nullptr;
+    g_twinIds.clear();
     g_flamers.clear();
     g_toRaise.clear();
     RemoveItems();
     ResetCod();
-    TwinEagles(false);
     SetMarks({});
     if (g_arena.boss >= 0) UnloadBoss();
     if (g_knifeModel >= 0) Cmd(0x0296).I(kKnifeSlot).Run();  // UNLOAD_SPECIAL_CHARACTER
@@ -2802,11 +2860,13 @@ void Clear() {
     for (int k = 0; k < 16; ++k) radar::RemoveIcon(9700 + k);
 }
 
+void HideSaves(bool hide);
 void End(bool tell) {
     if (!g_arena.on) return;
     if (tell && g_arena.host) Send(A_END, [](Writer& w) { w.U8(g_arena.won); });
     Clear();
     bool was = g_arena.taken;
+    HideSaves(false);
     ShutDoors(false);
     TakeBack();
     if (CPlayerPed* me = FindPlayerPed(0); me && was) me->Armour() = 0.0f;  // the armour of the battle stays there
@@ -2825,7 +2885,6 @@ void Start(int faction, int place, int waves) {
     g_arena.startMs = NowMs();
     g_arena.nextWaveMs = NowMs() + PrepMs(true);
     ResetCod();
-    TwinEagles(true);
     game::challenge::Begin();
     TakeIn();
     g_lastSpawns.clear(), g_spawnsNow.clear(), g_lastItemsAt.clear();
@@ -2843,26 +2902,27 @@ void Start(int faction, int place, int waves) {
                                       "Points: %d. Hits and kills give points; E at a barricade nails a board on (+10), "
                                       "E at the weapon box: a random weapon for %d."),
                                    kStartPoints, kBoxCost));
-    ui::TheChat().AddSystem(Format(TR("B — построить баррикаду перед собой (%d очков), E у оружия на стене — купить его.",
-                                      "B builds a barricade in front of you (%d points), E at a gun on a wall buys it."), kBuildCost));
+    ui::TheChat().AddSystem(Format(TR("H — построить баррикаду перед собой (%d очков), E у оружия на стене — купить его.",
+                                      "H builds a barricade in front of you (%d points), E at a gun on a wall buys it."), kBuildCost));
 }
 
 void Skip(uint8_t by);
 // a partner's game: the Twins' copies, to be given their weapon skill once they are here (they come a moment later)
-std::vector<uint16_t> g_twinIds;
-uint64_t g_twinIdsUntil = 0;
 void TwinCopies() {
-    if (g_twinIds.empty()) return;
-    for (auto it = g_twinIds.begin(); it != g_twinIds.end();) {
-        int h = Peds::Instance().HandleOf(*it);
-        if (h >= 0) {
-            Cmd(0x081A).I(h).I(2).Run();  // SET_CHAR_WEAPON_SKILL pro: its copy holds two guns too
-            it = g_twinIds.erase(it);
-        } else {
-            ++it;
+    for (size_t k = 0; k < g_twinIds.size() && k < 2; ++k) {
+        if (!g_twinIds[k]) continue;
+        int h = Peds::Instance().HandleOf(g_twinIds[k]);
+        if (h < 0) {
+            if (NowMs() > g_twinIdsUntil) g_twinIds[k] = 0;
+            continue;
         }
+        Cmd(0x081A).I(h).I(2).Run();  // SET_CHAR_WEAPON_SKILL pro: its copy holds two guns too
+        g_twinCopies[k] = GetPed(h);
+        g_twinIds[k] = 0;
     }
-    if (NowMs() > g_twinIdsUntil) g_twinIds.clear();
+    for (CPed*& p : g_twinCopies)
+        if (p && !IsPedValid(p)) p = nullptr;
+    EagleModel(g_arena.host ? g_twinPeds[1] : g_twinCopies[1]);
 }
 
 void Handle(uint8_t from, Reader& r) {
@@ -3009,9 +3069,10 @@ void Handle(uint8_t from, Reader& r) {
         if (r.Ok() && gun < sizeof(kBoxGuns) / sizeof(kBoxGuns[0])) StartRoll(by, gun, teddy != 0);
     } else if (op == A_TWINS) {
         g_twinIds.clear();
+        g_twinCopies[0] = g_twinCopies[1] = nullptr;
         for (int k = 0; k < 2; ++k) {
             uint16_t id = r.U16();
-            if (r.Ok() && id) g_twinIds.push_back(id);
+            g_twinIds.push_back(r.Ok() ? id : 0);
         }
         g_twinIdsUntil = NowMs() + 15000;
     } else if (op == A_END) {
@@ -3034,9 +3095,36 @@ void ShortFires() {
     }
 }
 
+// The houses' save disks (their pickups) are gone while an arena is on: no 3D disk, no saving in the middle of a
+// battle. CPickups::aPickUps (620 x 0x20): m_pObject +0x04, m_nModelIndex +0x18, m_nPickupType +0x1C; the disk's model
+// is MI_PICKUP_SAVEGAME. Hidden ones get PICKUP_NONE and an invisible object, put back as they were afterwards.
+void HideSaves(bool hide) {
+    constexpr uintptr_t kPickups = 0x9788C0;
+    int16_t saveModel = Ref<int16_t>(0x8CD5E4);
+    if (!hide) {
+        for (auto& [i, type] : g_hiddenSaves) {
+            uintptr_t pk = kPickups + (uintptr_t)i * 0x20;
+            Ref<uint8_t>(pk + 0x1C) = type;
+            if (auto* o = Ref<CEntity*>(pk + 0x04)) o->Flags() |= 0x80;  // bIsVisible
+        }
+        g_hiddenSaves.clear();
+        return;
+    }
+    if (saveModel <= 0) return;
+    for (int i = 0; i < 620; ++i) {
+        uintptr_t pk = kPickups + (uintptr_t)i * 0x20;
+        if (Ref<int16_t>(pk + 0x18) != saveModel || Ref<uint8_t>(pk + 0x1C) == 0) continue;
+        g_hiddenSaves.push_back({i, Ref<uint8_t>(pk + 0x1C)});
+        Ref<uint8_t>(pk + 0x1C) = 0;  // PICKUP_NONE
+        if (auto* o = Ref<CEntity*>(pk + 0x04)) o->Flags() &= ~0x80u;
+    }
+}
+
 void Update() {
     uint64_t now = NowMs();
     ShortFires();
+    static uint64_t savesMs = 0;
+    if (now - savesMs > 1000) savesMs = now, HideSaves(true);
     game::challenge::Tick();
     if (g_arena.endAt) {
         if (now >= g_arena.endAt) End(false);
@@ -3068,7 +3156,7 @@ void Update() {
     if (!g_gridDone && now - g_arena.startMs > 1500) GridStep();
     if (!g_placed && (g_gridDone || now - g_arena.startMs > 6000)) {
         g_placed = true;
-        ClearBars();  // no barricades of the mod's own: the players build them (B), the host keeps its own (/arena баррикада)
+        ClearBars();  // no barricades of the mod's own: the players build them (H), the host keeps its own (/arena баррикада)
         PlaceBox();
         bool own = LoadSpots();  // the host's own spots for this place (/arena ящик, баррикада, стена)
         if (g_walls.empty()) PlaceWalls(kPlaces[g_arena.place].big ? 5 : 3);
@@ -3212,6 +3300,11 @@ void DrawCod() {
         Label(b.pos + CVector{0, 0, 1.6f}, Format(TR("Баррикада [%s]", "Barricade [%s]"), pips.c_str()),
               b.boards ? 0xFFE0C080 : 0xFFFF5050, 12.0f);
     }
+    for (int k = 0; k < 2; ++k) {
+        CPed* tw = g_arena.host ? g_twinPeds[k] : g_twinCopies[k];
+        if (tw && IsPedValid(tw) && tw->Health() > 0.0f)
+            Label(tw->GetPosition() + CVector{0, 0, 1.25f}, TwinName(k), 0xFFFFA040, 20.0f);
+    }
     for (const Wall& w : g_walls) {
         const WallGun& g = kWallGuns[(size_t)w.gun];
         Label(w.pos + CVector{0, 0, 0.35f}, Format("%s · %d", WeaponName(g.weapon), g.price), 0xFFB0FFB0, 15.0f);
@@ -3229,6 +3322,51 @@ void DrawCod() {
     }
 }
 
+// the host starts one (the command, or the arena's game mode): every game hears of it
+void Launch(int faction, int place, int waves) {
+    Send(A_START, [&](Writer& w) {
+        w.U8((uint8_t)faction);
+        w.U8((uint8_t)place);
+        w.U8((uint8_t)waves);
+    });
+    Start(faction, place, waves);
+    LOGI("Arena started: faction %d, place %d, %d waves", faction, place, waves);
+}
+
+// The arena's game mode (F9: "Режим: Арена"): once the host's game is up (out of the lobby), an arena with the chosen
+// enemies, place and waves starts by itself after 15 s, and the next one 20 s after each ends. The host plays the
+// character it picked in the lobby too (the partners get theirs as always).
+uint64_t g_modeReadyMs = 0, g_modeNextMs = 0;
+bool g_modeSkinDone = false;
+void GameMode() {
+    if (Cfg().gameMode != 2 || !Net().Online() || !Net().IsHost() || !core::IsPlayerReady() || flow::InLobby()) {
+        g_modeReadyMs = 0;
+        return;
+    }
+    uint64_t now = NowMs();
+    if (!g_modeReadyMs) {
+        g_modeReadyMs = now;
+        g_modeNextMs = now + 15000;
+        ui::TheChat().AddSystem(TR("Режим «Арена»: бой начнётся через 15 секунд.", "The arena mode: the battle begins in 15 seconds."));
+    }
+    if (!g_modeSkinDone && skin::Picked()) {
+        g_modeSkinDone = true;
+        int count = 0;
+        const skin::Choice* list = skin::Choices(count);
+        int k = std::clamp(skin::ChosenIndex(), 0, count - 1);
+        if (list[k].model) skin::Wear(list[k].model);
+    }
+    if (g_arena.on) {
+        g_modeNextMs = now + 20000;  // the next one 20 s after this one is over
+        return;
+    }
+    CPlayerPed* me = FindPlayerPed(0);
+    if (now < g_modeNextMs || !me || me->Health() <= 0.0f || PlayerInfos()[0].playerState != 0) return;
+    int faction = std::clamp(Cfg().arenaFaction, 0, kFactionCount - 1);
+    int place = Cfg().arenaPlace >= 0 && Cfg().arenaPlace < kPlaceCount ? Cfg().arenaPlace : RandInt(0, kPlaceCount - 1);
+    Launch(faction, place, std::clamp(Cfg().arenaWaves, 0, 10));
+}
+
 class ArenaModule : public Module {
 public:
     const char* Name() const override { return "Arena"; }
@@ -3243,15 +3381,21 @@ public:
         g_flamers.clear();
         g_toRaise.clear();
         g_bars.clear();  // their objects went with the game
+        g_walls.clear();
+        g_drops.clear();
+        g_hiddenSaves.clear();
+        g_spinHandle = -1;
         g_box = BoxState{};
-        TwinEagles(false);
-        g_arena = Arena{};
+            g_arena = Arena{};
     }
     void OnSessionEnd() override {
+        g_modeReadyMs = 0;
+        g_modeSkinDone = false;
         if (g_arena.on) End(false);
     }
     void OnPostProcess() override {
         if (g_arena.on && core::IsPlayerReady()) Update();
+        GameMode();
     }
     void OnRender() override {
         if (!g_arena.on || MenuActive()) return;
@@ -3277,7 +3421,7 @@ public:
         }
         if (g_arena.host && (g_twinPeds[0] || g_twinPeds[1]) && !g_arena.endAt) {
             std::string tw = TR("БЛИЗНЕЦЫ", "THE TWINS");
-            tw += Format(TR(" · обрезы%s · диглы%s", " · sawn-offs%s · eagles%s"), hp(g_twinPeds[0]).c_str(), hp(g_twinPeds[1]).c_str());
+            tw += Format(" · %s%s · %s%s", TwinName(0), hp(g_twinPeds[0]).c_str(), TwinName(1), hp(g_twinPeds[1]).c_str());
             g.Text(ui::FONT_SMALL, g.Width() * 0.5f, y, tw, 0xFFFFA040, ui::TEXT_CENTER | ui::TEXT_OUTLINE);
             y += g.LineHeight(ui::FONT_SMALL);
         }
@@ -3364,13 +3508,7 @@ public:
             return true;
         }
         if (place < 0) place = RandInt(0, kPlaceCount - 1);
-        Send(A_START, [&](Writer& w) {
-            w.U8((uint8_t)faction);
-            w.U8((uint8_t)place);
-            w.U8((uint8_t)waves);
-        });
-        Start(faction, place, waves);
-        LOGI("Arena started: faction %d, place %d, %d waves", faction, place, waves);
+        Launch(faction, place, waves);
         return true;
     }
 };
@@ -3432,10 +3570,15 @@ void OnLocalKill(CPed* victim, int weapon, bool headshot) {
     AddPoints(pts, headshot ? 0xFFFF8040 : 0xFFFFE060);
 }
 
+int FactionCount() { return kFactionCount; }
+std::string FactionTitle(int i) { return i >= 0 && i < kFactionCount ? FactionName(i) : std::string("?"); }
+int PlaceCount() { return kPlaceCount; }
+std::string PlaceTitle(int i) { return i >= 0 && i < kPlaceCount ? PlaceName(i) : std::string(TR("любое", "any")); }
+
 bool KeyDown(int vk, bool repeat) {
     std::string hint;
     if (!On() || !ReviveText(hint).empty()) return false;
-    if (vk == 'B') return !repeat && TryBuild();
+    if (vk == 'H') return !repeat && TryBuild();
     if (g_nearKind == N_NONE) return false;
     uint64_t now = NowMs();
     if (g_nearKind == N_BAR) {

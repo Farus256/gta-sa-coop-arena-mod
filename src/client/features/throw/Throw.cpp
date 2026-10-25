@@ -18,6 +18,7 @@
 #include "shared/game/Game.h"
 #include "shared/game/Script.h"
 #include "shared/lib/core/Core.h"
+#include "shared/lib/memory/Memory.h"
 #include "shared/ui/chat/Chat.h"
 #include "shared/ui/renderer/Renderer.h"
 
@@ -226,9 +227,33 @@ bool WallBetween(const CVector& a, const CVector& b) {
     return !Call<0x56A490, bool>(&a, &b, true, false, false, false, false, false, false);  // GetIsLineOfSightClear: buildings
 }
 
+// CWorld::TriggerExplosion(point, radius, visible distance, victim, creator, bomb timer, damage): a blast pushes and
+// hurts everything in its radius itself (CEventDamage, not through CWeapon::GenerateDamageEvent), walls or not. This
+// game's player behind a wall or a floor from the blast point (at its chest and at its head) is explosion-proof while
+// that blast is worked out: no damage, no throw.
+using TriggerFn = void(__cdecl*)(const CVector&, float, float, CEntity*, CEntity*, bool, float);
+TriggerFn g_origTrigger = nullptr;
+void __cdecl HookTriggerExplosion(const CVector& point, float radius, float visible, CEntity* victim, CEntity* creator, bool bomb,
+                                  float damage) {
+    CPlayerPed* me = core::IsPlayerReady() ? FindPlayerPed(0) : nullptr;
+    bool shield = false;
+    if (me && me->Health() > 0.0f && !me->InVehicle() && (me->GetPosition() - point).Length() < radius + 2.0f &&
+        !(me->PhysicalFlags() & CPhysical::PF_EXPLOSION_PROOF)) {
+        CVector from = point + CVector{0, 0, 0.3f}, body = me->GetPosition();
+        shield = WallBetween(from, body + CVector{0, 0, 0.3f}) && WallBetween(from, body + CVector{0, 0, 0.7f}) &&
+                 WallBetween(from, body - CVector{0, 0, 0.4f});
+    }
+    if (shield) me->PhysicalFlags() |= CPhysical::PF_EXPLOSION_PROOF;
+    g_origTrigger(point, radius, visible, victim, creator, bomb, damage);
+    if (shield) me->PhysicalFlags() &= ~CPhysical::PF_EXPLOSION_PROOF;
+}
+
 class ThrowModule : public Module {
 public:
     const char* Name() const override { return "Throw"; }
+    void OnInstallHooks() override {
+        mem::HookFn(0x56B790, &HookTriggerExplosion, &g_origTrigger, "CWorld::TriggerExplosion");
+    }
     void OnPreProcess() override {
         if (core::IsPlayerReady()) TrackProjectiles();
     }

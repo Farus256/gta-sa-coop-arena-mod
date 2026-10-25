@@ -23,6 +23,13 @@ const Choice kChoices[] = {
     {105, TRP("Боец Grove Street 1", "Grove Street homie 1"), 0xFF2E8B3E, 0xFF2B2B2B, 0xFF2E8B3E, TOP_TEE, HEAD_CAP, 0xFFE8E8E8},
     {106, TRP("Боец Grove Street 2", "Grove Street homie 2"), 0xFF3FA34D, 0xFF5A4630, 0xFF1F5F2A, TOP_LONG, HEAD_BANDANA, 0xFF202020},
     {107, TRP("Боец Grove Street 3", "Grove Street homie 3"), 0xFF1E6B2E, 0xFF3A3A3A, 0xFF151515, TOP_TEE, HEAD_HAIR, 0xFFD8D8D8},
+    // more for the arena's game mode (and anyone who likes): a man of another gang or of the force
+    {102, TRP("Боец Баллас", "Ballas member"), 0xFF7A3FA0, 0xFF2B2B2B, 0xFF5A2A7A, TOP_TEE, HEAD_CAP, 0xFFE8E8E8},
+    {108, TRP("Боец Вагос", "Vagos member"), 0xFFE8C030, 0xFF3A3A3A, 0xFFE8C030, TOP_TEE, HEAD_BANDANA, 0xFF202020},
+    {115, TRP("Боец Ацтекас", "Aztecas member"), 0xFF30B8C8, 0xFF2B3A5A, 0xFF30B8C8, TOP_TANK, HEAD_BANDANA, 0xFF202020},
+    {280, TRP("Полицейский", "Police officer"), 0xFF2A3A6A, 0xFF1A2040, 0xFF1A2040, TOP_LONG, HEAD_CAP, 0xFF101010},
+    {285, TRP("Боец спецназа", "SWAT officer"), 0xFF202428, 0xFF202428, 0xFF202428, TOP_LONG, HEAD_CAP, 0xFF101010},
+    {287, TRP("Солдат", "Soldier"), 0xFF4A5A30, 0xFF4A5A30, 0xFF3A4A28, TOP_LONG, HEAD_CAP, 0xFF2A2018},
 };
 bool g_profileKnown = false, g_newcomer = false, g_picked = false;
 int g_choice = 0;

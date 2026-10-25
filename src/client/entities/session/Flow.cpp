@@ -334,6 +334,9 @@ void SaveConnectSettings() {
     ini.SetInt("connect", "no_cheats", cfg.noCheats);
     ini.SetInt("connect", "max_players", cfg.maxPlayers);
     ini.SetInt("connect", "game_mode", cfg.gameMode);
+    ini.SetInt("connect", "arena_enemies", cfg.arenaFaction);
+    ini.SetInt("connect", "arena_place", cfg.arenaPlace);
+    ini.SetInt("connect", "arena_waves", cfg.arenaWaves);
     ini.Save(cfg.iniPath);
 }
 

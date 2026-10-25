@@ -25,6 +25,12 @@ int IncomingDamage(game::CEntity* creator, int weapon, int damage);
 
 // the interaction key (E; B builds a barricade): a barricade to repair, the mystery box, a perk machine; true when it was used here
 bool KeyDown(int vk, bool repeat);
+// the arena's game mode (F9: "Режим: Арена"): its choices for the menu
+int FactionCount();
+std::string FactionTitle(int i);
+int PlaceCount();
+std::string PlaceTitle(int i);  // -1: any
+
 // the box in the middle of the screen: what can be done here ("E — починить баррикаду (+10)"); empty: nothing
 std::string PromptText(std::string& hint);
 

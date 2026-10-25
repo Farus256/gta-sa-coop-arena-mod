@@ -7,6 +7,7 @@
 
 #include "common/config/version/Version.h"
 #include "common/lib/util/Util.h"
+#include "features/arena/Arena.h"
 #include "entities/gang-mode/GangMode.h"
 #include "entities/session/Flow.h"
 #include "features/progress/SkinChoice.h"
@@ -602,8 +603,10 @@ void RenderConnectMenu() {
             cy += ch + 6 * s;
             int& mode = Cfg().gameMode;
             if (!inGame) {
-                int d = w::Selector("mode", cx, cy, mw, rowH, mode == 1 ? TR("Война банд: ЛС", "Gang war: LS") : TR("Сюжет", "The story"));
-                if (d) mode = 1 - mode;
+                const char* modeName = mode == 1 ? TR("Война банд: ЛС", "Gang war: LS") : mode == 2 ? TR("Арена", "The arena")
+                                                                                                : TR("Сюжет", "The story");
+                int d = w::Selector("mode", cx, cy, mw, rowH, modeName);
+                if (d) mode = (mode + d + 3) % 3;
             }
             float sx = cx + mw + gap, sw = cw - mw - gap;
             if (inGame || mode == 1) {
@@ -619,6 +622,24 @@ void RenderConnectMenu() {
             if (inGame) mode = 0;  // hosted from inside a game: the story goes on
         }
         cy += rowH + 14 * s;
+        if (g_tab == 1 && Cfg().gameMode == 2) {
+            // the arena's game mode: the enemies, the place, the waves (each arena after the last one, in that save's world)
+            auto& c = Cfg();
+            int fc = arena::FactionCount(), pc = arena::PlaceCount();
+            c.arenaFaction = std::clamp(c.arenaFaction, 0, fc - 1);
+            c.arenaPlace = std::clamp(c.arenaPlace, -1, pc - 1);
+            float third = (cw - 28 * s) / 3.0f;
+            caption(cx, TR("Враги", "Enemies"));
+            caption(cx + third + 14 * s, TR("Место", "Place"));
+            caption(cx + (third + 14 * s) * 2, TR("Волны", "Waves"));
+            cy += ch + 6 * s;
+            if (int d = w::Selector("arfac", cx, cy, third, rowH, arena::FactionTitle(c.arenaFaction))) c.arenaFaction = (c.arenaFaction + d + fc) % fc;
+            if (int d = w::Selector("arplace", cx + third + 14 * s, cy, third, rowH, arena::PlaceTitle(c.arenaPlace)))
+                c.arenaPlace = (c.arenaPlace + 1 + d + pc + 1) % (pc + 1) - 1;  // -1 (any) .. the last
+            std::string wv = c.arenaWaves ? Format("%d", c.arenaWaves) : std::string(TR("без конца", "no end"));
+            if (int d = w::Selector("arwaves", cx + (third + 14 * s) * 2, cy, third, rowH, wv)) c.arenaWaves = (c.arenaWaves + d + 11) % 11;
+            cy += rowH + 14 * s;
+        }
 
         caption(cx, TR("Порт", "Port"));
         caption(cx + 170 * s, TR("Пароль", "Password"));
@@ -657,6 +678,10 @@ void RenderConnectMenu() {
                  kSaMuted, FONT_SMALL, true);
         else if (g_tab == 1 && !inGame && !hostSlot)
             para(TR("В этом слоте нет сохранения.", "This slot has no save."), kSaMuted, FONT_SMALL, true);
+        else if (g_tab == 1 && !inGame && Cfg().gameMode == 2)
+            para(TR("Как соберётесь, арена начнётся сама и пойдёт раз за разом. Персонажа каждый выберет в лобби.",
+                    "Once everyone is in, the arena starts by itself, one after another. Each picks a character in the lobby."),
+                 kSaMuted, FONT_SMALL, true);
         else if (g_tab == 1 && !inGame && Cfg().gameMode == 1)
             para(TR("Все начнут новую игру без сюжета и пролога. Банду каждый выберет в лобби.",
                     "Everyone starts a new game with no story and no prologue. Each picks a gang in the lobby."),

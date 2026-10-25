@@ -19,7 +19,9 @@ struct ClientConfig {
     bool friendlyFire = false;  // host: the players can hurt each other
     bool noCheats = false;      // host: no cheat codes in its game (for everyone, itself too)
     int maxPlayers = 4;         // host: places on its server, itself included (2..16)
-    int gameMode = 0;           // host: 0 the story, 1 the gang war of Los Santos (a new game for everyone)
+    int gameMode = 0;           // host: 0 the story, 1 the gang war of Los Santos (a new game for everyone), 2 the arena
+    // host, the arena's game mode: the enemies, the place (-1: any), the waves (0: no end); one after another
+    int arenaFaction = 1, arenaPlace = -1, arenaWaves = 5;
 
     // [game]
     bool windowed = false;
