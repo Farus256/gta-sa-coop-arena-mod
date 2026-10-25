@@ -178,7 +178,7 @@ bool __cdecl HookGenerateDamageEvent(CPed* victim, CEntity* creator, int weapon,
     if (victim && victim == FindPlayerPed(0) && core::IsPlayerReady()) {
         bool blast = weapon == WEAPON_EXPLOSION || weapon == 16 || weapon == 19 || weapon == 20 || weapon == 39;
         if (blast && ExplosionBehindWall(victim)) return true;  // a grenade on the other side of a wall: dropped
-        damage = arena::IncomingDamage(weapon, damage);
+        damage = arena::IncomingDamage(creator, weapon, damage);
     }
     if (Net().Online() && victim && core::IsPlayerReady()) {
         // a copy dies of the hit that killed it in its owner's game: the game picks its fall (Peds::ApplyMirror)

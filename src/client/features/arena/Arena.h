@@ -5,6 +5,7 @@
 
 namespace game {
 struct CPed;
+struct CEntity;
 }
 
 namespace coop::arena {
@@ -20,7 +21,7 @@ void OnLocalHit(game::CPed* victim, int weapon, int damage, int piece);
 void OnLocalKill(game::CPed* victim, int weapon, bool headshot);
 
 // the damage that comes to this player: the flamethrower's fire weaker in the arena
-int IncomingDamage(int weapon, int damage);
+int IncomingDamage(game::CEntity* creator, int weapon, int damage);
 
 // the interaction key (E; B builds a barricade): a barricade to repair, the mystery box, a perk machine; true when it was used here
 bool KeyDown(int vk, bool repeat);

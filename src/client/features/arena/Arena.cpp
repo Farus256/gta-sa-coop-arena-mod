@@ -132,7 +132,6 @@ const Place kPlaces[] = {
     {{TRP("особняк", "mansion"), TRP("мэддогг", "mansion")}, TRP("Особняк Мэдд Догга", "Madd Dogg's mansion"), 5, {1267.66f, -781.32f, 1091.91f}, 18.0f, true, false},
     {{TRP("мясокомбинат", "meat"), TRP("бойня", "meat")}, TRP("Мясокомбинат", "The meat factory"), 1, {963.42f, 2108.29f, 1011.03f}, 16.0f, true, false},
     {{TRP("мотель", "motel"), TRP("джефферсон", "motel")}, TRP("Мотель «Джефферсон»", "The Jefferson motel"), 15, {2215.45f, -1147.48f, 1025.80f}, 20.0f, true, true},
-    {{TRP("атриум", "atrium"), TRP("атриум", "atrium")}, TRP("Атриум", "The atrium"), 18, {1710.43f, -1669.38f, 20.23f}, 14.0f, false, true},
     {{TRP("либерти", "liberty"), TRP("бистро", "liberty")}, TRP("Либерти-Сити (бистро Марко)", "Liberty City (Marco's bistro)"), 1, {-794.81f, 497.74f, 1376.20f}, 14.0f, false, false},
     {{TRP("полиция", "police"), TRP("участок", "police")}, TRP("Полицейский участок", "The police station"), 6, {246.78f, 63.90f, 1003.64f}, 14.0f, false, true},
     {{TRP("дамба", "dam"), TRP("шерман", "dam")}, TRP("Дамба Шерман", "The Sherman dam"), 17, {-959.56f, 1848.58f, 9.00f}, 30.0f, true, false},
@@ -527,7 +526,7 @@ float AngleDiff(float a, float b) {
 }
 
 // ---------------------------------------------------------------- the enemies
-constexpr int WEAPON_KNIFE = 4, WEAPON_GRENADE = 16, WEAPON_MOLOTOV = 18, WEAPON_PISTOL = 22, WEAPON_DEAGLE = 24,
+constexpr int WEAPON_KNIFE = 4, WEAPON_GRENADE = 16, WEAPON_MOLOTOV = 18, WEAPON_PISTOL = 22,
               WEAPON_SAWNOFF = 26, WEAPON_SNIPER = 34, WEAPON_FLAMETHROWER = 37;
 constexpr int kEmptyDecisionMaker = 65542;  // SET_CHAR_DECISION_MAKER "Empty": reacts to nothing by itself
 // R_FLAMER: the Bikers' and the Vagos' flamethrower man (huge health, slow, molotovs); R_MEDIC: heals the others near it
@@ -576,6 +575,7 @@ struct Enemy {
     CPed* revivedBy = nullptr;  // a dead one: the medic at it now
     bool counted = false;       // a dead one: its death seen (the power-ups)
     bool silent = false;
+    int vest = -1;  // the flamethrower man's body armour (an object on it)
 };
 struct Squad {
     float angle = 0;  // where round the player it goes (degrees, 180 = behind)
@@ -756,6 +756,7 @@ int MakeEnemy(int model, int weapon, int health, int armour, int accuracy, const
         weapon = GunFor(WEAPON_FLAMETHROWER);
         Cmd(0x0245).I(h).S8("fatman").Run();                       // SET_ANIM_GROUP_FOR_CHAR: heavy and slow
         Cmd(0x02AB).I(h).I(0).I(1).I(0).I(0).I(0).Run();            // SET_CHAR_PROOFS: its own fire does not burn it
+        Cmd(0x0946).I(h).I(1).Run();  // its actions not cut by hits: no stagger, no knocking back
     } else {
         Give(h, weapon, role == R_SNIPER ? 80 : 500);
         weapon = GunFor(weapon);
@@ -923,7 +924,12 @@ void MakeSniper(int wave) {
               (int)g_squads.size() - 1, R_SNIPER, false);
 }
 
+void DropVest(Enemy& e) {
+    if (e.vest >= 0 && GetObject(e.vest)) Cmd(0x0108).I(e.vest).Run();  // DELETE_OBJECT
+    e.vest = -1;
+}
 void ReleaseDead() {  // the last wave's dead: the game's own again (they filled the ped pool)
+    for (auto& [q, qe] : g_info) DropVest(qe);
     for (CPed* p : g_enemies)
         if (IsPedValid(p)) Cmd(p->Health() > 0.0f ? 0x009B : 0x01C2).I(GetPedRef(p)).Run();  // DELETE_CHAR / no longer needed
     g_enemies.clear();
@@ -1085,7 +1091,11 @@ void PlaceItems(int forWave) {
          armour, forWave, soda ? 1 : 0);
 }
 
-uint64_t PrepMs(bool first) { return kPlaces[g_arena.place].big ? (first ? 20000 : 30000) : (first ? 8000 : 6000); }
+// the waits before the waves: 30 s in a big place and in the crack palace (index 0), 6 s elsewhere
+uint64_t PrepMs(bool first) {
+    bool long_ = kPlaces[g_arena.place].big || g_arena.place == 0;
+    return long_ ? (first ? 20000 : 30000) : (first ? 8000 : 6000);
+}
 
 // ---------------------------------------------------------------- points, barricades, the weapon box (from CoD)
 // Points: every player has its own (500 to start): 10 a hit on an enemy, 50 a kill, 100 a kill by a headshot, 130 with a
@@ -1854,12 +1864,17 @@ void FindNear() {
 }
 
 // back in the fight at a new wave: a player who died meanwhile (the hospital) comes back with a pistol
+uint64_t g_aliveSince = 0;  // this player on its feet since (after a death: the hospital's respawn done)
+int g_deadWave = 0;         // the wave it died in: it comes back at a later one
 void Rejoin() {
-    g_repairedThisWave = 0;
     CPlayerPed* me = FindPlayerPed(0);
     if (!g_arena.taken || !me || me->Health() <= 0.0f || PlayerInfos()[0].playerState != 0) return;
+    if (!g_aliveSince || NowMs() - g_aliveSince < 3000 || Ref<uint8_t>(0xB5F851) || cam::WideScreenOn()) return;  // not mid-respawn
     const Place& pl = kPlaces[g_arena.place];
-    if (me->AreaCode() == pl.area) return;
+    if (me->AreaCode() == pl.area) {
+        g_dead = false;
+        return;
+    }
     std::vector<CVector> spots = PlayerSpots();
     CVector at = spots.empty() ? pl.pos : spots[0] + CVector{1.0f, 0, 0};
     Teleport(pl.area, at, Rand(0.0f, 360.0f));
@@ -1889,25 +1904,23 @@ void ResetCod() {
     g_repairedThisWave = 0;
 }
 
-// ---- the Twins' desert eagles: one in each hand (the pistol's "pro" skill does it, the eagle's does not). While an
-// arena is on, the eagle's pro skill takes the twin pistols' flags, animations and a double clip (CWeaponInfo 0x70 bytes:
-// flags +0x18, the anim group +0x1C, the clip +0x20, the anim's loop times +0x40..0x5C, the aim offset +0x6C).
-uint8_t g_eagleSaved[0x70];
-bool g_eaglePatched = false;
+// ---- the Twins' desert eagles: two pistols in two hands (the pistol's "pro" skill: the game's own dual pistols) that
+// look like desert eagles and hit as hard. While an arena is on, the pistol's pro skill shows the eagle's model
+// (CWeaponInfo::m_nModelId1, +0x0C: only the model, nothing of how it is held or fired), and the hits of an enemy with
+// two pistols are as an eagle's (IncomingDamage). Before, the eagle itself took the twin pistols' animations and flags:
+// that crashed the game.
+int g_coltProModel = -1;
 void TwinEagles(bool on) {
-    auto* eagle = Call<0x743C60, uint8_t*>(WEAPON_DEAGLE, (uint8_t)2);  // CWeaponInfo::GetWeaponInfo, pro
-    auto* colt = Call<0x743C60, uint8_t*>(WEAPON_PISTOL, (uint8_t)2);
-    if (!eagle || !colt) return;
-    if (on && !g_eaglePatched) {
-        std::memcpy(g_eagleSaved, eagle, sizeof g_eagleSaved);
-        std::memcpy(eagle + 0x18, colt + 0x18, 8);           // flags (TWIN_PISTOL), anim group
-        Ref<int16_t>((uintptr_t)eagle + 0x20) = (int16_t)(Ref<int16_t>((uintptr_t)g_eagleSaved + 0x20) * 2);
-        std::memcpy(eagle + 0x40, colt + 0x40, 0x5C - 0x40);  // the anim's loop times
-        std::memcpy(eagle + 0x6C, colt + 0x6C, 2);           // the aim offset
-        g_eaglePatched = true;
-    } else if (!on && g_eaglePatched) {
-        std::memcpy(eagle, g_eagleSaved, sizeof g_eagleSaved);
-        g_eaglePatched = false;
+    auto* colt = Call<0x743C60, uint8_t*>(WEAPON_PISTOL, (uint8_t)2);  // CWeaponInfo::GetWeaponInfo, pro
+    if (!colt) return;
+    int32_t& model = Ref<int32_t>((uintptr_t)colt + 0x0C);
+    if (on && g_coltProModel < 0) {
+        if (!LoadModelNow(348)) return;  // the desert eagle's model
+        g_coltProModel = model;
+        model = 348;
+    } else if (!on && g_coltProModel >= 0) {
+        model = g_coltProModel;
+        g_coltProModel = -1;
     }
 }
 
@@ -1930,9 +1943,22 @@ void MakeFlamer(int wave) {
     int model = f.models[3];
     int h = MakeEnemy(model, WEAPON_FLAMETHROWER, 700, 100, 60, SpawnSpot(Rand(0.0f, 6.2831853f), 3.2f, 8.0f),
                       (int)g_squads.size() - 1, R_FLAMER, true);
-    if (CPed* p = h >= 0 ? GetPed(h) : nullptr) g_flamers.push_back(p);
+    if (CPed* p = h >= 0 ? GetPed(h) : nullptr) {
+        g_flamers.push_back(p);
+        // the body armour on its chest: the armour's own model, held on the ped (Props shows it in the other games too)
+        if (IsObjectModel(1242) && LoadModelNow(1242) && HasRoom(ObjectPool(), kKeepObjects, "object")) {
+            int o = -1;
+            CVector at = p->GetPosition();
+            Cmd(0x0107).I(1242).F(at.x).F(at.y).F(at.z).Out(&o).Run();  // CREATE_OBJECT
+            if (o >= 0) {
+                Cmd(0x0382).I(o).I(0).Run();                                                // SET_OBJECT_COLLISION off
+                Cmd(0x069B).I(o).I(h).F(0.0f).F(0.06f).F(0.22f).F(0.0f).F(0.0f).F(0.0f).Run();  // ATTACH_OBJECT_TO_CHAR
+                g_info[p].vest = o;
+            }
+        }
+    }
 }
-// The Twins, the mini-boss: two men of different looks, 150 health each; one with two sawn-offs, the other with two
+// The Twins, the mini-boss: two men of different looks, 250 health each; one with two sawn-offs, the other with two
 // desert eagles (both held in both hands: the weapon skill "pro", TwinEagles)
 void MakeTwins(int wave) {
     const Faction& f = kFactions[g_arena.faction];
@@ -1944,8 +1970,8 @@ void MakeTwins(int wave) {
     if (m1 == m0) m1 = m0 == 287 ? 285 : 287;  // the army has one look: the other twin is SWAT-clad
     float dir = Rand(0.0f, 6.2831853f);
     CVector at = SpawnSpot(dir, 1.0f, 8.0f);
-    int h0 = MakeEnemy(m0, WEAPON_SAWNOFF, 150, 0, 75, at, squad, R_TWIN, false);
-    int h1 = MakeEnemy(m1, WEAPON_DEAGLE, 150, 0, 80, MemberSpot(at, 1), squad, R_TWIN, false);
+    int h0 = MakeEnemy(m0, WEAPON_SAWNOFF, 250, 0, 75, at, squad, R_TWIN, false);
+    int h1 = MakeEnemy(m1, WEAPON_PISTOL, 250, 0, 80, MemberSpot(at, 1), squad, R_TWIN, false);  // eagles (TwinEagles)
     g_twinPeds[0] = h0 >= 0 ? GetPed(h0) : nullptr;
     g_twinPeds[1] = h1 >= 0 ? GetPed(h1) : nullptr;
     // the other games' copies hold them the same way: their weapon skill there too
@@ -1966,6 +1992,7 @@ void SpawnWave() {
     g_twinPeds[0] = g_twinPeds[1] = nullptr;
     g_flamers.clear();
     g_killed.clear();
+    g_repairedThisWave = 0;
     g_lastSpawns = g_spawnsNow;
     g_spawnsNow.clear();
     Rejoin();
@@ -2508,21 +2535,30 @@ void RaiseFallen() {
 
 // The flamethrower man: walks (never runs) at its player; within 7 m it burns, from 9-22 m in sight it throws molotovs
 bool Flame(CPed* p, Enemy& e, CPed* t, float d, bool sees, uint64_t now) {
+    int h = GetPedRef(p);
     if (e.grenadeUntil) {
-        if (now > e.grenadeUntil && !e.throwAt) e.grenadeUntil = 0, SetOn(p, e, t);
+        if (now > e.grenadeUntil && !e.throwAt) e.grenadeUntil = 0, e.setOnMs = 0;
         return true;
     }
-    if (sees && d > 9.0f && d < 22.0f && e.grenades > 0 && now >= e.nextThrowMs && StartThrow(p, e, t)) {
+    if (sees && d > 11.0f && d < 22.0f && e.grenades > 0 && now >= e.nextThrowMs && StartThrow(p, e, t)) {
         e.nextThrowMs = now + (uint64_t)RandInt(8000, 11000);
         return true;
     }
-    if (d > 7.0f) {
+    // walks up to some 8 m (no closer than it must) and burns from there: it stands and pours the fire at the player
+    if (d > 9.0f || !sees) {
         CVector wp;
         if (!sees && Waypoint(p, t, wp)) GoTo(p, e, wp, 4);
         else GoTo(p, e, t->GetPosition() - CVector{0, 0, 1.0f}, 4);  // walking
         return true;
     }
-    if (e.routing || t != e.after || now - e.setOnMs > 6000) SetOn(p, e, t);
+    if (e.routing || t != e.after || now - e.setOnMs > 1800) {
+        e.routing = false;
+        e.after = t;
+        e.setOnMs = now;
+        CVector to = t->GetPosition() - p->GetPosition();
+        Cmd(0x0173).I(h).F(std::atan2(-to.x, to.y) * 57.29578f).Run();  // SET_CHAR_HEADING
+        Cmd(0x074D).I(h).I(GetPedRef(t)).I(2000).Run();                  // TASK_SHOOT_AT_CHAR: the flame from where it stands
+    }
     return true;
 }
 
@@ -2873,6 +2909,7 @@ void Handle(uint8_t from, Reader& r) {
         g_arena.wave = w;
         g_arena.left = n;
         g_killed.clear();
+        g_repairedThisWave = 0;
         Rejoin();
         ui::TheChat().AddSystem(Format(TR("Арена: %s — врагов %d.", "Arena: %s, %d enemies."), WaveOf(w).c_str(), n));
     } else if (op == A_LEFT) {
@@ -2984,8 +3021,22 @@ void Handle(uint8_t from, Reader& r) {
     }
 }
 
+// The fires left on the floor (molotovs, the flamethrower) go out faster in the arena: 2.5 s at most from now, and they
+// spread no further (CFire, 0x28 bytes in gFireManager: m_pEntityTarget +0x10, m_nTimeToBurn +0x18, generations +0x20)
+void ShortFires() {
+    uint32_t now = TimeMs();
+    for (int i = 0; i < 60; ++i) {
+        uintptr_t f = 0xB71F80 + (uintptr_t)i * 0x28;
+        if (!(Ref<uint8_t>(f) & 1) || Ref<void*>(f + 0x10)) continue;  // out, or one on a body (it goes with it)
+        uint32_t& until = Ref<uint32_t>(f + 0x18);
+        if (until > now + 2500) until = now + 2500;
+        Ref<int8_t>(f + 0x20) = 0;
+    }
+}
+
 void Update() {
     uint64_t now = NowMs();
+    ShortFires();
     game::challenge::Tick();
     if (g_arena.endAt) {
         if (now >= g_arena.endAt) End(false);
@@ -3000,8 +3051,13 @@ void Update() {
     TwinCopies();
     for (auto it = g_popups.begin(); it != g_popups.end();) it = now - it->at > 1500 ? g_popups.erase(it) : std::next(it);
     if (CPlayerPed* me = FindPlayerPed(0); me && g_arena.taken) {
+        bool alive = me->Health() > 0.0f && PlayerInfos()[0].playerState == 0;
+        if (!alive) g_aliveSince = 0;
+        else if (!g_aliveSince) g_aliveSince = now;
+        if (g_dead && g_arena.wave > g_deadWave) Rejoin();  // a new wave since its death: back in
         if (me->Health() <= 0.0f && !g_dead) {
             g_dead = true;
+            g_deadWave = g_arena.wave;
             AddPoints(-g_points / 10);
             if (Net().Online())
                 ui::TheChat().AddSystem(TR("Вы погибли. Вернётесь в бой в начале следующей волны.",
@@ -3012,7 +3068,7 @@ void Update() {
     if (!g_gridDone && now - g_arena.startMs > 1500) GridStep();
     if (!g_placed && (g_gridDone || now - g_arena.startMs > 6000)) {
         g_placed = true;
-        PlaceBarricades();
+        ClearBars();  // no barricades of the mod's own: the players build them (B), the host keeps its own (/arena баррикада)
         PlaceBox();
         bool own = LoadSpots();  // the host's own spots for this place (/arena ящик, баррикада, стена)
         if (g_walls.empty()) PlaceWalls(kPlaces[g_arena.place].big ? 5 : 3);
@@ -3024,6 +3080,7 @@ void Update() {
     for (auto& [q, qe] : g_info) {
         if (qe.counted || !IsPedValid(q) || q->Health() > 0.0f) continue;
         qe.counted = true;
+        DropVest(qe);
         if (qe.role != R_FLAMER && qe.role != R_TWIN && qe.role != R_MEDIC && qe.role != R_BOSS) continue;
         CVector at = q->GetPosition() + CVector{0, 0, -0.3f};
         if (qe.role == R_BOSS) {
@@ -3125,9 +3182,10 @@ void List() {
 
 // the points (this player's bigger, the others' under it, bottom right), the pop-ups of what was gained, and over the
 // barricades their boards, over the box its price or what it turns over
-void Label(const CVector& at, const std::string& text, uint32_t color, float maxDist = 25.0f) {
+void Label(const CVector& at, const std::string& text, uint32_t color, float maxDist = 25.0f, bool throughWalls = false) {
     CPlayerPed* me = FindPlayerPed(0);
     if (!me || (me->GetPosition() - at).Length() > maxDist) return;
+    if (!throughWalls && !Clear(cam::Source(), at)) return;  // only what the player sees
     float x, y, depth;
     if (!WorldToScreen(at, x, y, depth)) return;
     ui::Gfx().Text(ui::FONT_SMALL, x, y, text, color, ui::TEXT_CENTER | ui::TEXT_OUTLINE);
@@ -3152,7 +3210,7 @@ void DrawCod() {
         std::string pips;
         for (int k = 0; k < kBoards; ++k) pips += k < b.boards ? "#" : "-";
         Label(b.pos + CVector{0, 0, 1.6f}, Format(TR("Баррикада [%s]", "Barricade [%s]"), pips.c_str()),
-              b.boards ? 0xFFE0C080 : 0xFFFF5050);
+              b.boards ? 0xFFE0C080 : 0xFFFF5050, 12.0f);
     }
     for (const Wall& w : g_walls) {
         const WallGun& g = kWallGuns[(size_t)w.gun];
@@ -3167,7 +3225,7 @@ void DrawCod() {
             t = g_box.teddy && now + 400 >= g_box.rollEnd ? std::string(TR("Плюшевый мишка!", "A teddy bear!"))
                                                           : std::string(WeaponName(kBoxGuns[(size_t)shown].weapon));
         }
-        Label(g_box.pos + CVector{0, 0, g_box.height + 0.5f}, t, 0xFF60D0FF, 30.0f);
+        Label(g_box.pos + CVector{0, 0, g_box.height + 0.5f}, t, 0xFF60D0FF, 30.0f, g_box.rolling);
     }
 }
 
@@ -3276,29 +3334,36 @@ public:
         }
         CPlayerPed* me = FindPlayerPed(0);
         if (!me || me->Health() <= 0.0f) return true;
-        int faction = -1;
-        for (int i = 0; i < kFactionCount; ++i)
-            if (Matches(a0, kFactions[i].keys)) faction = i;
-        if (faction < 0) {
-            ui::TheChat().AddError(Format(TR("Нет таких врагов: %s (/arena list).", "No such enemies: %s (/arena list)."), args[0].c_str()));
-            return true;
-        }
-        std::string a1 = args.size() > 1 ? LowerRu(args[1]) : "random";
-        int place = -1;
-        if (Matches(a1, kWordRandom) || Matches(a1, kWordAny)) place = RandInt(0, kPlaceCount - 1);
-        else
+        // the enemies, the place and the waves in any order: /arena 3 притон байкеры, /arena притон байкеры бесконечно
+        int faction = -1, place = -1, waves = 5;
+        for (const std::string& raw : args) {
+            std::string a = LowerRu(raw);
+            int f = -1, pl = -1;
+            for (int i = 0; i < kFactionCount; ++i)
+                if (Matches(a, kFactions[i].keys)) f = i;
             for (int i = 0; i < kPlaceCount; ++i)
-                if (Matches(a1, kPlaces[i].keys)) place = i;
-        if (place < 0) {
-            ui::TheChat().AddError(Format(TR("Нет такого места: %s (/arena list).", "No such place: %s (/arena list)."), args[1].c_str()));
+                if (Matches(a, kPlaces[i].keys)) pl = i;
+            bool number = !a.empty() && std::all_of(a.begin(), a.end(), [](char c) { return c >= '0' && c <= '9'; });
+            if (f >= 0 && faction < 0) faction = f;  // "полиция" is both: the enemies first, then the place
+            else if (pl >= 0) place = pl;
+            else if (Matches(a, kWordRandom) || Matches(a, kWordAny)) place = -1;
+            else if (Matches(a, kWordEndless)) waves = 0;
+            else if (number) {
+                waves = std::atoi(a.c_str());
+                if (waves < 0 || waves > 10) {
+                    ui::TheChat().AddError(TR("Волн — от 1 до 10, или «бесконечно» (0).", "Waves: 1 to 10, or \"endless\" (0)."));
+                    return true;
+                }
+            } else {
+                ui::TheChat().AddError(Format(TR("Непонятно: %s (/arena list).", "Not understood: %s (/arena list)."), raw.c_str()));
+                return true;
+            }
+        }
+        if (faction < 0) {
+            ui::TheChat().AddError(TR("Укажите врагов (/arena list).", "Name the enemies (/arena list)."));
             return true;
         }
-        std::string a2 = args.size() > 2 ? LowerRu(args[2]) : "5";
-        int waves = Matches(a2, kWordEndless) || a2 == "0" ? 0 : std::atoi(a2.c_str());
-        if (waves < 0 || waves > 10 || (waves == 0 && a2 != "0" && !Matches(a2, kWordEndless))) {
-            ui::TheChat().AddError(TR("Волн — от 1 до 10, или «бесконечно».", "Waves: 1 to 10, or \"endless\"."));
-            return true;
-        }
+        if (place < 0) place = RandInt(0, kPlaceCount - 1);
         Send(A_START, [&](Writer& w) {
             w.U8((uint8_t)faction);
             w.U8((uint8_t)place);
@@ -3326,9 +3391,14 @@ bool UnlimitedRevives() { return g_arena.on && g_arena.taken; }
 bool QuickRevive() { return false; }
 void UseQuickRevive() {}
 float ReloadFactor() { return 1.0f; }
-int IncomingDamage(int weapon, int damage) {
-    if (!On() || weapon != WEAPON_FLAMETHROWER) return damage;  // the flamethrower's and the fire's (burning) damage
-    return std::max(1, damage * 35 / 100);
+bool IsEnemy(CPed* p);
+int IncomingDamage(CEntity* creator, int weapon, int damage) {
+    if (!On()) return damage;
+    if (weapon == WEAPON_FLAMETHROWER) return std::max(1, damage * 35 / 100);  // the flamethrower's and the fire's damage
+    // the Twin with two "eagles": two pistols at the pro skill, each shot as hard as an eagle's (70 to the pistol's 25)
+    if (weapon == WEAPON_PISTOL && creator && creator->IsPed() && IsEnemy((CPed*)creator) && ((CPed*)creator)->WeaponSkill() == 2)
+        return damage * 14 / 5;
+    return damage;
 }
 
 // is it an enemy of the arena: the host's own, or a copy of one (an armed man of the arena's place, no player)
@@ -3350,13 +3420,15 @@ void OnLocalHit(CPed* victim, int weapon, int damage, int piece) {
 void OnLocalKill(CPed* victim, int weapon, bool headshot) {
     if (!On() || !IsEnemy(victim) || g_killed.count(victim)) return;
     g_killed.insert(victim);
-    int pts = weapon <= 15 ? 130 : headshot ? 100 : 50;
+    bool melee = weapon <= 15;  // fists and blades: three times the points
+    int pts = melee ? 390 : headshot ? 100 : 50;
     if (g_arena.host) {
         auto e = g_info.find(victim);
         if (e != g_info.end())
             pts += e->second.role == R_BOSS ? 500 : e->second.role == R_TWIN ? 250 : e->second.role == R_FLAMER ? 200
                  : e->second.role == R_MEDIC ? 50 : 0;
     }
+    if (melee && pts > 390) pts = 390 + (pts - 390) * 3;
     AddPoints(pts, headshot ? 0xFFFF8040 : 0xFFFFE060);
 }
 
