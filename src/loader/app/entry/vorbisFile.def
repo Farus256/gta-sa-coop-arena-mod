@@ -1,0 +1,37 @@
+LIBRARY vorbisFile
+; the real vorbisfile functions live in the original DLL, renamed to vorbisHooked.dll by the installer
+EXPORTS
+    ov_bitrate=vorbisHooked.ov_bitrate @1
+    ov_bitrate_instant=vorbisHooked.ov_bitrate_instant @2
+    ov_clear=vorbisHooked.ov_clear @3
+    ov_comment=vorbisHooked.ov_comment @4
+    ov_crosslap=vorbisHooked.ov_crosslap @5
+    ov_halfrate=vorbisHooked.ov_halfrate @6
+    ov_halfrate_p=vorbisHooked.ov_halfrate_p @7
+    ov_info=vorbisHooked.ov_info @8
+    ov_open=vorbisHooked.ov_open @9
+    ov_open_callbacks=vorbisHooked.ov_open_callbacks @10
+    ov_pcm_seek=vorbisHooked.ov_pcm_seek @11
+    ov_pcm_seek_lap=vorbisHooked.ov_pcm_seek_lap @12
+    ov_pcm_seek_page=vorbisHooked.ov_pcm_seek_page @13
+    ov_pcm_seek_page_lap=vorbisHooked.ov_pcm_seek_page_lap @14
+    ov_pcm_tell=vorbisHooked.ov_pcm_tell @15
+    ov_pcm_total=vorbisHooked.ov_pcm_total @16
+    ov_raw_seek=vorbisHooked.ov_raw_seek @17
+    ov_raw_seek_lap=vorbisHooked.ov_raw_seek_lap @18
+    ov_raw_tell=vorbisHooked.ov_raw_tell @19
+    ov_raw_total=vorbisHooked.ov_raw_total @20
+    ov_read=vorbisHooked.ov_read @21
+    ov_read_float=vorbisHooked.ov_read_float @22
+    ov_seekable=vorbisHooked.ov_seekable @23
+    ov_serialnumber=vorbisHooked.ov_serialnumber @24
+    ov_streams=vorbisHooked.ov_streams @25
+    ov_test=vorbisHooked.ov_test @26
+    ov_test_callbacks=vorbisHooked.ov_test_callbacks @27
+    ov_test_open=vorbisHooked.ov_test_open @28
+    ov_time_seek=vorbisHooked.ov_time_seek @29
+    ov_time_seek_lap=vorbisHooked.ov_time_seek_lap @30
+    ov_time_seek_page=vorbisHooked.ov_time_seek_page @31
+    ov_time_seek_page_lap=vorbisHooked.ov_time_seek_page_lap @32
+    ov_time_tell=vorbisHooked.ov_time_tell @33
+    ov_time_total=vorbisHooked.ov_time_total @34

@@ -1,0 +1,120 @@
+#pragma once
+#include <cstdint>
+#include <functional>
+#include <map>
+#include <string>
+#include <vector>
+
+#include "common/api/protocol/Protocol.h"
+#include "common/lib/buffer/Buffer.h"
+#include "shared/api/net-client/NetClient.h"
+
+namespace coop {
+
+struct PeerInfo {
+    uint8_t id = 0;
+    std::string name;
+    bool isHost = false;
+    uint16_t ping = 0;
+};
+
+// Network session of the local client: connection lifecycle, handshake, player list and
+// routing of game messages to the registered handlers.
+class Session {
+public:
+    enum class State { Offline, Connecting, Online, Failed };
+    using Handler = void (*)(uint8_t from, Reader& r);
+
+    // host: an IP address or a host name
+    void Connect(const std::string& host, uint16_t port, const std::string& nick, const std::string& password,
+                 bool wantsHost);
+    void Disconnect(const std::string& reason = "");
+    void Update();  // once per frame, game thread
+
+    State GetState() const { return m_state; }
+    bool Online() const { return m_state == State::Online; }
+    bool IsHost() const { return Online() && m_hostId == m_myId; }
+    uint8_t MyId() const { return m_myId; }
+    uint8_t HostId() const { return m_hostId; }
+    const std::string& FailReason() const { return m_failReason; }
+    const std::string& ServerName() const { return m_serverName; }
+    bool FriendlyFire() const { return Online() && m_friendlyFire; }  // the host let the players hurt each other
+    int MaxPlayers() const { return m_maxPlayers; }  // the server's places, the host included
+    const std::map<uint8_t, PeerInfo>& Peers() const { return m_peers; }
+    const PeerInfo* Peer(uint8_t id) const;
+    std::string PeerName(uint8_t id) const;
+    // a player by nickname (case-insensitive, a unique beginning of it is enough) or by number; 255: nobody
+    uint8_t FindPeer(const std::string& nameOrId) const;
+    proto::PlayerMask PeersMask() const;  // every other player
+    uint32_t Rtt() const { return m_net.Rtt(); }
+    // How long a state from that player takes to get here (its half of the way to the server and ours), in seconds:
+    // the copies here are shown that much further on, where the player is now rather than where it was when it sent
+    float LatencyFrom(uint8_t id) const {
+        const PeerInfo* p = Peer(id);
+        uint32_t ms = (Rtt() + (p ? p->ping : Rtt())) / 2;
+        return (float)(ms > 250 ? 250 : ms) / 1000.0f;
+    }
+    NetClient& Net() { return m_net; }
+
+    void Send(uint8_t channel, const Writer& w) { m_net.Send(channel, w); }
+    // A game message for some players only (the server relays it to them alone). A mask with every other player in it
+    // goes as an ordinary message, an empty one nowhere.
+    void SendTo(proto::PlayerMask mask, uint8_t channel, const Writer& w);
+    void SendTo(uint8_t player, uint8_t channel, const Writer& w) { SendTo(proto::Bit(player), channel, w); }
+    void SendChat(const std::string& text);
+
+    void SetHandler(uint8_t msgId, Handler h) { m_handlers[msgId] = h; }
+
+    // Callbacks for the game flow
+    std::function<void()> onOnline;                         // handshake completed
+    std::function<void(const std::string&)> onOffline;      // connection closed (reason)
+    std::function<void(const std::vector<uint8_t>&, const std::string&)> onWorld;  // world save received
+    std::function<void()> onWorldNone;                      // server has no world yet
+    std::function<void()> onWorldNewGame;                   // the host's prologue is over: start a new game, join it
+    std::function<void()> onWorldWait;                      // the host plays a new game's prologue: wait
+    std::function<void()> onWorldWanted;                    // host: a partner needs a fresh snapshot
+    std::function<void(const std::vector<uint8_t>&)> onProfile;
+    std::function<void(uint8_t id)> onPeerJoin;
+    std::function<void(uint8_t id)> onPeerLeave;
+    std::function<void(uint8_t newHost)> onHostChanged;
+    // where friends connect to, as the server learned it (UPnP, STUN)
+    struct Address {
+        std::string external, lan, upnpError;
+        bool done = false, upnp = false, cgnat = false;
+    };
+    std::function<void(const Address&)> onAddress;
+    const Address& ServerAddress() const { return m_address; }
+
+    // World transfer progress (0..1) while downloading, -1 when idle.
+    float WorldProgress() const { return m_worldExpected ? (float)m_worldRecv / (float)m_worldExpected : -1.0f; }
+
+private:
+    void HandleService(uint8_t id, Reader& r);
+
+    NetClient m_net;
+    State m_state = State::Offline;
+    std::string m_failReason;
+    std::string m_nick, m_password;
+    bool m_wantsHost = false;
+    uint8_t m_myId = 255, m_hostId = 255;
+    std::string m_serverName;
+    bool m_friendlyFire = false;
+    int m_maxPlayers = proto::kDefaultMaxPlayers;
+    Address m_address;
+    std::map<uint8_t, PeerInfo> m_peers;
+    Handler m_handlers[256] = {};
+    std::vector<NetClient::Packet> m_inbox;
+    // world download
+    std::vector<uint8_t> m_world;
+    uint32_t m_worldExpected = 0, m_worldRecv = 0, m_worldCrc = 0;
+    int m_worldRetries = 0;  // damaged worlds asked for again in a row
+    std::string m_worldLabel;
+};
+
+Session& Net();
+
+// A player's colour (ARGB) for its name in the chat, over its head, in the player list and its radar blip: by its
+// number, the same on every screen.
+uint32_t PlayerColor(uint8_t id);
+
+}  // namespace coop

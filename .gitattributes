@@ -1,0 +1,7 @@
+* text=auto
+# Windows tools and the files players open in Notepad keep CRLF
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+package/** text eol=crlf
+*.png binary
+*.jpg binary

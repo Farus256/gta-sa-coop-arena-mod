@@ -1,0 +1,57 @@
+# Builds SA:COOP on every push and pull request and keeps the archive as an artifact.
+# A tag like v0.2.0 also publishes the archive as a GitHub release, with the text of .github/release-notes.md.
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Cache the compiler
+        uses: actions/cache@v4
+        with:
+          path: toolchain/llvm-mingw
+          key: llvm-mingw-20261006-ucrt-x86_64
+
+      - name: Get the compiler
+        shell: pwsh
+        run: ./tools/get-toolchain.ps1
+
+      - name: Check the layers (Feature-Sliced Design)
+        run: python tools/fsd_check.py
+
+      - name: Check that every text of the game has its English one
+        run: python tools/i18n_check.py
+        env:
+          PYTHONIOENCODING: utf-8  # it prints the Russian texts it finds
+
+      - name: Build the archive
+        run: python tools/build.py dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SA-COOP
+          path: dist/SA-COOP.zip
+
+      - name: Publish the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: SA:COOP ${{ github.ref_name }}
+          files: dist/SA-COOP.zip
+          body_path: .github/release-notes.md
