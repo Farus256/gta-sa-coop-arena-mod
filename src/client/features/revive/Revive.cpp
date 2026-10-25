@@ -11,6 +11,7 @@
 #include "common/lib/util/Util.h"
 #include "entities/ped/Peds.h"
 #include "entities/player/Players.h"
+#include "features/arena/Arena.h"
 #include "shared/api/net-session/Session.h"
 #include "shared/config/Config.h"
 #include "shared/game/Game.h"
@@ -26,7 +27,9 @@ using namespace game;
 using game::script::Cmd;
 
 constexpr uint64_t kDownMs = 30000;              // how long a wounded player waits for help
-constexpr uint64_t kCprMs = 5000;                // how long the CPR takes
+constexpr uint64_t kCprBaseMs = 5000;            // how long the CPR takes (half of it with Quick Revive in the arena)
+uint64_t CprMs() { return arena::QuickRevive() ? kCprBaseMs / 2 : kCprBaseMs; }
+constexpr uint64_t kSelfReviveMs = 8000;         // Quick Revive: the wounded one gets up by itself after this
 constexpr uint64_t kWindowMs = 6 * 60 * 1000;    // revives are counted over this time
 constexpr int kMaxRevives = 2;                   // ... and this many are allowed in it
 constexpr uint64_t kGiveUpHoldMs = 1500;         // holding the key this long, the wounded one gives up
@@ -69,6 +72,7 @@ std::string Key() {  // the revive key as the player knows it: a letter, a digit
 std::string Name(int id) { return Net().PeerName((uint8_t)id); }
 
 int RevivesLeft() {
+    if (arena::UnlimitedRevives()) return 99;  // the arena: no limit, no 6 minutes
     uint64_t now = NowMs();
     while (!g_revives.empty() && now - g_revives.front() > kWindowMs) g_revives.pop_front();
     return kMaxRevives - (int)g_revives.size();
@@ -133,7 +137,7 @@ CPed* NearestRival(CPlayerPed* me) {
 bool CanGoDown(CPlayerPed* me, int weapon) {
     if (weapon == WEAPON_DROWNING || me->InVehicle() || (me->PhysicalFlags() & kSubmerged) || Ref<uint8_t>(kCutsceneRunning))
         return false;
-    if (!HelpNear(me)) return false;  // only a partner can revive it
+    if (!HelpNear(me) && !arena::QuickRevive()) return false;  // only a partner can revive it (or Quick Revive)
     if (RevivesLeft() <= 0) {
         ui::TheChat().AddSystem(TR("Вас уже откачивали дважды за 6 минут: в этот раз не повезло.",
                                    "You were revived twice in 6 minutes already: no luck this time."));
@@ -265,9 +269,12 @@ void Revive(CPlayerPed* me, const std::string& who) {
     me->Health() = maxHealth * 0.5f;
     g_revives.push_back(NowMs());
     int left = RevivesLeft();
-    ui::TheChat().AddSystem(Format(TR("Вас откачал %s. Ещё возрождений в ближайшие 6 минут: %d.",
-                                      "%s revived you. Revives left for the next 6 minutes: %d."),
-                                   who.c_str(), left));
+    if (arena::UnlimitedRevives())
+        ui::TheChat().AddSystem(Format(TR("Вас откачал %s.", "%s revived you."), who.c_str()));
+    else
+        ui::TheChat().AddSystem(Format(TR("Вас откачал %s. Ещё возрождений в ближайшие 6 минут: %d.",
+                                          "%s revived you. Revives left for the next 6 minutes: %d."),
+                                       who.c_str(), left));
     LOGI("Revived by %s (revives left %d)", who.c_str(), left);
 }
 
@@ -326,7 +333,7 @@ void UpdateRescuer(CPlayerPed* me) {
         if (!keep) {
             LOGI("CPR for player %d stopped", g_target);
             StopCpr(me, true);
-        } else if (NowMs() - g_cprStart >= kCprMs) {
+        } else if (NowMs() - g_cprStart >= CprMs()) {
             SendOp(g_target, OP_DONE);
             LOGI("CPR for player %d done", g_target);
             StopCpr(me, false);
@@ -438,6 +445,12 @@ void UpdateDowned(CPlayerPed* me) {
     if (g_rescuer >= 0) g_downEnd = std::max(g_downEnd, now + 1500);  // not while it is being revived
     if (me->InVehicle()) {  // a script put it in a car: no lying there
         Die(me, "put in a car");
+        return;
+    }
+    // Quick Revive (the arena's perk): up by itself after a while, once
+    if (g_rescuer < 0 && arena::QuickRevive() && now + kDownMs - g_downEnd >= kSelfReviveMs) {
+        arena::UseQuickRevive();
+        Revive(me, TR("«Быстрое оживление»", "Quick Revive"));
         return;
     }
     if (now >= g_downEnd) {
@@ -560,7 +573,7 @@ std::string ReviveText(std::string& hint) {
         return Format(TR("Вы ранены · %d с", "You are wounded · %d s"), secs);
     }
     if (g_target >= 0) {
-        int secs = (int)((kCprMs - std::min<uint64_t>(kCprMs, NowMs() - g_cprStart) + 999) / 1000);
+        int secs = (int)((CprMs() - std::min<uint64_t>(CprMs(), NowMs() - g_cprStart) + 999) / 1000);
         hint = Format(TR("%s — прервать", "%s — stop"), Key().c_str());
         return Format(TR("Откачиваете %s · %d с", "Reviving %s · %d s"), Name(g_target).c_str(), secs);
     }

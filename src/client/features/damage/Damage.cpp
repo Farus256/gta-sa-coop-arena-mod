@@ -30,6 +30,7 @@
 #include "entities/ped/Peds.h"
 #include "entities/player/Players.h"
 #include "entities/vehicle/Vehicles.h"
+#include "features/arena/Arena.h"
 #include "shared/api/net-session/Session.h"
 #include "shared/game/Game.h"
 #include "shared/game/Script.h"
@@ -171,6 +172,8 @@ GenerateDamageFn g_origGenerateDamage = nullptr;
 // (bullets, melee, explosions, fire, vehicle hits) goes through it. It tells whether the hit counts (blood, a fight
 // hit): one decided in the other game still does here.
 bool __cdecl HookGenerateDamageEvent(CPed* victim, CEntity* creator, int weapon, int damage, int piece, int dir) {
+    if (victim && creator && core::IsPlayerReady() && IsLocalPlayerEntity(creator) && victim != FindPlayerPed(0))
+        arena::OnLocalHit(victim, weapon, damage, piece);  // the arena's points for a hit
     if (Net().Online() && victim && core::IsPlayerReady()) {
         // a copy dies of the hit that killed it in its owner's game: the game picks its fall (Peds::ApplyMirror)
         if (NetPed* dn = Peds::Instance().Find(victim); dn && dn->dying)
@@ -301,6 +304,7 @@ RegisterKillFn g_origRegisterKill = nullptr;
 // player is credited to that player's game and counts here as killed by somebody else (see the top of the file).
 void __cdecl HookRegisterKill(CPed* ped, CEntity* killer, int weapon, bool headshot) {
     CPlayerPed* me = FindPlayerPed(0);
+    if (ped && killer && killer == me && core::IsPlayerReady()) arena::OnLocalKill(ped, weapon, headshot);  // the arena's points
     if (Net().Online() && ped && killer && killer->IsPed() && core::IsPlayerReady()) {
         if (RemotePlayer* rp = Players::Instance().FindByPed((CPed*)killer)) {
             if (NetPed* np = Peds::Instance().Find(ped); np && np->owner == Net().MyId())

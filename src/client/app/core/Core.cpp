@@ -16,6 +16,7 @@
 #include "entities/player/Players.h"
 #include "entities/session/Flow.h"
 #include "features/revive/Revive.h"
+#include "features/arena/Arena.h"
 #include "features/gang-war/GangWar.h"
 #include "features/shops/Shops.h"
 #include "features/story/missions/Missions.h"
@@ -449,6 +450,8 @@ bool OnKeyDown(int vk, bool repeat) {
         return true;  // the menu owns the keyboard while open
     }
     if (ui::TheChat().IsOpen()) return true;
+    // the arena's E (a barricade, the mystery box, a perk): held, it goes on repairing; its repeats do not reach the game
+    if (vk == cfg.reviveKey && !game::MenuActive() && IsPlayerReady() && arena::KeyDown(vk, repeat)) return true;
     if (repeat) return false;
     if (vk == VK_ESCAPE && CutsceneSkipDecline()) return true;  // "watch on", not the pause menu
     if ((vk == 'Y' || vk == 'N') && !game::MenuActive() && SideCallKey(vk == 'Y')) return true;  // a side activity's call
