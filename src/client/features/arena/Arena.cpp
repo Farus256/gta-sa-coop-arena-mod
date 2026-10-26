@@ -5705,100 +5705,6 @@ void DrawScoreboard() {
 
 // The screen: the money (bottom right) and what it just got, the break's seconds and votes, the launcher when the AK is
 // in hand; over the world only the Officer's mark and, near the box, its price or what it turns over
-// ---- the arena's music: a quiet loop of its own, made here (no recording): A minor at 112 beats a minute, 8 bars
-// (Am F C G Am F Dm E): a soft kick and snare, hats, a triangle bass in eighths, a square arpeggio in sixteenths and a
-// sine pad, mixed low. Windows plays it (PlaySound, looped) while this player is in an arena and the game is in front;
-// /arena музыка turns it off and on.
-std::vector<uint8_t> g_musicWav;
-bool g_musicOn = true, g_musicPlaying = false;
-using PlaySoundFn = BOOL(WINAPI*)(LPCSTR, HMODULE, DWORD);
-PlaySoundFn PlaySoundPtr() {
-    static PlaySoundFn f = (PlaySoundFn)GetProcAddress(LoadLibraryA("winmm.dll"), "PlaySoundA");
-    return f;
-}
-void BuildMusic() {
-    const int rate = 22050;
-    const double beat = 60.0 / 112.0, bar = beat * 4;
-    const int bars = 8;
-    const int n = (int)(bar * bars * rate);
-    std::vector<float> mix((size_t)n, 0.0f);
-    auto hz = [](int midi) { return 440.0 * std::pow(2.0, (midi - 69) / 12.0); };
-    struct Chord {
-        int bass;
-        int tones[3];
-    };
-    const Chord chords[bars] = {{45, {69, 72, 76}}, {41, {65, 69, 72}}, {48, {67, 72, 76}}, {43, {67, 71, 74}},
-                                {45, {69, 72, 76}}, {41, {65, 69, 72}}, {38, {62, 65, 69}}, {40, {64, 68, 71}}};
-    uint32_t seed = 12345;
-    auto noise = [&seed]() {
-        seed = seed * 1664525u + 1013904223u;
-        return (float)((seed >> 9) & 0x7FFF) / 16384.0f - 1.0f;
-    };
-    auto add = [&](double start, double len, auto voice) {
-        int a = (int)(start * rate), b = std::min(n, (int)((start + len) * rate));
-        for (int i = std::max(0, a); i < b; ++i) mix[(size_t)i] += voice((double)(i - a) / rate);
-    };
-    for (int b = 0; b < bars; ++b) {
-        const Chord& c = chords[b];
-        double t0 = b * bar;
-        for (int k = 0; k < 4; ++k) {  // drums
-            double t = t0 + k * beat;
-            if (k == 0 || k == 2)
-                add(t, 0.22, [](double x) { return (float)(std::sin(6.2831853 * (45.0 * x + 40.0 * (1 - std::exp(-x * 30)) / 30.0)) * std::exp(-x * 14) * 0.55); });
-            if (k == 1 || k == 3) {
-                add(t, 0.16, [&](double x) { return (float)((noise() * 0.6 + std::sin(6.2831853 * 190 * x) * 0.4) * std::exp(-x * 22) * 0.22); });
-            }
-            for (int h = 0; h < 2; ++h)
-                add(t + h * beat * 0.5, 0.04, [&](double x) { return (float)(noise() * std::exp(-x * 90) * 0.05); });
-        }
-        for (int e = 0; e < 8; ++e) {  // bass: eighths, a triangle
-            double f = hz(c.bass);
-            add(t0 + e * beat * 0.5, beat * 0.45, [f](double x) {
-                double ph = std::fmod(f * x, 1.0);
-                double tri = 4.0 * std::fabs(ph - 0.5) - 1.0;
-                return (float)(tri * std::min(1.0, x * 200) * std::exp(-x * 3) * 0.22);
-            });
-        }
-        for (int q = 0; q < 16; ++q) {  // arpeggio: sixteenths, a soft square
-            int tone = q % 4 == 3 ? c.tones[0] + 12 : c.tones[q % 4];
-            double f = hz(tone);
-            add(t0 + q * beat * 0.25, beat * 0.24, [f](double x) {
-                double ph = std::fmod(f * x, 1.0);
-                return (float)((ph < 0.3 ? 1.0 : -1.0) * std::min(1.0, x * 300) * std::exp(-x * 9) * 0.045);
-            });
-        }
-        for (int tn : c.tones) {  // the pad: the chord, sines, slow in and out
-            double f = hz(tn - 12);
-            add(t0, bar, [f, bar](double x) {
-                double env = std::min(1.0, x / 0.3) * std::min(1.0, (bar - x) / 0.3);
-                return (float)(std::sin(6.2831853 * f * x) * env * 0.035);
-            });
-        }
-    }
-    float peak = 0.001f;
-    for (float v : mix) peak = std::max(peak, std::fabs(v));
-    const float gain = 0.22f / peak;  // quiet
-    std::vector<uint8_t>& w = g_musicWav;
-    auto put32 = [](uint32_t v) { for (int k = 0; k < 4; ++k) g_musicWav.push_back((uint8_t)(v >> (8 * k))); };
-    auto put16 = [](uint16_t v) { g_musicWav.push_back((uint8_t)v), g_musicWav.push_back((uint8_t)(v >> 8)); };
-    uint32_t data = (uint32_t)n * 2;
-    w.clear();
-    w.insert(w.end(), {'R', 'I', 'F', 'F'}), put32(36 + data), w.insert(w.end(), {'W', 'A', 'V', 'E', 'f', 'm', 't', ' '});
-    put32(16), put16(1), put16(1), put32((uint32_t)rate), put32((uint32_t)rate * 2), put16(2), put16(16);
-    w.insert(w.end(), {'d', 'a', 't', 'a'}), put32(data);
-    for (float v : mix) put16((uint16_t)(int16_t)std::clamp(v * gain * 32767.0f, -32767.0f, 32767.0f));
-}
-void Music(bool play) {
-    if (play == g_musicPlaying || !PlaySoundPtr()) return;
-    if (play) {
-        if (g_musicWav.empty()) BuildMusic();
-        PlaySoundPtr()((LPCSTR)g_musicWav.data(), nullptr, 0x0004 /* SND_MEMORY */ | 0x0001 /* SND_ASYNC */ | 0x0008 /* SND_LOOP */ | 0x0002);
-    } else {
-        PlaySoundPtr()(nullptr, nullptr, 0);
-    }
-    g_musicPlaying = play;
-}
-
 void DrawCod() {
     auto& g = ui::Gfx();
     float s = g.Scale();
@@ -6075,7 +5981,6 @@ public:
         g_guardGroups.clear();
         g_guardNames.clear();
         g_guardIds.clear();
-        Music(false);
         g_drones.clear();
         g_quads.clear();
         g_dronesLeft = 0;
@@ -6109,7 +6014,6 @@ public:
         if (core::IsPlayerReady()) HouseFrame(), KeepInHouse();
     }
     void OnRender() override {
-        Music(g_musicOn && g_arena.on && g_arena.taken && !MenuActive() && IsForeground());
         if (!g_arena.on || MenuActive()) return;
         DrawMarks();
         auto& g = ui::Gfx();
@@ -6166,11 +6070,6 @@ public:
                 End(true);
                 ui::TheChat().AddSystem(TR("Арена остановлена.", "The arena is stopped."));
             }
-            return true;
-        }
-        if (a0 == "музыка" || a0 == "music") {  // the arena's music off and on (this game's own)
-            g_musicOn = !g_musicOn;
-            ui::TheChat().AddSystem(g_musicOn ? TR("Музыка арены включена.", "The arena's music is on.") : TR("Музыка арены выключена.", "The arena's music is off."));
             return true;
         }
         if (a0 == "тибон" || a0 == "тибоун" || a0 == "tbone") {  // a test: T-Bone now
