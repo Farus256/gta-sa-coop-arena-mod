@@ -197,7 +197,7 @@ enum ArenaOp : uint8_t {
     A_START = 1, A_WAVE, A_LEFT, A_BOSS, A_END, A_ITEMS, A_PREP, A_MARK, A_SKIP,
     A_SCORE, A_BARS, A_BOARD, A_REPAIR, A_BOX, A_BOXUSE, A_BOXROLL, A_PERKS, A_PSPAWN, A_GRAB, A_POWER, A_TWINS,
     A_WALLS, A_DROP, A_TAKE, A_TAKEN, A_BUILD, A_LOBBY, A_FLAMER, A_STAGE, A_VOTE, A_VOTES, A_GIVE, A_MAPVOTE, A_MOVE,
-    A_HEALGAS, A_BOSSNAME, A_HIT, A_SHELL, A_SPEC, A_BOXTAKEN, A_SPOT, A_DRONEHIT, A_ALERT, A_GUARDNAME
+    A_HEALGAS, A_BOSSNAME, A_HIT, A_SHELL, A_SPEC, A_BOXTAKEN, A_SPOT, A_DRONEHIT, A_ALERT /* not used any more */, A_GUARDNAME
 };
 struct Arena {
     bool on = false, host = false;
@@ -295,9 +295,7 @@ int g_voteCount = 0, g_voteNeed = 1, g_mapVoteCount = 0;
 bool g_iVoted = false, g_iMapVoted = false;
 void MapVote(uint8_t by);
 void Relocate(int place);
-void ShowAlert();
-bool g_alertDone = false;  // host: this arena's air-raid alert given
-uint64_t g_alertStart = 0;  // every game: the alert shown since
+void LaserFrame();
 int MountQuad(int h);
 bool RcPlace() { return std::string(kPlaces[g_arena.place].keys[0][1]) == "rc"; }
 int g_dronesLeft = 0;  // host: the RC helicopters still to come this wave
@@ -2961,7 +2959,7 @@ void SpectateFrame(uint64_t now) {
     float mx = Ref<float>(0xB73418 + 0x0C), my = Ref<float>(0xB73418 + 0x10);
     if (IsForeground() && !ui::TheChat().IsOpen()) {
         g_specYaw -= mx * 0.006f;
-        g_specPitch = std::clamp(g_specPitch + my * 0.004f, -0.25f, 1.2f);
+        g_specPitch = std::clamp(g_specPitch - my * 0.004f, -0.25f, 1.2f);
     }
     float dist = 4.5f;
     CVector back{std::sin(g_specYaw) * std::cos(g_specPitch), -std::cos(g_specYaw) * std::cos(g_specPitch), std::sin(g_specPitch)};
@@ -3652,11 +3650,7 @@ void SpawnDrone() {
     d.wp = at;
     g_drones.push_back(d);
     LOGI("Arena: an RC helicopter comes in");
-    if (!g_alertDone) {  // the first one of the arena: the air-raid alert everywhere
-        g_alertDone = true;
-        Send(A_ALERT);
-        ShowAlert();
-    }
+
 }
 void Boom(Drone& d, bool shotDown) {
     CVehicle* v = GetVehicle(d.handle);
@@ -4978,7 +4972,6 @@ void Start(int faction, int place, int waves) {
     g_arena.nextWaveMs = NowMs() + PrepMs(true);
     ResetCod();
     ForgetSpot();
-    g_alertDone = false, g_alertStart = 0;
     // every arena from the same money: what was left of the last one is gone (out of the mode the save's own money
     // waits aside and comes back when the arena is over)
     if (!g_modeOn) g_moneyBefore = Cash(), g_moneyKept = true;
@@ -5086,10 +5079,6 @@ void Handle(uint8_t from, Reader& r) {
         uint16_t id = r.U16();
         uint8_t name = r.U8();
         if (r.Ok() && name < 5) g_guardIds.push_back({id, name});
-        return;
-    }
-    if (op == A_ALERT) {
-        if (from == Net().HostId() && g_arena.on) ShowAlert();
         return;
     }
     if (op == A_DRONEHIT) {  // host: a partner hit a helicopter's copy
@@ -5453,6 +5442,7 @@ void Update() {
                         Ref<float>((uintptr_t)assoc + 0x24) = 2.0f;                  // CAnimBlendAssociation::m_Speed
     Rescue(now);
     GuardCopies();
+    LaserFrame();
     static uint64_t scoreMs = 0;  // the score now and then too: one that came in late has everyone's
     if (now - scoreMs > 3000) scoreMs = now, SendScore();
     if (g_arena.host) DronesFrame(now);
@@ -5685,116 +5675,95 @@ void DrawScoreboard() {
 
 // The screen: the money (bottom right) and what it just got, the break's seconds and votes, the launcher when the AK is
 // in hand; over the world only the Officer's mark and, near the box, its price or what it turns over
-// ---- the air-raid alert (the first RC helicopter of an arena, every game, 3 s): a siren light at the top, its words by
-// it, the screen pulsing red, and a siren's wail (made here: a tone rising and falling, played by Windows)
-std::vector<uint8_t> g_sirenWav;
-void PlaySiren() {
-    if (g_sirenWav.empty()) {
-        const int rate = 22050, n = rate * 3;
-        std::vector<int16_t> pcm((size_t)n);
-        double phase = 0;
-        for (int i = 0; i < n; ++i) {
-            double t = (double)i / rate;
-            double f = 420.0 + 520.0 * (0.5 - 0.5 * std::cos(6.2831853 * t / 1.5));  // up and down, twice
-            phase += 6.2831853 * f / rate;
-            double v = std::sin(phase) + 0.35 * std::sin(3.0 * phase) + 0.15 * std::sin(5.0 * phase);
-            double env = std::min(1.0, std::min(t / 0.15, (3.0 - t) / 0.4));
-            pcm[(size_t)i] = (int16_t)(v * env * 0.32 * 32767.0 / 1.5);
-        }
-        auto put32 = [](std::vector<uint8_t>& b, uint32_t v) { for (int k = 0; k < 4; ++k) b.push_back((uint8_t)(v >> (8 * k))); };
-        auto put16 = [](std::vector<uint8_t>& b, uint16_t v) { b.push_back((uint8_t)v), b.push_back((uint8_t)(v >> 8)); };
-        std::vector<uint8_t>& w = g_sirenWav;
-        uint32_t data = (uint32_t)(n * 2);
-        w.insert(w.end(), {'R', 'I', 'F', 'F'}), put32(w, 36 + data), w.insert(w.end(), {'W', 'A', 'V', 'E', 'f', 'm', 't', ' '});
-        put32(w, 16), put16(w, 1), put16(w, 1), put32(w, rate), put32(w, rate * 2), put16(w, 2), put16(w, 16);
-        w.insert(w.end(), {'d', 'a', 't', 'a'}), put32(w, data);
-        const uint8_t* raw = (const uint8_t*)pcm.data();
-        w.insert(w.end(), raw, raw + data);
-    }
-    static auto play = (BOOL(WINAPI*)(LPCSTR, HMODULE, DWORD))GetProcAddress(LoadLibraryA("winmm.dll"), "PlaySoundA");
-    if (play) play((LPCSTR)g_sirenWav.data(), nullptr, 0x0004 /* SND_MEMORY */ | 0x0001 /* SND_ASYNC */ | 0x0002 /* SND_NODEFAULT */);
-}
-void ShowAlert() {
-    g_alertStart = NowMs();
-    PlaySiren();
-}
-void DrawAlert(uint64_t now) {
-    if (!g_alertStart || now - g_alertStart > 3000) return;
-    auto& g = ui::Gfx();
-    float s = g.Scale(), t = (float)(now - g_alertStart) / 1000.0f;
-    float fade = std::min(1.0f, (3.0f - t) / 0.5f);
-    float pulse = 0.5f + 0.5f * std::sin(t * 6.2831853f * 1.6f);
-    g.Rect(0, 0, g.Width(), g.Height(), ui::WithAlpha(0xFFFF1010, (0.05f + 0.13f * pulse) * fade));
-    // the light and the words, side by side in the middle at the top
-    const char* text = "УВАГА. ВОЗДУШНА НЕБЕЗПЕКА. ПРОЙДIТЬ У УКРИТТЯ";
-    float tw = g.TextWidth(ui::FONT_NORMAL, text), icon = 54 * s, gap = 16 * s;
-    float x = (g.Width() - icon - gap - tw) * 0.5f, cy = 96 * s;
-    float cx = x + icon * 0.5f;
-    bool on = ((int)(t * 5.0f)) % 2 == 0;
-    if (on) {  // the flash round it, and its rays
-        g.Ellipse(cx, cy - 6 * s, 46 * s, 40 * s, ui::WithAlpha(0xFFFF2020, 0.35f * fade));
-        for (int k = 0; k < 6; ++k) {
-            float a = 3.14159f + 3.14159f * (float)(k + 0.5f) / 6.0f;
-            g.Line(cx + std::cos(a) * 28 * s, cy - 6 * s + std::sin(a) * 26 * s, cx + std::cos(a) * 44 * s, cy - 6 * s + std::sin(a) * 40 * s,
-                   3 * s, ui::WithAlpha(0xFFFF6040, fade));
-        }
-    }
-    g.Ellipse(cx, cy - 4 * s, 20 * s, 20 * s, ui::WithAlpha(on ? 0xFFFF3020 : 0xFF901010, fade));  // the dome
-    g.Ellipse(cx - 6 * s, cy - 11 * s, 6 * s, 5 * s, ui::WithAlpha(0xFFFFC0B0, (on ? 0.9f : 0.4f) * fade));  // its shine
-    g.Rect(cx - 26 * s, cy + 4 * s, 52 * s, 10 * s, ui::WithAlpha(0xFF303030, fade));  // the base
-    g.Text(ui::FONT_NORMAL, x + icon + gap, cy - g.LineHeight(ui::FONT_NORMAL) * 0.5f, text,
-           ui::WithAlpha(on ? 0xFFFF4040 : 0xFFFFFFFF, fade), ui::TEXT_OUTLINE);
-}
-
-// ---- the snipers' laser sights: a thin red line from a sniper (one with the sniper rifle in hand, here or a copy) to
-// the player it aims at (the nearest one it sees), or ahead of it to the first wall; a red dot where it ends. Only the
-// parts this player's camera sees are drawn.
-void DrawLasers() {
+// ---- the snipers' laser sights: a thin red beam in the world from a sniper (one with the sniper rifle in hand, here
+// or a copy) to the player it aims at (the nearest one it sees), or ahead of it to the first wall, and a red dot where
+// it ends. Worked out each frame (LaserFrame), drawn among the game's own effects (RenderEffects: after the world, with
+// its depth, so walls hide it) as two thin quads facing the camera, and the dot as a corona.
+struct Laser {
+    CVector from, to;
+};
+std::vector<Laser> g_lasers;
+void LaserFrame() {
+    g_lasers.clear();
     CPlayerPed* me = FindPlayerPed(0);
     CPoolHeader* pool = PedPool();
-    if (!me || !pool) return;
-    auto& g = ui::Gfx();
-    float s = g.Scale();
+    if (!me || !pool || !g_arena.on) return;
     int area = kPlaces[g_arena.place].area;
-    CVector eye = cam::Source();
     for (int i = 0; i < pool->size; ++i) {
         if (pool->byteMap[i] < 0) continue;
         auto* p = (CPed*)(pool->objects + (size_t)i * kPedPoolElemSize);
         if (p->IsPlayer() || p->Health() <= 0.0f || p->AreaCode() != area || p->ActiveWeapon().type != WEAPON_SNIPER || !arena::IsEnemy(p)) continue;
-        if ((p->GetPosition() - me->GetPosition()).Length() > 120.0f) continue;
+        if ((p->GetPosition() - me->GetPosition()).Length() > 150.0f) continue;
         float hd = p->GetHeading();
         CVector f{-std::sin(hd), std::cos(hd), 0.0f};
-        CVector from = p->GetPosition() + CVector{0, 0, 0.55f} + f * 0.5f, to = from + f * 60.0f, hit;
+        CVector from = p->GetPosition() + CVector{0, 0, 0.55f} + f * 0.55f, to = from + f * 60.0f, hit;
         if (CPed* t = NearestPlayer(p->GetPosition()); t && Clear(from, t->GetPosition() + CVector{0, 0, 0.3f}))
             to = t->GetPosition() + CVector{0, 0, 0.3f};
         else if (Ray(from, to, hit))
             to = hit;
-        constexpr int kSteps = 24;
-        float px = 0, py = 0;
-        bool prev = false;
-        for (int k = 0; k <= kSteps; ++k) {
-            CVector q = from + (to - from) * ((float)k / kSteps);
-            float x, y, depth;
-            bool vis = WorldToScreen(q, x, y, depth) && depth > 0.2f && Clear(eye, q);
-            if (vis && prev) g.Line(px, py, x, y, 1.6f * s, 0xC0FF1A1A, false);
-            prev = vis, px = x, py = y;
-        }
-        float x, y, depth;
-        if (WorldToScreen(to, x, y, depth) && depth > 0.2f && Clear(eye, to + (from - to) * 0.02f)) {
-            g.Ellipse(x, y, 5 * s, 5 * s, 0x60FF2020);
-            g.Ellipse(x, y, 2.2f * s, 2.2f * s, 0xF0FF3030);
+        g_lasers.push_back({from, to});
+        // the dot: a small red corona (hidden behind walls), one per sniper
+        Call<0x6FC580>(0x1A5E0000u + (uint32_t)(i & 0xFFFF), (CEntity*)nullptr, (uint8_t)255, (uint8_t)20, (uint8_t)20, (uint8_t)255, &to,
+                       0.12f, 150.0f, 0, 0, 0, 1, 0, 0.0f, false, 0.2f, false, 15.0f, false, false);  // CCoronas::RegisterCorona
+    }
+}
+struct RwVert {
+    float x, y, z, nx, ny, nz;
+    uint32_t color;  // RwRGBA: r, g, b, a
+    float u, v;
+};
+void RenderLasers() {
+    if (!g_arena.on) g_lasers.clear();
+    if (g_lasers.empty()) return;
+    auto state = [](uint32_t st, uint32_t v) { Call<0x7FC2D0>(st, v); };  // RwRenderStateSet
+    state(8, 0);   // ZWRITEENABLE off
+    state(6, 1);   // ZTESTENABLE on: walls in front hide it
+    state(12, 1);  // VERTEXALPHAENABLE
+    state(10, 5);  // SRCBLEND: SRCALPHA
+    state(11, 2);  // DESTBLEND: ONE (it glows)
+    state(20, 1);  // CULLMODE: none
+    state(1, 0);   // TEXTURERASTER: none
+    CVector eye = cam::Source();
+    for (const Laser& l : g_lasers) {
+        CVector dir = l.to - l.from;
+        float len = dir.Length();
+        if (len < 0.1f) continue;
+        dir = dir * (1.0f / len);
+        CVector mid = (l.from + l.to) * 0.5f - eye;
+        CVector side{dir.y * mid.z - dir.z * mid.y, dir.z * mid.x - dir.x * mid.z, dir.x * mid.y - dir.y * mid.x};
+        float sl = side.Length();
+        if (sl < 0.0001f) continue;
+        side = side * (1.0f / sl);
+        for (int pass = 0; pass < 2; ++pass) {  // the core, then a faint glow round it
+            float w = pass == 0 ? 0.008f : 0.03f;
+            uint32_t c = pass == 0 ? 0xD01818FFu : 0x401010FFu;  // a, b, g, r from the top byte down
+            CVector o = side * w;
+            CVector pts[4] = {l.from + o, l.from - o, l.to + o, l.to - o};
+            RwVert v[4];
+            for (int k = 0; k < 4; ++k) v[k] = {pts[k].x, pts[k].y, pts[k].z, 0, 0, 1, c, 0, 0};
+            uint16_t idx[6] = {0, 1, 2, 1, 3, 2};
+            if (Call<0x7EF450, void*>((void*)v, 4u, (void*)nullptr, 8u | 16u)) {  // RwIm3DTransform: XYZ, RGBA
+                Call<0x7EF550>(3, (uint16_t*)idx, 6);  // RwIm3DRenderIndexedPrimitive: a triangle list
+                Call<0x7EF520>();                      // RwIm3DEnd
+            }
         }
     }
+    state(8, 1);   // ZWRITEENABLE back
+    state(11, 6);  // DESTBLEND: INVSRCALPHA, as it was
+}
+using RenderEffectsFn = void(__cdecl*)();
+RenderEffectsFn g_origRenderEffects = nullptr;
+void __cdecl HookRenderEffects() {
+    g_origRenderEffects();
+    RenderLasers();
 }
 
 void DrawCod() {
     auto& g = ui::Gfx();
     float s = g.Scale();
     uint64_t now = NowMs();
-    DrawLasers();
     for (auto& [h, name] : g_guardNames)  // the homies' names
         if (CPed* gp = GetPed(h); gp && gp->Health() > 0.0f) Label(gp->GetPosition() + CVector{0, 0, 1.15f}, kGuardNames[name][Lang()], 0xFF80FF80, 30.0f);
-    DrawAlert(now);
     if (g_break && !g_arena.endAt && g_breakEndMs > now) {  // the break: one line on the right
         std::string t = Format(TR("Пауза %d с   [Y] пропустить %d/%d", "Break %d s   [Y] skip %d/%d"), (int)((g_breakEndMs - now + 999) / 1000),
                                g_voteCount, g_voteNeed);
@@ -6044,6 +6013,7 @@ public:
         Net().SetHandler(proto::G_ARENA, &Handle);
         mem::HookFn(0x55CEB0, &HookWeaponHitStats, &g_origWeaponHitStats, "CStats::UpdateStatsWhenWeaponHit");
         mem::HookFn(0x4D6E60, &HookAmbience, &g_origAmbience, "CAEAmbienceTrackManager::UpdateAmbienceTrackAndVolume");
+        mem::HookFn(0x53E170, &HookRenderEffects, &g_origRenderEffects, "RenderEffects");
         mem::HookFn(0x73B2A0, &HookHasAmmo, &g_origHasAmmo, "CWeapon::HasWeaponAmmoToBeUsed");
         mem::HookFn(0x725120, &HookPlaceMarker, &g_origPlaceMarker, "C3dMarkers::PlaceMarker");
         mem::HookFn(0x726D40, &HookPlaceCone, &g_origPlaceCone, "C3dMarkers::PlaceMarkerCone");
