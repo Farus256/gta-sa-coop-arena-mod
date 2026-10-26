@@ -185,7 +185,7 @@ enum ArenaOp : uint8_t {
     A_START = 1, A_WAVE, A_LEFT, A_BOSS, A_END, A_ITEMS, A_PREP, A_MARK, A_SKIP,
     A_SCORE, A_BARS, A_BOARD, A_REPAIR, A_BOX, A_BOXUSE, A_BOXROLL, A_PERKS, A_PSPAWN, A_GRAB, A_POWER, A_TWINS,
     A_WALLS, A_DROP, A_TAKE, A_TAKEN, A_BUILD, A_LOBBY, A_FLAMER, A_STAGE, A_VOTE, A_VOTES, A_GIVE, A_MAPVOTE, A_MOVE,
-    A_HEALGAS, A_BOSSNAME, A_HIT, A_SHELL
+    A_HEALGAS, A_BOSSNAME, A_HIT, A_SHELL, A_SPEC
 };
 struct Arena {
     bool on = false, host = false;
@@ -209,6 +209,11 @@ CPed* g_tagCopies[2] = {nullptr, nullptr};
 uint16_t g_tagIds[2] = {0, 0};
 uint64_t g_tagIdsUntil = 0;
 bool g_fireWave = false;
+// the spectators: whoever fell in the arena watches a team mate till the next wave (every game knows who: A_SPEC)
+bool g_spectating = false;
+std::set<uint8_t> g_spectators;
+uint8_t g_specTarget = 0xFF;
+bool Spectator(uint8_t id) { return g_spectators.count(id) != 0; }
 // this player has T-Bone's AK with the grenade launcher: loaded, or loading till then
 bool g_hasUgl = false, g_uglLoaded = false;
 uint64_t g_uglReadyMs = 0;                     // the 10% event: this wave is four flamethrower men and nothing else
@@ -529,9 +534,9 @@ std::vector<int> StepsTo(int to) {
 std::vector<CVector> PlayerSpots() {  // the live players in the place
     std::vector<CVector> at;
     int area = kPlaces[g_arena.place].area;
-    if (CPlayerPed* me = FindPlayerPed(0); me && me->Health() > 0.0f && me->AreaCode() == area) at.push_back(me->GetPosition());
+    if (CPlayerPed* me = FindPlayerPed(0); me && !g_spectating && me->Health() > 0.0f && me->AreaCode() == area) at.push_back(me->GetPosition());
     for (auto& [id, rp] : Players::Instance().All())
-        if (rp.hasState && !(rp.state.flags & OnFootState::F_DEAD) && rp.state.area == area) at.push_back(rp.state.pos);
+        if (rp.hasState && !Spectator(id) && !(rp.state.flags & OnFootState::F_DEAD) && rp.state.area == area) at.push_back(rp.state.pos);
     if (at.empty()) at.push_back(kPlaces[g_arena.place].pos);
     return at;
 }
@@ -732,9 +737,9 @@ CPed* NearestPlayer(const CVector& at) {
         float d = (ped->GetPosition() - at).Length();
         if (d < bestD) bestD = d, best = ped;
     };
-    consider(FindPlayerPed(0));
+    if (!g_spectating) consider(FindPlayerPed(0));
     for (auto& [id, rp] : Players::Instance().All())
-        if (rp.ped && rp.hasState && !(rp.state.flags & OnFootState::F_DEAD)) consider(rp.ped);
+        if (rp.ped && rp.hasState && !Spectator(id) && !(rp.state.flags & OnFootState::F_DEAD)) consider(rp.ped);
     return best;
 }
 
@@ -1023,11 +1028,11 @@ struct Loot {
 constexpr int kLootN = 9;
 const Loot kLoot[3][kLootN] = {
     // the first waves: pistols, the silenced one, the eagle, shotguns, the uzi and the tec-9, a bat, molotovs
-    {{22, 346, 68}, {23, 347, 68}, {24, 348, 35}, {25, 349, 30}, {28, 352, 180}, {32, 372, 180}, {26, 350, 24}, {5, 336, 1}, {18, 344, 3}},
+    {{22, 346, 34}, {23, 347, 34}, {24, 348, 21}, {22, 346, 51}, {23, 347, 51}, {24, 348, 28}, {22, 346, 34}, {23, 347, 34}, {24, 348, 21}},
     // the middle ones: the mp5, the ak, the combat shotgun, grenades, the country rifle, a katana
-    {{29, 353, 240}, {30, 355, 150}, {26, 350, 30}, {27, 351, 28}, {24, 348, 42}, {16, 342, 4}, {33, 357, 25}, {8, 339, 1}, {18, 344, 5}},
+    {{22, 346, 51}, {23, 347, 51}, {24, 348, 28}, {22, 346, 68}, {23, 347, 68}, {24, 348, 35}, {22, 346, 51}, {23, 347, 51}, {24, 348, 28}},
     // the last ones: the m4, the sniper rifle, rockets, the flamethrower, a chainsaw
-    {{31, 356, 200}, {30, 355, 200}, {27, 351, 35}, {34, 358, 20}, {16, 342, 6}, {35, 359, 3}, {37, 361, 300}, {9, 341, 1}, {33, 357, 30}},
+    {{22, 346, 68}, {23, 347, 68}, {24, 348, 35}, {22, 346, 85}, {23, 347, 85}, {24, 348, 42}, {22, 346, 68}, {23, 347, 68}, {24, 348, 35}},
 };
 constexpr int MODEL_ARMOUR = 1242;
 struct Item {
@@ -1077,9 +1082,9 @@ void PlaceItems(int forWave) {
     float progress = Progress(forWave);
     int tier = std::clamp((int)(progress * 2.99f), 0, 2);
     bool soda = pl.soda || Machines() > 0;
-    int guns = 2 + forWave / 2 + (pl.big ? 2 : 0);
+    int guns = 1 + forWave / 3 + (pl.big ? 1 : 0);  // free ones: pistols only, a few
     int armour = soda ? (forWave % 2 == 0 ? 1 : 0) + (pl.big ? 1 : 0) : 1 + forWave / 3 + (pl.big ? 1 : 0);
-    guns = std::min(guns, 7), armour = std::min(armour, 4);
+    guns = std::min(guns, 3), armour = std::min(armour, 4);
     std::vector<Item> items;
     std::vector<CVector> players = PlayerSpots();
     // the next spot: of the place's cells the farthest from those taken and from the last wave's (a little luck too)
@@ -1480,8 +1485,7 @@ void UpdateBox(uint64_t now) {
         if (g_box.teddy) {
             if (mine) AddPoints(kBoxCost);
             BoxSound(4 /* AE_FRONTEND_ERROR */, 1.0f);
-            ui::TheChat().AddSystem(TR("В ящике плюшевый мишка! Очки вернулись, ящик переезжает.",
-                                       "A teddy bear in the box! The points are back, the box moves."));
+            ui::TheChat().AddSystem(TR("Мишка! Ящик переезжает.", "A teddy bear! The box moves."));
             DelObj(g_box.handle);
             DelObj(g_box.handle2);
             if (g_arena.host) g_box.moveAt = now + 6000;
@@ -1802,8 +1806,7 @@ void ApplyDrop(const Drop& d, uint8_t by) {
         if (d.special == 1) {
             g_hasUgl = true;
             g_uglLoaded = true;
-            ui::TheChat().AddSystem(TR("N — выстрел из подствольного гранатомёта (АК-47 в руках). Перезарядка: N, нужна граната.",
-                                       "N fires the grenade launcher (the AK-47 in hand). Reload: N, a grenade is needed."));
+            ui::TheChat().AddSystem(TR("N — подствольник, N — зарядить гранатой.", "N: the launcher, N: load a grenade."));
         }
     }
 }
@@ -2056,7 +2059,92 @@ void FindNear() {
 // back in the fight at a new wave: a player who died meanwhile (the hospital) comes back with a pistol
 uint64_t g_aliveSince = 0;  // this player on its feet since (after a death: the hospital's respawn done)
 int g_deadWave = 0;         // the wave it died in: it comes back at a later one
+// ---- the spectator: one who fell in the arena (no partner to revive it, or it bled out) does not die and go to a
+// hospital: it stays in the place unseen (invisible, no collision, every proof, nobody targets it, frozen, no control),
+// its camera on a team mate (the left mouse button: the next one), and at the next wave it is back by a team mate's
+// side with a pistol and full health. Its game keeps its own people there all the while (the host's enemies too).
+uint64_t g_specClickMs = 0, g_specMoveMs = 0;
+CPed* g_specCamOn = nullptr;
+void Spectate() {
+    CPlayerPed* me = FindPlayerPed(0);
+    if (g_spectating || !g_arena.taken || !me) return;
+    int h = GetPedRef(me);
+    g_spectating = true;
+    g_specTarget = 0xFF;
+    g_specCamOn = nullptr;
+    Cmd(0x0792).I(h).Run();  // CLEAR_CHAR_TASKS_IMMEDIATELY
+    me->Health() = std::max(me->Health(), 100.0f);
+    me->SetProofs(true, true, true, true, true);
+    me->PedFlags2() |= 1u << 28;          // bNeverEverTargetThisPed
+    Cmd(0x0337).I(h).I(0).Run();          // SET_CHAR_VISIBLE off
+    Cmd(0x0619).I(h).I(0).Run();          // SET_CHAR_COLLISION off
+    Cmd(0x04D7).I(h).I(1).Run();          // FREEZE_CHAR_POSITION
+    Cmd(0x01B4).I(0).I(0).Run();          // SET_PLAYER_CONTROL off
+    g_hasUgl = g_uglLoaded = false;
+    g_spectators.insert(Net().MyId());
+    Send(A_SPEC, [](Writer& w) { w.U8(1); });
+    ui::TheChat().AddSystem(TR("Вы выбыли до след. волны. ЛКМ — другой игрок.", "Out till the next wave. LMB: next player."));
+    LOGI("Arena: spectating");
+}
+void EndSpectate(bool back) {
+    if (!g_spectating) return;
+    g_spectating = false;
+    g_spectators.erase(Net().MyId());
+    Send(A_SPEC, [](Writer& w) { w.U8(0); });
+    CPlayerPed* me = FindPlayerPed(0);
+    Cmd(0x02EB).Run();  // RESTORE_CAMERA_JUMPCUT
+    g_specCamOn = nullptr;
+    if (!me) return;
+    int h = GetPedRef(me);
+    Cmd(0x04D7).I(h).I(0).Run();
+    Cmd(0x0619).I(h).I(1).Run();
+    Cmd(0x0337).I(h).I(1).Run();
+    Cmd(0x01B4).I(0).I(1).Run();
+    me->SetProofs(false, false, false, false, false);
+    me->PedFlags2() &= ~(1u << 28);
+    if (!back) return;
+    me->Health() = std::max<float>(PlayerInfos()[0].maxHealth, 100.0f);
+    std::vector<CVector> spots = PlayerSpots();
+    const Place& pl = kPlaces[g_arena.place];
+    CVector at = spots.empty() ? pl.pos : spots[0] + CVector{0.8f, 0.6f, 0};
+    Teleport(pl.area, at, Rand(0.0f, 360.0f));
+    Give(h, WEAPON_PISTOL, 68);
+    Cmd(0x01B9).I(h).I(WEAPON_PISTOL).Run();
+    g_dead = false;
+    ui::TheChat().AddSystem(TR("Вы снова в бою.", "You are back in the fight."));
+}
+// every frame while spectating: the camera on a live team mate (the next one on a click), the hidden body with it
+void SpectateFrame(uint64_t now) {
+    CPlayerPed* me = FindPlayerPed(0);
+    if (!me) return;
+    std::vector<std::pair<uint8_t, CPed*>> live;
+    int area = kPlaces[g_arena.place].area;
+    for (auto& [id, rp] : Players::Instance().All())
+        if (rp.ped && rp.hasState && !Spectator(id) && !(rp.state.flags & OnFootState::F_DEAD) && rp.state.area == area)
+            live.push_back({id, rp.ped});
+    if (live.empty()) return;
+    bool click = IsForeground() && (GetAsyncKeyState(VK_LBUTTON) & 0x8000) && now - g_specClickMs > 400;
+    size_t cur = 0;
+    for (size_t i = 0; i < live.size(); ++i)
+        if (live[i].first == g_specTarget) cur = i;
+    if (click) g_specClickMs = now, cur = (cur + 1) % live.size();
+    g_specTarget = live[cur].first;
+    CPed* t = live[cur].second;
+    if (t != g_specCamOn) {
+        g_specCamOn = t;
+        Cmd(0x0159).I(GetPedRef(t)).I(4).I(2).Run();  // CAMERA_ON_PED: behind it, a jump cut
+    }
+    if (now - g_specMoveMs > 500) {  // the hidden body with it (the world streams round it, its game shares its people)
+        g_specMoveMs = now;
+        SetEntityPosition(me, t->GetPosition() - CVector{0, 0, 6.0f});  // under the floor: its copy in the other games is out of sight too
+    }
+}
+
 void Rejoin() {
+    if (g_spectating) {
+        EndSpectate(true);
+        return;
+    }
     CPlayerPed* me = FindPlayerPed(0);
     if (!g_arena.taken || !me || me->Health() <= 0.0f || PlayerInfos()[0].playerState != 0) return;
     if (!g_aliveSince || NowMs() - g_aliveSince < 3000 || Ref<uint8_t>(0xB5F851) || cam::WideScreenOn()) return;  // not mid-respawn
@@ -2222,8 +2310,7 @@ void MakeTwins(int wave) {
             w.U16(np ? np->netId : 0);
         }
     });
-    ui::TheChat().AddSystem(TR("Мини-босс: Близнецы! Отто с двумя обрезами и Эрнандо с двумя диглами.",
-                               "A mini-boss: the Twins! Otto with two sawn-offs and Ernando with two desert eagles."));
+    ui::TheChat().AddSystem(TR("Мини-босс: Близнецы!", "A mini-boss: the Twins!"));
 }
 
 void SendTag(int kind, CPed* p) {  // the other games: which copy is the Butcher (0) or the Officer (1)
@@ -2248,7 +2335,7 @@ void MakeSaw(int wave) {
         g_info[g_sawPed].nextChargeMs = NowMs() + 4000;
         SendTag(0, g_sawPed);
     }
-    ui::TheChat().AddSystem(TR("Мини-босс: Мясник с бензопилой!", "A mini-boss: the Butcher with a chainsaw!"));
+    ui::TheChat().AddSystem(TR("Мини-босс: Мясник!", "A mini-boss: the Butcher!"));
 }
 // The Officer: a katana, 600 health and armour; keeps to the far back of the place (the players must go to him), calls 4
 // men to him every 30 s, falls back when hurt and a player is on him, and heals while nobody hurts him
@@ -2276,8 +2363,7 @@ void MakeOfficer(int wave) {
         Cmd(0x0350).I(h).I(1).Run();  // SET_CHAR_STAY_IN_SAME_PLACE: he waits there
         SendTag(1, g_officerPed);
     }
-    ui::TheChat().AddSystem(TR("Мини-босс: Офицер! Он прячется в тылу и зовёт подкрепление — доберитесь до него.",
-                               "A mini-boss: the Officer! He hides at the back and calls for help: get to him."));
+    ui::TheChat().AddSystem(TR("Мини-босс: Офицер в тылу!", "A mini-boss: the Officer, at the back!"));
 }
 
 void SpawnWave() {
@@ -3595,8 +3681,7 @@ void Finish(bool won) {
     if (won) {
         int prize = 1000 * g_arena.waves;  // $1000 a wave
         PlayerInfos()[0].money += prize;
-        ui::TheChat().AddSystem(Format(TR("Арена пройдена! Награда $%d. Через 6 секунд — обратно.",
-                                          "The arena is won! Prize $%d. Back in 6 seconds."), prize));
+        ui::TheChat().AddSystem(Format(TR("Арена пройдена! +$%d", "Arena won! +$%d"), prize));
     } else {
         ui::TheChat().AddSystem(TR("Арена проиграна.", "The arena is lost."));
     }
@@ -3681,7 +3766,7 @@ void Relocate(int place) {
         g_arena.nextWaveMs = now + PrepMs(true);
     }
     g_breakEndMs = now + PrepMs(true);
-    ui::TheChat().AddSystem(Format(TR("Смена арены: %s. Волна и оружие остаются.", "A new arena: %s. The wave and the weapons stay."),
+    ui::TheChat().AddSystem(Format(TR("Новая арена: %s.", "New arena: %s."),
                                    PlaceName(place).c_str()));
     LOGI("Arena: moved to place %d", place);
 }
@@ -3701,6 +3786,8 @@ void End(bool tell) {
     if (tell && g_arena.host) Send(A_END, [](Writer& w) { w.U8(g_arena.won); });
     Clear();
     bool was = g_arena.taken;
+    EndSpectate(false);
+    g_spectators.clear();
     HideSaves(false);
     ShutDoors(false);
     TakeBack();
@@ -3743,16 +3830,9 @@ void Start(int faction, int place, int waves) {
         LoadKnifeModel();
     }
     std::string wavesText = waves ? Format("%d", waves) : std::string(TR("без конца", "no end"));
-    ui::TheChat().AddSystem(Format(TR("Арена: %s, %s, волн: %s. Первая волна через %d секунд — соберите оружие и броню!",
-                                      "Arena: %s at %s, %s waves. The first wave in %d seconds: pick up weapons and armour!"),
-                                   FactionName(faction).c_str(), PlaceName(place).c_str(), wavesText.c_str(), (int)(PrepMs(true) / 1000)));
-    ui::TheChat().AddSystem(Format(TR("Очки: %d. Попадания и убийства дают очки; E у баррикады — прибить доску (10 очков), "
-                                      "E у ящика с оружием — случайное оружие за %d.",
-                                      "Points: %d. Hits and kills give points; E at a barricade nails a board on (10 points), "
-                                      "E at the weapon box: a random weapon for %d."),
-                                   kStartPoints, kBoxCost));
-    ui::TheChat().AddSystem(Format(TR("H — построить баррикаду перед собой (%d очков), E у оружия на стене — купить его.",
-                                      "H builds a barricade in front of you (%d points), E at a gun on a wall buys it."), kBuildCost));
+    ui::TheChat().AddSystem(Format(TR("Арена: %s, %s, волн: %s.", "Arena: %s, %s, %s waves."), FactionName(faction).c_str(),
+                                   PlaceName(place).c_str(), wavesText.c_str()));
+    ui::TheChat().AddSystem(TR("E — ящик, стены, доски · H — баррикада", "E: the box, walls, boards · H: a barricade"));
 }
 
 void Skip(uint8_t by);
@@ -3817,6 +3897,11 @@ void Handle(uint8_t from, Reader& r) {
     if (r.Ok() && op == A_SHELL && from != Net().HostId()) {  // a partner's own launcher
         Vec3 f = r.Vec(), v = r.Vec();
         if (r.Ok() && g_arena.on) AddShell({f.x, f.y, f.z}, {v.x, v.y, v.z}, nullptr, false);
+        return;
+    }
+    if (r.Ok() && op == A_SPEC) {
+        uint8_t on = r.U8();
+        if (r.Ok()) on ? (void)g_spectators.insert(from) : (void)g_spectators.erase(from);
         return;
     }
     if (r.Ok() && op == A_VOTE) {
@@ -3917,8 +4002,7 @@ void Handle(uint8_t from, Reader& r) {
         uint8_t secs = r.U8();
         if (r.Ok()) {
             SetBreak(true, NowMs() + (uint64_t)secs * 1000);
-            ui::TheChat().AddSystem(Format(TR("Волна отбита! Следующая через %d секунд. Y — пропустить, /arena смена — сменить арену.",
-                                              "The wave is beaten! The next one in %d seconds. Y skips, /arena change moves to another arena."), (int)secs));
+            ui::TheChat().AddSystem(Format(TR("Волна отбита! Пауза %d с.", "Wave beaten! A %d s break."), (int)secs));
         }
     } else if (op == A_BARS) {
         uint8_t n = r.U8();
@@ -4075,9 +4159,9 @@ void HideSaves(bool hide) {
 // the barricades solid in a wave, open between the waves; the vote shown and counted
 int Voters() {  // the live players in the place
     int n = 0, area = kPlaces[g_arena.place].area;
-    if (CPlayerPed* me = FindPlayerPed(0); me && me->Health() > 0.0f && me->AreaCode() == area) ++n;
+    if (CPlayerPed* me = FindPlayerPed(0); me && !g_spectating && me->Health() > 0.0f && me->AreaCode() == area) ++n;
     for (auto& [id, rp] : Players::Instance().All())
-        if (rp.hasState && !(rp.state.flags & OnFootState::F_DEAD) && rp.state.area == area) ++n;
+        if (rp.hasState && !Spectator(id) && !(rp.state.flags & OnFootState::F_DEAD) && rp.state.area == area) ++n;
     return std::max(1, n);
 }
 void SendVotes() {
@@ -4130,6 +4214,7 @@ void Update() {
     UpdateDrops(now);
     UpdateGas(now);
     UpdateShells(now);
+    if (g_spectating) SpectateFrame(now);
     if (g_uglReadyMs && now >= g_uglReadyMs) g_uglReadyMs = 0, g_uglLoaded = true;
     TagCopies();
     if (g_arena.host) {
@@ -4151,9 +4236,6 @@ void Update() {
             g_uglReadyMs = 0;
             g_deadWave = g_arena.wave;
             AddPoints(-g_points / 10);
-            if (Net().Online())
-                ui::TheChat().AddSystem(TR("Вы погибли. Вернётесь в бой в начале следующей волны.",
-                                           "You died. You come back at the start of the next wave."));
         }
     }
     if (!g_arena.host) return;
@@ -4224,9 +4306,10 @@ void Update() {
     // everyone dead or out of the place: lost
     int area = kPlaces[g_arena.place].area;
     bool anyIn = false;
-    if (CPlayerPed* me = FindPlayerPed(0)) anyIn |= me->Health() > 0.0f && me->AreaCode() == area;
+    if (CPlayerPed* me = FindPlayerPed(0)) anyIn |= !g_spectating && me->Health() > 0.0f && me->AreaCode() == area;
     for (auto& [id, rp] : Players::Instance().All())
-        if (rp.hasState) anyIn |= !(rp.state.flags & OnFootState::F_DEAD) && rp.state.area == area && now - rp.stateRecvMs < 5000;
+        if (rp.hasState && !Spectator(id))
+            anyIn |= !(rp.state.flags & OnFootState::F_DEAD) && rp.state.area == area && now - rp.stateRecvMs < 5000;
     if (!anyIn && now - g_arena.startMs > 8000) {
         if (!g_arena.outSince) g_arena.outSince = now;
         if (now - g_arena.outSince > 4000) {
@@ -4249,8 +4332,7 @@ void Update() {
             g_arena.nextWaveMs = now + PrepMs(false);
             g_arena.itemsFor = g_arena.wave + 1;
             Send(A_PREP, [secs](Writer& w) { w.U8((uint8_t)secs); });
-            ui::TheChat().AddSystem(Format(TR("Волна отбита! Следующая через %d секунд. Y — пропустить, /arena смена — сменить арену.",
-                                              "The wave is beaten! The next one in %d seconds. Y skips, /arena change moves to another arena."), secs));
+            ui::TheChat().AddSystem(Format(TR("Волна отбита! Пауза %d с.", "Wave beaten! A %d s break."), secs));
         }
         if (now >= g_arena.nextWaveMs) {
             g_arena.nextWaveMs = 0;
@@ -4625,7 +4707,7 @@ public:
                 ui::TheChat().AddError(TR("Сменить арену можно только между волнами.", "The arena can be changed between the waves only."));
             } else if (!g_iMapVoted) {
                 g_iMapVoted = true;
-                ui::TheChat().AddSystem(TR("Вы проголосовали за смену арены.", "You voted for another arena."));
+                ui::TheChat().AddSystem(TR("Голос за смену арены.", "Voted for another arena."));
                 if (g_arena.host) MapVote(Net().MyId());
                 else Send(A_MAPVOTE);
             }
@@ -4714,6 +4796,8 @@ bool On() {
     return g_arena.on && g_arena.taken && me && me->AreaCode() == kPlaces[g_arena.place].area;
 }
 bool UnlimitedRevives() { return g_arena.on && g_arena.taken; }
+bool Spectating() { return g_spectating; }
+void Fall() { Spectate(); }
 bool QuickRevive() { return false; }
 void UseQuickRevive() {}
 float ReloadFactor() { return 1.0f; }
@@ -4786,7 +4870,7 @@ bool KeyDown(int vk, bool repeat) {
         if (!g_break || repeat) return g_break;
         if (!g_iVoted) {
             g_iVoted = true;
-            ui::TheChat().AddSystem(TR("Вы проголосовали за пропуск ожидания.", "You voted to skip the wait."));
+            ui::TheChat().AddSystem(TR("Голос за пропуск.", "Voted to skip."));
             if (g_arena.host) Vote(Net().MyId());
             else Send(A_VOTE);
         }

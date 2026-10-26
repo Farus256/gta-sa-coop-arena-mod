@@ -629,7 +629,7 @@ void RenderConnectMenu() {
             // the mode (the story, or the gang war: a new game for everyone) and, for the story, the save
             float mw = inGame ? 0.0f : cw * 0.46f, gap = inGame ? 0.0f : 14 * s;
             if (!inGame) caption(cx, TR("Режим", "Mode"));
-            caption(cx + mw + gap, TR("Сохранение", "Save"));
+            if (inGame || Cfg().gameMode != 2) caption(cx + mw + gap, TR("Сохранение", "Save"));
             cy += ch + 6 * s;
             int& mode = Cfg().gameMode;
             if (!inGame) {
@@ -639,7 +639,15 @@ void RenderConnectMenu() {
                 if (d) mode = (mode + d + 3) % 3;
             }
             float sx = cx + mw + gap, sw = cw - mw - gap;
-            if (inGame || mode == 1) {
+            if (!inGame && mode == 2) {
+                // the arena: no save to pick (the world under it is the newest save's; a new game when there is none)
+                hostSlot = -1;
+                for (const auto& sl : g_slots)
+                    if (sl.exists && sl.slot > 0) {
+                        hostSlot = sl.slot;
+                        break;
+                    }
+            } else if (inGame || mode == 1) {
                 g.Rect(sx, cy, sw, rowH, 0xFF090C10);
                 g.Text(FONT_NORMAL, sx + 12 * s, cy + (rowH - lh) * 0.5f,
                        inGame ? TR("Текущая игра", "Current game") : TR("Новая игра для всех", "A new game for all"), kText, TEXT_SHADOW);
@@ -709,8 +717,7 @@ void RenderConnectMenu() {
         else if (g_tab == 1 && !inGame && !hostSlot)
             para(TR("В этом слоте нет сохранения.", "This slot has no save."), kSaMuted, FONT_SMALL, true);
         else if (g_tab == 1 && !inGame && Cfg().gameMode == 2)
-            para(TR("Как соберётесь, арена начнётся сама и пойдёт раз за разом. Персонажа каждый выберет в лобби.",
-                    "Once everyone is in, the arena starts by itself, one after another. Each picks a character in the lobby."),
+            para(TR("Арена начнётся сама. Персонажа выберете в лобби.", "The arena starts by itself. Pick a character in the lobby."),
                  kSaMuted, FONT_SMALL, true);
         else if (g_tab == 1 && !inGame && Cfg().gameMode == 1)
             para(TR("Все начнут новую игру без сюжета и пролога. Банду каждый выберет в лобби.",

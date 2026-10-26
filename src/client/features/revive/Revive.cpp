@@ -45,6 +45,7 @@ enum : uint8_t { OP_START = 1, OP_STOP = 2, OP_DONE = 3 };
 
 // ---- this player wounded
 bool g_wantDown = false;   // its health ran out in the damage processing: it falls right after it
+bool g_wantFall = false;   // ... in the arena with nobody to revive it: it watches (arena::Fall) right after it
 bool g_down = false;
 // It bled out or gave up: it dies for real now. Until the game has it wasted no hit puts it down again (a shot at the
 // body on the ground went through ComputeWillKillPed, the hook took it for a new wound, and the 30 seconds started over)
@@ -165,7 +166,18 @@ void __fastcall HookWillKill(void* calc, void* edx, CPed* ped, uint8_t* rsp, boo
     if (!rsp[8] || !Net().Online() || g_dyingMs) return;
     CPlayerPed* me = FindPlayerPed(0);
     if (ped != me) return;
-    if (!g_down && !g_wantDown && !CanGoDown(me, Field<int32_t>(calc, 0x0C))) return;
+    if (arena::Spectating()) {  // watching: nothing hurts it
+        ped->Health() = 100.0f;
+        rsp[8] = rsp[9] = 0;
+        return;
+    }
+    if (!g_down && !g_wantDown && !CanGoDown(me, Field<int32_t>(calc, 0x0C))) {
+        if (!arena::On()) return;
+        ped->Health() = 1.0f;  // the arena: no death, no hospital: it watches till the next wave
+        rsp[8] = rsp[9] = 0;
+        g_wantFall = true;
+        return;
+    }
     ped->Health() = 1.0f;
     rsp[8] = rsp[9] = 0;
     g_wantDown = true;
@@ -189,8 +201,7 @@ void GoDown(CPlayerPed* me) {
     g_animCheckMs = NowMs();
     Players::Instance().SetLocalDowned(true, (uint8_t)(kDownMs / 1000));
     LeaveAlone(me, true);  // nobody shoots at it or arrests it while it lies there
-    ui::TheChat().AddSystem(Format(TR("Вы тяжело ранены! Напарник может откачать вас за %d с. Удерживайте %s, чтобы сдаться.",
-                                      "You are badly wounded! A partner can revive you within %d s. Hold %s to give up."),
+    ui::TheChat().AddSystem(Format(TR("Вы ранены: %d с на помощь, %s — сдаться.", "Wounded: %d s for help, hold %s to give up."),
                                    (int)(kDownMs / 1000), Key().c_str()));
     LOGI("Wounded: lying for %llu s (revives left %d)", (unsigned long long)(kDownMs / 1000), RevivesLeft());
 }
@@ -236,6 +247,11 @@ void KillNow(CPlayerPed* me) {
 
 void Die(CPlayerPed* me, const char* why) {
     EndDown(me);
+    if (arena::On()) {  // the arena: no death, it watches till the next wave
+        arena::Fall();
+        LOGI("Wounded: out of the arena's wave (%s)", why);
+        return;
+    }
     g_dyingMs = NowMs();
     KillNow(me);
     LOGI("Wounded: died (%s)", why);
@@ -415,6 +431,10 @@ void UpdateDowned(CPlayerPed* me) {
     if (PlayerInfos()[0].playerState == 1 && !g_revives.empty()) {  // PLAYERSTATE_HASDIED: a new life, a new count
         g_revives.clear();
         LOGI("Wounded: died, the revives count from zero again");
+    }
+    if (g_wantFall) {
+        g_wantFall = false;
+        arena::Fall();
     }
     UpdateDying(me);
     if (g_dyingMs) g_wantDown = false;

@@ -12,6 +12,8 @@ namespace coop::arena {
 
 bool On();                 // an arena is on and this player is in it
 bool UnlimitedRevives();   // in the arena a wounded player can be revived any number of times
+bool Spectating();         // this player fell in the arena and watches a team mate till the next wave
+void Fall();               // ... it falls now (instead of dying: no hospital)
 bool QuickRevive();        // this player drank Quick Revive: it gets up by itself, and revives the others twice as fast
 void UseQuickRevive();     // it got up by itself: the perk is gone
 float ReloadFactor();      // Speed Cola: reloads take this part of their time (1: no perk)
