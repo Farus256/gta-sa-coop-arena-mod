@@ -6247,10 +6247,13 @@ void DashFrame(uint64_t now) {
     f.z = 0;
     float l = f.Length();
     g_dashDir = l > 0.01f ? f * (1.0f / l) : CVector{0, 1, 0};
-    bool way = DashFrom(me->GetPosition(), g_dashDir, g_dashEnd);
+    bool way = DashFrom(me->GetPosition(), g_dashDir, g_dashEnd) || (g_dashEnd - me->GetPosition()).Length() > 0.3f;
     static bool lmbWas = false;
-    bool lmb = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
+    static uint64_t aimLogMs = 0;
+    bool lmb = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0 || GetPad(0)->NewState.ButtonCircle != 0;
+    if (now - aimLogMs > 2000) aimLogMs = now, LOGI("Chainsaw dash aimed: %.1f m clear, ready %d", (g_dashEnd - me->GetPosition()).Length(), now >= g_dashReadyMs ? 1 : 0);
     if (lmb && !lmbWas && way && now >= g_dashReadyMs) {
+        LOGI("Chainsaw dash: %.1f m", (g_dashEnd - me->GetPosition()).Length());
         g_dashing = true;
         g_dashLeft = (g_dashEnd - me->GetPosition()).Length();
         g_dashReadyMs = now + 3000;
@@ -6341,6 +6344,8 @@ void HoloFrame(uint64_t now) {
         return;
     }
     HoldFire(true);
+    // the ghost out of the way of its own tests (its fence stood where the floor was looked for: never "it can go here")
+    o->SetPositionRaw(me->GetPosition() - CVector{0, 0, 60.0f});
     CVector f = cam::Front();
     f.z = 0;
     float l = f.Length();
