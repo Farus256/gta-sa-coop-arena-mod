@@ -51,7 +51,6 @@
 #include "entities/stealth-knife/StealthKnife.h"
 #include "features/progress/SkinChoice.h"
 #include "features/revive/Revive.h"
-#include "features/cerberus/Cerberus.h"
 #include "entities/session/Flow.h"
 #include "pages/connect-menu/ConnectMenu.h"
 #include "shared/api/net-session/Session.h"
@@ -346,17 +345,7 @@ void ShutDoors(bool shut) {
     LOGI("Arena: %d doors of the place shut (%d entrances)", (int)names.size(), closed);
 }
 
-// The police's and the SWAT's knifeman is Cerberus (Manhunt) when the game has his model: cerberus.dff and .txd in
-// gta3.img (or another archive the game reads, or modloader), loaded as a special character; without it, a man of the
-// force as before
-void LoadKnifeModel() {
-    g_knifeModel = -1;
-    if (kFactions[g_arena.faction].models[0] != 280 && kFactions[g_arena.faction].models[0] != 285) return;  // the police, SWAT
-    cerberus::Ensure();
-    g_knifeModel = cerberus::Model();  // the mod's own Cerberus (coop\cerberus.img), or one in the game's archives
-    if (g_knifeModel >= 0) LOGI("Arena: the knifemen are Cerberus");
-    else LOGW("Arena: no Cerberus: the knifemen are men of the force");
-}
+void LoadKnifeModel() { g_knifeModel = -1; }  // the knifemen are men of their own force
 
 // into the place, a little apart from the others
 void TakeIn() {
