@@ -1182,10 +1182,9 @@ uint64_t PrepMs(bool first) {
 // barricade presses E to nail a board back. The weapon box: E with 950 points, 3 s of turning over weapons, then one of
 // them (rare ones too: the minigun, rockets, the flamethrower); now and then a teddy bear: the points back, and the box
 // moves elsewhere.
-constexpr int kStartPoints = 500, kBoxCost = 950, kRepairCap = 500;
+constexpr int kStartPoints = 500, kBoxCost = 950, kRepairCost = 10;
 int g_points = kStartPoints;
 std::map<uint8_t, int> g_scores;  // the other players'
-int g_repairedThisWave = 0;
 uint64_t g_lastRepairMs = 0;
 struct Popup {
     std::string text;
@@ -1345,10 +1344,7 @@ void SetBoards(int i, int boards, uint8_t by) {
         w.U8((uint8_t)b.boards);
         w.U8(by);
     });
-    if (by == Net().MyId() && b.boards > was && g_repairedThisWave < kRepairCap) {
-        g_repairedThisWave += 10;
-        AddPoints(10);
-    }
+    if (by == Net().MyId() && b.boards > was) AddPoints(-kRepairCost);  // a board nailed on costs 10 points
 }
 
 // host: the barricades across the ways in (spawn cells far from the middle and from each other, the barricade two
@@ -2123,7 +2119,6 @@ void ResetCod() {
     g_killed.clear();
     g_placed = false;
     g_dead = false;
-    g_repairedThisWave = 0;
 }
 
 // ---- the Twins: Otto with two sawn-offs, Ernando with two "eagles" (two pistols at the pro skill: the game's own dual
@@ -2318,7 +2313,6 @@ void SpawnWave() {
     g_twinPeds[0] = g_twinPeds[1] = nullptr;
     g_flamers.clear();
     g_killed.clear();
-    g_repairedThisWave = 0;
     g_lastSpawns = g_spawnsNow;
     g_spawnsNow.clear();
     Rejoin();
@@ -3768,9 +3762,9 @@ void Start(int faction, int place, int waves) {
     ui::TheChat().AddSystem(Format(TR("Арена: %s, %s, волн: %s. Первая волна через %d секунд — соберите оружие и броню!",
                                       "Arena: %s at %s, %s waves. The first wave in %d seconds: pick up weapons and armour!"),
                                    FactionName(faction).c_str(), PlaceName(place).c_str(), wavesText.c_str(), (int)(PrepMs(true) / 1000)));
-    ui::TheChat().AddSystem(Format(TR("Очки: %d. Попадания и убийства дают очки; E у баррикады — прибить доску (+10), "
+    ui::TheChat().AddSystem(Format(TR("Очки: %d. Попадания и убийства дают очки; E у баррикады — прибить доску (10 очков), "
                                       "E у ящика с оружием — случайное оружие за %d.",
-                                      "Points: %d. Hits and kills give points; E at a barricade nails a board on (+10), "
+                                      "Points: %d. Hits and kills give points; E at a barricade nails a board on (10 points), "
                                       "E at the weapon box: a random weapon for %d."),
                                    kStartPoints, kBoxCost));
     ui::TheChat().AddSystem(Format(TR("H — построить баррикаду перед собой (%d очков), E у оружия на стене — купить его.",
@@ -3871,7 +3865,6 @@ void Handle(uint8_t from, Reader& r) {
         g_arena.wave = w;
         g_arena.left = n;
         g_killed.clear();
-        g_repairedThisWave = 0;
         SetBreak(false, 0);
         Rejoin();
         ui::TheChat().AddSystem(Format(TR("Арена: %s — врагов %d.", "Arena: %s, %d enemies."), WaveOf(w).c_str(), n));
@@ -4729,6 +4722,10 @@ bool KeyDown(int vk, bool repeat) {
     if (g_nearKind == N_BAR) {
         if (now - g_lastRepairMs < 650) return true;  // held: one board at a time
         g_lastRepairMs = now;
+        if (g_points < kRepairCost) {
+            ui::TheChat().AddError(Format(TR("Нужно %d очков.", "You need %d points."), kRepairCost));
+            return true;
+        }
         if (g_arena.host) SetBoards(g_nearIdx, g_bars[(size_t)g_nearIdx].boards + 1, Net().MyId());
         else Send(A_REPAIR, [](Writer& w) { w.U8((uint8_t)g_nearIdx); });
         return true;
@@ -4755,8 +4752,7 @@ std::string PromptText(std::string& hint) {
     if (!On() || g_nearKind == N_NONE) return {};
     std::string key = "E";
     if (g_nearKind == N_BAR) {
-        hint = g_repairedThisWave < kRepairCap ? Format(TR("%s — прибить доску (+10 очков)", "%s — nail a board on (+10 points)"), key.c_str())
-                                               : Format(TR("%s — прибить доску", "%s — nail a board on"), key.c_str());
+        hint = Format(TR("%s — прибить доску (%d очков)", "%s — nail a board on (%d points)"), key.c_str(), kRepairCost);
         return Format(TR("Баррикада · досок %d из %d", "Barricade · %d of %d boards"), g_bars[(size_t)g_nearIdx].boards, kBoards);
     }
     if (g_nearKind == N_WALL) {
