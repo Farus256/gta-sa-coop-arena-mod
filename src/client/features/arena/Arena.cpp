@@ -3441,7 +3441,7 @@ void Tactics() {
         if ((p->GetPosition() - e.lastPos).Length() > 0.7f || still || sees || d < 4.0f) {
             e.lastPos = p->GetPosition();
             e.lastMoveMs = now;
-        } else if (now - e.lastMoveMs > 4000 && !e.grenadeUntil) {
+        } else if (now - e.lastMoveMs > 4000 && !e.grenadeUntil && !(e.role == R_BOSS && g_arena.boss == kTBone)) {  // T-Bone is never moved by hand
             Unstick(p, t);
             e.lastPos = p->GetPosition();
             e.lastMoveMs = now;
