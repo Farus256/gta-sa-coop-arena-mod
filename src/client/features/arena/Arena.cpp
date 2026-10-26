@@ -135,18 +135,18 @@ struct Place {
     float boxHeading = 0;   // the host's own (/arena ящик, coop\arena-spots.ini) still comes first
 };
 const Place kPlaces[] = {
-    {{TRP("притон", "crack"), TRP("смоук", "crack")}, TRP("Крэк-дворец Биг Смоука", "Big Smoke's crack palace"), 2, {2543.46f, -1308.38f, 1026.73f}, 14.0f, false, false},
-    {{TRP("особняк", "mansion"), TRP("мэддогг", "mansion")}, TRP("Особняк Мэдд Догга", "Madd Dogg's mansion"), 5, {1267.66f, -781.32f, 1091.91f}, 18.0f, true, false},
-    {{TRP("мясокомбинат", "meat"), TRP("бойня", "meat")}, TRP("Мясокомбинат", "The meat factory"), 1, {963.42f, 2108.29f, 1011.03f}, 48.0f, true, false},
-    {{TRP("мотель", "motel"), TRP("джефферсон", "motel")}, TRP("Мотель «Джефферсон»", "The Jefferson motel"), 15, {2215.45f, -1147.48f, 1025.80f}, 20.0f, true, true},
-    {{TRP("либерти", "liberty"), TRP("бистро", "liberty")}, TRP("Либерти-Сити (бистро Марко)", "Liberty City (Marco's bistro)"), 1, {-794.81f, 497.74f, 1376.20f}, 14.0f, false, false},
-    {{TRP("полиция", "police"), TRP("участок", "police")}, TRP("Полицейский участок", "The police station"), 6, {246.78f, 63.90f, 1003.64f}, 14.0f, false, true},
-    {{TRP("дамба", "dam"), TRP("шерман", "dam")}, TRP("Дамба Шерман", "The Sherman dam"), 17, {-959.56f, 1848.58f, 9.00f}, 30.0f, true, false},
-    {{TRP("кикстарт", "kickstart"), TRP("кикстарт", "kickstart")}, TRP("Стадион «Кикстарт»", "The Kickstart stadium"), 14, {-1465.27f, 1557.87f, 1052.53f}, 35.0f, true, true},
+    {{TRP("притон", "crack"), TRP("смоук", "crack")}, TRP("Крэк-дворец Биг Смоука", "Big Smoke's crack palace"), 2, {2543.46f, -1308.38f, 1026.73f}, 14.0f, false, false, {2564.73f, -1297.03f, 1030.42f}, 91.0f},
+    {{TRP("особняк", "mansion"), TRP("мэддогг", "mansion")}, TRP("Особняк Мэдд Догга", "Madd Dogg's mansion"), 5, {1267.66f, -781.32f, 1091.91f}, 18.0f, true, false, {1270.81f, -838.83f, 1084.63f}, 0.8f},
+    {{TRP("мясокомбинат", "meat"), TRP("бойня", "meat")}, TRP("Мясокомбинат", "The meat factory"), 1, {963.42f, 2108.29f, 1011.03f}, 48.0f, true, false, {932.65f, 2143.48f, 1010.02f}, -90.7f},
+    {{TRP("мотель", "motel"), TRP("джефферсон", "motel")}, TRP("Мотель «Джефферсон»", "The Jefferson motel"), 15, {2215.45f, -1147.48f, 1025.80f}, 20.0f, true, true, {2239.92f, -1183.31f, 1028.80f}, -89.7f},
+    {{TRP("либерти", "liberty"), TRP("бистро", "liberty")}, TRP("Либерти-Сити (бистро Марко)", "Liberty City (Marco's bistro)"), 1, {-794.81f, 497.74f, 1376.20f}, 14.0f, false, false, {-786.55f, 500.08f, 1370.74f}, 1.3f},
+    {{TRP("полиция", "police"), TRP("участок", "police")}, TRP("Полицейский участок", "The police station"), 6, {246.78f, 63.90f, 1003.64f}, 14.0f, false, true, {227.23f, 79.96f, 1004.04f}, -90.0f},
+    {{TRP("дамба", "dam"), TRP("шерман", "dam")}, TRP("Дамба Шерман", "The Sherman dam"), 17, {-959.56f, 1848.58f, 9.00f}, 30.0f, true, false, {-960.25f, 1882.85f, 8.00f}, -90.5f},
+    {{TRP("кикстарт", "kickstart"), TRP("кикстарт", "kickstart")}, TRP("Стадион «Кикстарт»", "The Kickstart stadium"), 14, {-1465.27f, 1557.87f, 1052.53f}, 35.0f, true, true, {-1422.02f, 1569.40f, 1051.53f}, -0.7f},
     // the big ones added later (at the end: the places' numbers in coop.ini stay as they were)
-    {{TRP("полигон", "rc"), TRP("зеро", "zero")}, TRP("RC-полигон Зеро", "Zero's RC battlefield"), 10, {-975.58f, 1061.13f, 1346.2f}, 32.0f, true, false},
+    {{TRP("полигон", "rc"), TRP("зеро", "zero")}, TRP("RC-полигон Зеро", "Zero's RC battlefield"), 10, {-975.58f, 1061.13f, 1346.2f}, 32.0f, true, false, {-979.85f, 1069.77f, 1343.96f}, -89.4f},
     {{TRP("бладбоул", "bloodbowl"), TRP("боул", "bowl")}, TRP("Стадион «Блад Боул»", "The Blood Bowl stadium"), 15, {-1394.20f, 987.62f, 1024.4f}, 40.0f, true, false},
-    {{TRP("мэрия", "planning"), TRP("планирование", "townhall")}, TRP("Департамент планирования", "The planning department"), 3, {374.67f, 173.81f, 1008.8f}, 26.0f, true, false},
+    {{TRP("мэрия", "planning"), TRP("планирование", "townhall")}, TRP("Департамент планирования", "The planning department"), 3, {374.67f, 173.81f, 1008.8f}, 26.0f, true, false, {354.44f, 169.33f, 1013.19f}, 1.4f},
     {{TRP("аэропорт", "airport"), TRP("фрэнсис", "francis")}, TRP("Аэропорт Сан-Фиерро", "The San Fierro airport"), 14, {-1860.82f, 59.74f, 1062.3f}, 34.0f, true, false},
 };
 constexpr int kPlaceCount = (int)(sizeof(kPlaces) / sizeof(kPlaces[0]));
@@ -544,6 +544,14 @@ void ProbeStep() {
         if (i < hits.size() && hits[i].z - hits[i - 1].z < 0.8f) continue;
         if (i - from >= 6) level = hits[(from + i) / 2].z, found = true;
         else from = i;
+    }
+    // the box's own spot is on a floor that is played for sure: the upper floors start there at the highest
+    bool boxUp = (pl.box.x != 0.0f || pl.box.y != 0.0f) && pl.box.z > g_probeFloor + 2.5f;
+    if (boxUp && (!found || level > pl.box.z + 0.5f)) {
+        g_minZ = pl.box.z - 0.6f;
+        LOGI("Arena: the upper floors from the box's floor, %.1f m (%d floors seen)", pl.box.z, (int)hits.size());
+        SeedGrid(pl.box);
+        return;
     }
     if (!found) {
         LOGI("Arena: no upper floor found (%d floors seen): the whole place", (int)hits.size());
