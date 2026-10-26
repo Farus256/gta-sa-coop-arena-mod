@@ -295,6 +295,21 @@ int g_voteCount = 0, g_voteNeed = 1, g_mapVoteCount = 0;
 bool g_iVoted = false, g_iMapVoted = false;
 void MapVote(uint8_t by);
 void Relocate(int place);
+// CJ's body and clothes made again (CClothes::RebuildPlayer) not at once but once he stands on his feet for a second,
+// out of a car, the game in front, with the streaming's unused models let go first: done in the middle of a teleport,
+// an arena's start or end, it crashed in the clothes' textures (crash.log: 0x7F3737 from CClothesBuilder)
+uint64_t g_rebuildAt = 0;
+void RequestRebuild() { g_rebuildAt = NowMs() + 1000; }
+void RebuildWhenSafe() {
+    if (!g_rebuildAt || NowMs() < g_rebuildAt) return;
+    game::CPlayerPed* me = core::IsPlayerReady() ? game::FindPlayerPed(0) : nullptr;
+    if (!me || me->Health() <= 0.0f || me->InVehicle() || game::MenuActive() || game::cam::WideScreenOn() || me->ModelIndex() != 0 ||
+        !me->ClothesDesc())
+        return;  // later
+    g_rebuildAt = 0;
+    game::Call<0x40CF80>();              // CStreaming::RemoveAllUnusedModels: room for the clothes
+    game::Call<0x5A82C0>(me, false);     // CClothes::RebuildPlayer
+}
 void StopOwnMoves();
 void SawKill(game::CPed* p);
 void DashFrame(uint64_t now);
@@ -2208,7 +2223,7 @@ void BuyOutfit() {
     if (me->ModelIndex() == 0) {  // CJ: on him (another character keeps only the perk)
         if (!g_clothesSaved && me->ClothesDesc()) g_clothesBefore = *me->ClothesDesc(), g_clothesSaved = true;
         Cmd(0x087B).I(0).S(a.texture).S(a.model).I(a.part).Run();  // GIVE_PLAYER_CLOTHES_OUTSIDE_SHOP
-        Cmd(0x070D).I(0).Run();                                     // BUILD_PLAYER_MODEL
+        RequestRebuild();  // BUILD_PLAYER_MODEL's work, at a safe moment
     }
     CallMethod<0x506EA0>((void*)0xB6BC90, 40 /* AE_FRONTEND_PURCHASE_WEAPON */, 0.0f, 1.0f);
     ui::TheChat().AddSystem(Format("%s: %s", ClothTitle(k), kPerkText[PerkOf(k)][Lang()]));
@@ -2220,7 +2235,7 @@ void TakeOffOutfit() {  // the arena is over: the perks go, CJ's clothes from be
     CPlayerPed* me = FindPlayerPed(0);
     if (g_clothesSaved && me && me->ModelIndex() == 0 && me->ClothesDesc()) {
         *me->ClothesDesc() = g_clothesBefore;
-        Call<0x5A82C0>(me, false);  // CClothes::RebuildPlayer
+        RequestRebuild();
     }
     g_clothesSaved = false;
 }
@@ -5339,7 +5354,7 @@ float g_skillsBefore[kResetCount] = {};
 bool g_skillsKept = false;
 void RebuildBody() {
     CPlayerPed* me = FindPlayerPed(0);
-    if (me && me->ModelIndex() == 0 && me->ClothesDesc()) Call<0x5A82C0>(me, false);  // CClothes::RebuildPlayer
+    if (me && me->ModelIndex() == 0 && me->ClothesDesc()) RequestRebuild();
 }
 void ResetSkills(bool keep) {
     for (int i = 0; i < kResetCount; ++i) {
@@ -6704,6 +6719,7 @@ public:
     }
     void OnGameStarted() override { MoveWhileShooting(); }
     void OnPostProcess() override {
+        RebuildWhenSafe();
         // the mouse as fast up and down as left and right (the game's vertical sensitivity was its own, slower)
         Ref<float>(0xB6EC18) = Ref<float>(0xB6EC1C);  // CCamera::m_fMouseAccelVertical = m_fMouseAccelHorzntl
         if (g_arena.on && core::IsPlayerReady()) Update();
