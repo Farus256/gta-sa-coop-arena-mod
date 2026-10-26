@@ -944,6 +944,10 @@ void MakeKnifeman(int wave) {
     std::vector<CVector> players = PlayerSpots();
     CVector at;
     bool found = false;
+    // the far side of the place from the squads (from the middle of where they came from)
+    CVector squadsMid{};
+    for (const CVector& sp : g_spawnsNow) squadsMid = squadsMid + sp;
+    if (!g_spawnsNow.empty()) squadsMid = squadsMid * (1.0f / (float)g_spawnsNow.size());
     if (GridUsable()) {
         float best = -1;
         for (int k : StandCells()) {
@@ -952,7 +956,8 @@ void MakeKnifeman(int wave) {
             for (const CVector& s : g_spawnsNow) fromSquads = std::min(fromSquads, (s - p).Length());
             float dp = DistToPlayers(p, players);
             if (fromSquads < 10.0f || dp < 10.0f) continue;
-            float score = std::min(fromSquads, dp) + Rand(0.0f, 5.0f);
+            float away = g_spawnsNow.empty() ? fromSquads : (p - squadsMid).Length();
+            float score = away * 2.0f + std::min(dp, 20.0f) * 0.3f + Rand(0.0f, 4.0f);
             if (score + 6.0f <= best) continue;
             if (!PlayersSee(p, players)) score += 6.0f;  // out of their sight is better
             if (score > best) best = score, at = p, found = true;
@@ -2355,10 +2360,7 @@ void SpawnWave() {
         int medics = count >= 10 ? 2 : 1;
         for (int k = 0; k < medics; ++k) MakeMedic(w);
     }
-    if (fac.flamers && w >= 2) {
-        int flamers = kPlaces[g_arena.place].big && Progress(w) >= 0.5f ? 2 : 1;
-        for (int k = 0; k < flamers; ++k) MakeFlamer(w);
-    }
+    if (fac.flamers && w >= 3 && RandInt(0, 99) < 35) MakeFlamer(w);  // now and then one, from the 3rd wave
     if (TwinsWave(w)) MakeTwins(w);
     if (MiniBoss(w) == 2) MakeSaw(w);
     if (MiniBoss(w) == 3) MakeOfficer(w);
@@ -4184,7 +4186,7 @@ void Update() {
         bool special = qe.role == R_FLAMER || qe.role == R_TWIN || qe.role == R_BOSS || qe.role == R_SAW || qe.role == R_OFFICER;
         if (qe.role == R_MEDIC) special = RandInt(0, 99) < 35;  // a medic: now and then
         if (!special) {
-            if (RandInt(0, 99) < 12) SpawnDrop(D_SMALL, at);  // a common enemy: now and then a few clips, never its gun
+            if (RandInt(0, 99) < 5) SpawnDrop(D_SMALL, at);  // a common enemy: now and then a few clips, never its gun
             continue;
         }
         if (qe.role == R_BOSS && g_arena.boss == kTBone) SpawnDrop(D_GUN, at + CVector{0, 0.7f, 0}, 30, 300, 0xFF, 1);  // his AK
@@ -4515,6 +4517,14 @@ void HouseFrame() {
     else if (hid && !g_arena.on) HideSaves(false), hid = false;
 }
 
+// Moving while aiming and while shooting (left, right, forward, back) with every gun at every skill: the weapon's
+// flags bMoveAim and bMoveFire (CWeaponInfo::m_nFlags +0x18, bits 4 and 5); not the heavy ones nor the scoped ones
+void MoveWhileShooting() {
+    for (int type = 22; type <= 33; ++type)
+        for (int skill = 0; skill <= 3; ++skill)
+            if (auto* info = Call<0x743C60, uint8_t*>(type, (uint8_t)skill)) Ref<uint32_t>((uintptr_t)info + 0x18) |= 0x30;
+}
+
 class ArenaModule : public Module {
 public:
     const char* Name() const override { return "Arena"; }
@@ -4554,6 +4564,7 @@ public:
         g_modeReadyMs = 0;
         if (g_arena.on) End(false);
     }
+    void OnGameStarted() override { MoveWhileShooting(); }
     void OnPostProcess() override {
         if (g_arena.on && core::IsPlayerReady()) Update();
         GameMode();
