@@ -3426,8 +3426,8 @@ void SpawnWave() {
         // as tough as the SWAT were in 0.4.1: 100 health, 100 armour, no one-shot headshot. Half the bosses come with
         // the AK-47 and its grenade launcher, a quarter with a katana
         int roll = RandInt(0, 99);
-        g_bossUgl = b == kTBone || roll < 50;
-        g_bossKatana = !g_bossUgl && roll < 75;
+        g_bossKatana = b != kTBone && roll < 50;  // half with a katana, the other half with the launcher (T-Bone always)
+        g_bossUgl = !g_bossKatana;
         int bossWeapon = g_bossKatana ? 8 : g_bossUgl ? 30 : kBosses[b].weapon;
         int h = MakeEnemy(model, bossWeapon, g_bossKatana ? 300 : 100, 100, 85, SpawnSpot(base + 3.14159f, 1.0f, 8.0f), bossSquad, R_BOSS, false);
         if (CPed* p = h >= 0 ? GetPed(h) : nullptr) g_bossPed = p;
@@ -5980,7 +5980,7 @@ void Update() {
             continue;
         }
         if (qe.role == R_BOSS && g_bossUgl) SpawnDrop(D_GUN, at + CVector{0, 0.7f, 0}, 30, 300, 0xFF, 1);  // his AK
-        if (qe.role == R_BOSS && g_bossKatana && RandInt(0, 1) == 0) SpawnDrop(D_GUN, at + CVector{0, 0.7f, 0}, 8, 1);  // the katana
+        if (qe.role == R_BOSS && g_bossKatana) SpawnDrop(D_GUN, at + CVector{0, 0.7f, 0}, 8, 1);  // the katana
         if (qe.role == R_SAW) SpawnDrop(D_GUN, at + CVector{0.7f, 0, 0}, 9, 1);  // the Butcher's chainsaw: a dash of its own
         if (qe.role == R_BOSS) {
             SpawnDrop(D_AMMO, at + CVector{0.6f, 0, 0});
