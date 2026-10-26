@@ -15,5 +15,7 @@ namespace coop {
 std::string ReviveText(std::string& hint);
 // the revive key was pressed: true when it started or stopped a revive (the key does not go on to the game then)
 bool ReviveKeyPressed();
+// a blow that lays this player down wounded at once (the arena's chainsaw charge); with nobody to revive it, a hard hit
+void KnockDown();
 
 }  // namespace coop

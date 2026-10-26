@@ -584,6 +584,17 @@ std::string ReviveText(std::string& hint) {
     return {};
 }
 
+void KnockDown() {
+    CPlayerPed* me = core::IsPlayerReady() ? FindPlayerPed(0) : nullptr;
+    if (!me || me->Health() <= 0.0f || g_down || g_wantDown || g_dyingMs) return;
+    if (Net().Online() && CanGoDown(me, 0)) {
+        me->Health() = 1.0f;
+        g_wantDown = true;
+        return;
+    }
+    me->Health() = std::max(0.0f, me->Health() - 120.0f);
+}
+
 bool ReviveKeyPressed() {
     if (!Net().Online() || !core::IsPlayerReady()) return false;
     CPlayerPed* me = FindPlayerPed(0);
