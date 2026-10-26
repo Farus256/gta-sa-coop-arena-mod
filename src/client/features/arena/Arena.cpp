@@ -1456,41 +1456,136 @@ void SendBox() {
     });
 }
 // host: a spot for the box on the floor (near the middle, away from where it stood and from the barricades)
-// ---- the accessories box: by the weapon box; E and $600: a random accessory for CJ (a hat, glasses, a watch, a chain),
-// each with its own perk. One a body part (a new hat takes the old one's place, and its perk), the others add up. They
-// are CJ's own clothes (GIVE_PLAYER_CLOTHES_OUTSIDE_SHOP, the body parts 13-16), so the other players see them too; what
-// CJ wore before the arena comes back after it.
-enum OutfitPerk : uint8_t { O_ARMOUR, O_REGEN, O_HEALTH, O_SPRINT, O_RELOAD, O_CASH };
-struct Accessory {
+// ---- the clothes box: by the weapon box; E and $600: a random piece of CJ's clothes, any he can wear (a top, trousers,
+// shoes, a chain, a watch, glasses or a mask, a hat, a costume: 255 of them), each kind with its own perk. One piece a
+// body part (a new one takes the old one's place, and its perk), the kinds add up. They are CJ's own clothes
+// (GIVE_PLAYER_CLOTHES_OUTSIDE_SHOP), so the other players see them too; what CJ wore before comes back after the arena.
+enum OutfitPerk : uint8_t { O_ARMOUR, O_REGEN, O_HEALTH, O_SPRINT, O_RELOAD, O_CASH, O_GRENADE, O_SUIT };
+struct Cloth {
     const char* texture;
     const char* model;
-    int part;  // 13 the neck, 14 the wrist, 15 the face, 16 the head
+    int part;
+};
+// CJ's clothes (the shops' and the wardrobe's): torso, legs, shoes, chain, watch, glasses, hat, suit (texture, model, part)
+const Cloth kClothes[] = {
+    {"vestblack", "vest", 0}, {"vest", "vest", 0}, {"tshirt2horiz", "tshirt2", 0}, {"tshirtwhite", "tshirt", 0},
+    {"tshirtilovels", "tshirt", 0}, {"tshirtblunts", "tshirt", 0}, {"shirtbplaid", "shirtb", 0},
+    {"shirtbcheck", "shirtb", 0}, {"field", "field", 0}, {"tshirterisyell", "tshirt", 0},
+    {"tshirterisorn", "tshirt", 0}, {"trackytop2eris", "trackytop1", 0}, {"bbjackrim", "bbjack", 0},
+    {"bballjackrstar", "bbjack", 0}, {"baskballdrib", "baskball", 0}, {"baskballrim", "baskball", 0},
+    {"sixtyniners", "tshirt", 0}, {"bandits", "baseball", 0}, {"tshirtprored", "tshirt", 0},
+    {"tshirtproblk", "tshirt", 0}, {"trackytop1pro", "trackytop1", 0}, {"hockeytop", "sweat", 0},
+    {"bbjersey", "sleevt", 0}, {"shellsuit", "trackytop1", 0}, {"tshirtheatwht", "tshirt", 0},
+    {"tshirtbobomonk", "tshirt", 0}, {"tshirtbobored", "tshirt", 0}, {"tshirtbase5", "tshirt", 0},
+    {"tshirtsuburb", "tshirt", 0}, {"hoodyamerc", "hoodya", 0}, {"hoodyabase5", "hoodya", 0},
+    {"hoodyarockstar", "hoodya", 0}, {"wcoatblue", "wcoat", 0}, {"coach", "coach", 0}, {"coachsemi", "coach", 0},
+    {"sweatrstar", "sweat", 0}, {"hoodyAblue", "hoodyA", 0}, {"hoodyAblack", "hoodyA", 0},
+    {"hoodyAgreen", "hoodyA", 0}, {"sleevtbrown", "sleevt", 0}, {"shirtablue", "shirta", 0},
+    {"shirtayellow", "shirta", 0}, {"shirtagrey", "shirta", 0}, {"shirtbgang", "shirtb", 0},
+    {"tshirtzipcrm", "tshirt", 0}, {"tshirtzipgry", "tshirt", 0}, {"denimfade", "denim", 0}, {"bowling", "hawaii", 0},
+    {"hoodjackbeige", "hoodjack", 0}, {"baskballloc", "baskball", 0}, {"tshirtlocgrey", "tshirt", 0},
+    {"tshirtmaddgrey", "tshirt", 0}, {"tshirtmaddgrn", "tshirt", 0}, {"suit1grey", "suit1", 0},
+    {"suit1blk", "suit1", 0}, {"leather", "leather", 0}, {"painter", "painter", 0}, {"hawaiiwht", "hawaii", 0},
+    {"hawaiired", "hawaii", 0}, {"sportjack", "trackytop1", 0}, {"suit1red", "suit1", 0}, {"suit1blue", "suit1", 0},
+    {"suit1yellow", "suit1", 0}, {"suit2grn", "suit2", 0}, {"tuxedo", "suit2", 0}, {"suit1gang", "suit1", 0},
+    {"letter", "sleevt", 0}, {"worktrcamogrn", "worktr", 2}, {"worktrcamogry", "worktr", 2},
+    {"worktrgrey", "worktr", 2}, {"worktrkhaki", "worktr", 2}, {"tracktr", "tracktr", 2},
+    {"tracktreris", "tracktr", 2}, {"jeansdenim", "jeans", 2}, {"legsblack", "legs", 2}, {"legsheart", "legs", 2},
+    {"biegetr", "chinosb", 2}, {"tracktrpro", "tracktr", 2}, {"tracktrwhstr", "tracktr", 2},
+    {"tracktrblue", "tracktr", 2}, {"tracktrgang", "tracktr", 2}, {"bbshortwht", "boxingshort", 2},
+    {"boxshort", "boxingshort", 2}, {"bbshortred", "boxingshort", 2}, {"shellsuittr", "tracktr", 2},
+    {"shortsgrey", "shorts", 2}, {"shortskhaki", "shorts", 2}, {"chongergrey", "chonger", 2},
+    {"chongergang", "chonger", 2}, {"chongerred", "chonger", 2}, {"chongerblue", "chonger", 2},
+    {"shortsgang", "shorts", 2}, {"denimsgang", "jeans", 2}, {"denimsred", "jeans", 2}, {"chinosbiege", "chinosb", 2},
+    {"chinoskhaki", "chinosb", 2}, {"cutoffchinos", "shorts", 2}, {"cutoffchinosblue", "shorts", 2},
+    {"chinosblack", "chinosb", 2}, {"chinosblue", "chinosb", 2}, {"leathertr", "leathertr", 2},
+    {"leathertrchaps", "leathertr", 2}, {"suit1trgrey", "suit1tr", 2}, {"suit1trblk", "suit1tr", 2},
+    {"cutoffdenims", "shorts", 2}, {"suit1trred", "suit1tr", 2}, {"suit1trblue", "suit1tr", 2},
+    {"suit1tryellow", "suit1tr", 2}, {"suit1trgreen", "suit1tr", 2}, {"suit1trblk2", "suit1tr", 2},
+    {"suit1trgang", "suit1tr", 2}, {"cowboyboot2", "biker", 3}, {"bask2semi", "bask1", 3}, {"bask1eris", "bask1", 3},
+    {"sneakerbincgang", "sneaker", 3}, {"sneakerbincblu", "sneaker", 3}, {"sneakerbincblk", "sneaker", 3},
+    {"sandal", "flipflop", 3}, {"sandalsock", "flipflop", 3}, {"flipflop", "flipflop", 3}, {"hitop", "bask1", 3},
+    {"convproblk", "conv", 3}, {"convproblu", "conv", 3}, {"convprogrn", "conv", 3}, {"sneakerprored", "sneaker", 3},
+    {"sneakerproblu", "sneaker", 3}, {"sneakerprowht", "sneaker", 3}, {"bask1prowht", "bask1", 3},
+    {"bask1problk", "bask1", 3}, {"boxingshoe", "biker", 3}, {"convheatblk", "conv", 3}, {"convheatred", "conv", 3},
+    {"convheatorn", "conv", 3}, {"sneakerheatwht", "sneaker", 3}, {"sneakerheatgry", "sneaker", 3},
+    {"sneakerheatblk", "sneaker", 3}, {"bask2heatwht", "bask1", 3}, {"bask2heatband", "bask1", 3},
+    {"timbergrey", "bask1", 3}, {"timberred", "bask1", 3}, {"timberfawn", "bask1", 3}, {"timberhike", "bask1", 3},
+    {"cowboyboot", "biker", 3}, {"biker", "biker", 3}, {"snakeskin", "biker", 3}, {"shoedressblk", "shoe", 3},
+    {"shoedressbrn", "shoe", 3}, {"shoespatz", "shoe", 3}, {"dogtag", "neck", 13}, {"neckafrica", "neck", 13},
+    {"stopwatch", "neck", 13}, {"necksaints", "neck", 13}, {"neckhash", "neck", 13}, {"necksilver", "neck2", 13},
+    {"neckgold", "neck2", 13}, {"neckropes", "neck2", 13}, {"neckropeg", "neck2", 13}, {"neckls", "neck", 13},
+    {"neckdollar", "neck", 13}, {"neckcross", "neck", 13}, {"watchpink", "watch", 14}, {"watchyellow", "watch", 14},
+    {"watchpro", "watch", 14}, {"watchpro2", "watch", 14}, {"watchsub1", "watch", 14}, {"watchsub2", "watch", 14},
+    {"watchzip1", "watch", 14}, {"watchzip2", "watch", 14}, {"watchgno", "watch", 14}, {"watchgno2", "watch", 14},
+    {"watchcro", "watch", 14}, {"watchcro2", "watch", 14}, {"groucho", "grouchos", 15}, {"zorro", "zorromask", 15},
+    {"eyepatch", "eyepatch", 15}, {"glasses01", "glasses01", 15}, {"glasses04", "glasses04", 15},
+    {"bandred3", "bandmask", 15}, {"bandblue3", "bandmask", 15}, {"bandgang3", "bandmask", 15},
+    {"bandblack3", "bandmask", 15}, {"glasses01dark", "glasses01", 15}, {"glasses04dark", "glasses04", 15},
+    {"glasses03", "glasses03", 15}, {"glasses03red", "glasses03", 15}, {"glasses03blue", "glasses03", 15},
+    {"glasses03dark", "glasses03", 15}, {"glasses05dark", "glasses03", 15}, {"glasses05", "glasses03", 15},
+    {"bandred", "bandana", 16}, {"bandblue", "bandana", 16}, {"bandgang", "bandana", 16},
+    {"bandblack", "bandana", 16}, {"bandred2", "bandknots", 16}, {"bandblue2", "bandknots", 16},
+    {"bandblack2", "bandknots", 16}, {"bandgang2", "bandknots", 16}, {"capknitgrn", "capknit", 16},
+    {"captruck", "captruck", 16}, {"cowboy", "cowboy", 16}, {"hattiger", "cowboy", 16}, {"helmet", "helmet", 16},
+    {"moto", "moto", 16}, {"boxingcap", "boxingcap", 16}, {"hockey", "hockeymask", 16}, {"capgang", "cap", 16},
+    {"capgangback", "capback", 16}, {"capgangside", "capside", 16}, {"capgangover", "capovereye", 16},
+    {"capgangup", "caprimup", 16}, {"bikerhelmet", "bikerhelmet", 16}, {"capred", "cap", 16},
+    {"capredback", "capback", 16}, {"capredside", "capside", 16}, {"capredover", "capovereye", 16},
+    {"capredup", "caprimup", 16}, {"capblue", "cap", 16}, {"capblueback", "capback", 16},
+    {"capblueside", "capside", 16}, {"capblueover", "capovereye", 16}, {"capblueup", "caprimup", 16},
+    {"skullyblk", "skullycap", 16}, {"skullygrn", "skullycap", 16}, {"hatmancblk", "hatmanc", 16},
+    {"hatmancplaid", "hatmanc", 16}, {"capzip", "cap", 16}, {"capzipback", "capback", 16},
+    {"capzipside", "capside", 16}, {"capzipover", "capovereye", 16}, {"capzipup", "caprimup", 16},
+    {"beretred", "beret", 16}, {"beretblk", "beret", 16}, {"capblk", "cap", 16}, {"capblkback", "capback", 16},
+    {"capblkside", "capside", 16}, {"capblkover", "capovereye", 16}, {"capblkup", "caprimup", 16},
+    {"trilbydrk", "trilby", 16}, {"trilbylght", "trilby", 16}, {"bowler", "bowler", 16}, {"bowlerred", "bowler", 16},
+    {"bowlerblue", "bowler", 16}, {"bowleryellow", "bowler", 16}, {"boater", "boater", 16},
+    {"bowlergang", "bowler", 16}, {"boaterblk", "boater", 16}, {"gimpleg", "gimpleg", 17}, {"valet", "valet", 17},
+    {"countrytr", "countrytr", 17}, {"croupier", "valet", 17}, {"policetr", "policetr", 17},
+    {"balaclava", "balaclava", 17}, {"pimptr", "pimptr", 17}, {"garageleg", "garagetr", 17},
+    {"medictr", "medictr", 17},
+};
+// 255 pieces
+constexpr int kClothCount = (int)(sizeof(kClothes) / sizeof(kClothes[0]));
+struct PartPerk {
+    int part;
     const char* name[2];
     const char* perk[2];
     OutfitPerk kind;
 };
-const Accessory kAccs[] = {
-    {"helmet", "helmet", 16, TRP("Каска", "Helmet"), TRP("+50 брони каждую волну", "+50 armour each wave"), O_ARMOUR},
-    {"hockey", "hockeymask", 16, TRP("Хоккейная маска", "Hockey mask"), TRP("150 здоровья", "150 health"), O_HEALTH},
-    {"bandred", "bandana", 16, TRP("Бандана", "Bandana"), TRP("бег без усталости", "running without tiring"), O_SPRINT},
-    {"watchpro", "watch", 14, TRP("Часы", "Watch"), TRP("быстрая перезарядка", "fast reload"), O_RELOAD},
-    {"neckgold", "neck2", 13, TRP("Золотая цепь", "Gold chain"), TRP("+50% денег", "+50% money"), O_CASH},
-    {"glasses01dark", "glasses01", 15, TRP("Тёмные очки", "Dark glasses"), TRP("здоровье восстанавливается", "health comes back"), O_REGEN},
+const PartPerk kParts[] = {
+    {0, TRP("Верх", "Top"), TRP("+50 брони каждую волну", "+50 armour each wave"), O_ARMOUR},
+    {2, TRP("Штаны", "Trousers"), TRP("150 здоровья", "150 health"), O_HEALTH},
+    {3, TRP("Обувь", "Shoes"), TRP("бег без усталости", "running without tiring"), O_SPRINT},
+    {13, TRP("Цепь", "Chain"), TRP("+50% денег", "+50% money"), O_CASH},
+    {14, TRP("Часы", "Watch"), TRP("быстрая перезарядка", "fast reload"), O_RELOAD},
+    {15, TRP("Очки или маска", "Glasses or a mask"), TRP("здоровье восстанавливается", "health comes back"), O_REGEN},
+    {16, TRP("Головной убор", "Headwear"), TRP("+1 граната каждую волну", "+1 grenade each wave"), O_GRENADE},
+    {17, TRP("Костюм", "Costume"), TRP("150 здоровья и +50 брони каждую волну", "150 health and +50 armour each wave"), O_SUIT},
 };
-constexpr int kAccCount = (int)(sizeof(kAccs) / sizeof(kAccs[0]));
+constexpr int kPartCount = (int)(sizeof(kParts) / sizeof(kParts[0]));
+int PartIndex(int part) {
+    for (int i = 0; i < kPartCount; ++i)
+        if (kParts[i].part == part) return i;
+    return -1;
+}
 constexpr int kWardCost = 600;
 struct Wardrobe {
     CVector pos;
     float heading = 0;
     int handle = -1;
 } g_ward;
-int g_worn[4] = {-1, -1, -1, -1};  // the accessory on each body part (13..16), -1: none
+int g_worn[8] = {-1, -1, -1, -1, -1, -1, -1, -1};  // the piece worn on each kParts' part, -1: none
 uint8_t g_maxHealthBefore = 0;
 CPedClothesDesc g_clothesBefore;   // CJ's clothes before the first accessory
 bool g_clothesSaved = false;
 bool HasPerk(OutfitPerk k) {
-    for (int w : g_worn)
-        if (w >= 0 && kAccs[w].kind == k) return true;
+    for (int i = 0; i < kPartCount; ++i) {
+        if (g_worn[i] < 0) continue;
+        OutfitPerk p = kParts[i].kind;
+        if (p == k || (p == O_SUIT && (k == O_HEALTH || k == O_ARMOUR))) return true;
+    }
     return false;
 }
 // an object nothing moves or breaks (the boxes): no move or turn by a hit or a push, every proof
@@ -1537,6 +1632,7 @@ void OutfitWaveStart() {  // at each wave: the armour, the health
     if (!me || g_spectating) return;
     if (HasPerk(O_ARMOUR)) me->Armour() = std::min(100.0f, me->Armour() + 50.0f);
     if (HasPerk(O_HEALTH)) me->Health() = std::max(me->Health(), 150.0f);
+    if (HasPerk(O_GRENADE) && !SlotTaken(me, WEAPON_GRENADE)) Give(GetPedRef(me), WEAPON_GRENADE, 1);  // not over molotovs
 }
 void BuyOutfit() {
     CPlayerPed* me = FindPlayerPed(0);
@@ -1545,12 +1641,14 @@ void BuyOutfit() {
         ui::TheChat().AddError(Format(TR("Нужно $%d.", "You need $%d."), kWardCost));
         return;
     }
-    int k = RandInt(0, kAccCount - 1);
-    if (k == g_worn[kAccs[k].part - 13]) k = (k + 1) % kAccCount;  // not the one it wears already
-    const Accessory& a = kAccs[k];
+    int k = RandInt(0, kClothCount - 1);
+    int pi = PartIndex(kClothes[k].part);
+    if (pi >= 0 && k == g_worn[pi]) k = (k + 1) % kClothCount, pi = PartIndex(kClothes[k].part);  // not the one it wears
+    if (pi < 0) return;
+    const Cloth& a = kClothes[k];
     AddPoints(-kWardCost);
     OutfitPerks(false);
-    g_worn[a.part - 13] = k;
+    g_worn[pi] = k;
     OutfitPerks(true);
     OutfitWaveStart();
     if (me->ModelIndex() == 0) {  // CJ: on him (another character keeps only the perk)
@@ -1559,7 +1657,7 @@ void BuyOutfit() {
         Cmd(0x070D).I(0).Run();                                     // BUILD_PLAYER_MODEL
     }
     CallMethod<0x506EA0>((void*)0xB6BC90, 40 /* AE_FRONTEND_PURCHASE_WEAPON */, 0.0f, 1.0f);
-    ui::TheChat().AddSystem(Format("%s: %s", a.name[Lang()], a.perk[Lang()]));
+    ui::TheChat().AddSystem(Format("%s: %s", kParts[pi].name[Lang()], kParts[pi].perk[Lang()]));
 }
 void TakeOffOutfit() {  // the arena is over: the perks go, CJ's clothes from before it come back
     OutfitPerks(false);
@@ -5203,8 +5301,8 @@ std::string PromptText(std::string& hint) {
         return TR("Баррикада", "Barricade");
     }
     if (g_nearKind == N_WARD) {
-        hint = Format(TR("[E] Случайный аксессуар  $%d", "[E] Random accessory  $%d"), kWardCost);
-        return TR("Аксессуары", "Accessories");
+        hint = Format(TR("[E] Случайная одежда  $%d", "[E] Random clothes  $%d"), kWardCost);
+        return TR("Одежда", "Clothes");
     }
     if (g_nearKind == N_GUN) {
         const Drop& d = g_drops[(size_t)g_nearIdx];
