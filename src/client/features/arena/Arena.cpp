@@ -1175,10 +1175,8 @@ void PlaceItems(int forWave) {
 }
 
 // the waits before the waves: 30 s in a big place and in the crack palace (index 0), 6 s elsewhere
-uint64_t PrepMs(bool first) {
-    bool long_ = kPlaces[g_arena.place].big || g_arena.place == 0;
-    return long_ ? (first ? 20000 : 30000) : (first ? 8000 : 6000);
-}
+// the waits before the waves: 30 s on every arena (20 s before the first)
+uint64_t PrepMs(bool first) { return first ? 20000 : 30000; }
 
 // ---------------------------------------------------------------- points, barricades, the weapon box (from CoD)
 // Points: every player has its own (500 to start): 10 a hit on an enemy, 50 a kill, 100 a kill by a headshot, 130 with a
@@ -3791,6 +3789,25 @@ void Start(int faction, int place, int waves) {
 void Skip(uint8_t by);
 // The arena's game mode: everyone waits in CJ's house (area 3) before the arena takes them in, and comes back there
 // after it (a lost one's lobby too); each a little apart from the others
+void Stage();
+// the arena's game mode, no arena on: whoever is not in CJ's house (back from the hospital after a lost arena) is put
+// there once it has stood on its feet for 2 s
+uint64_t g_upSince = 0;
+void KeepInHouse() {
+    CPlayerPed* me = FindPlayerPed(0);
+    bool mode = g_modeOn || (Net().Online() && Net().IsHost() && Cfg().gameMode == 2);
+    bool up = me && me->Health() > 0.0f && PlayerInfos()[0].playerState == 0 && !me->InVehicle() && !cam::WideScreenOn();
+    if (!up) {
+        g_upSince = 0;
+        return;
+    }
+    if (!g_upSince) g_upSince = NowMs();
+    if (!mode || g_arena.on || g_arena.endAt || NowMs() - g_upSince < 2000) return;
+    const CVector kHouse{2496.05f, -1695.24f, 1014.74f};
+    if (me->AreaCode() == 3 && (me->GetPosition() - kHouse).Length() < 30.0f) return;
+    Stage();
+    LOGI("Arena mode: back in CJ's house");
+}
 void Stage() {
     CPlayerPed* me = FindPlayerPed(0);
     if (g_arena.on || !me || me->Health() <= 0.0f || PlayerInfos()[0].playerState != 0) return;
@@ -3868,6 +3885,19 @@ void Handle(uint8_t from, Reader& r) {
         return;
     }
     if (!r.Ok() || !core::IsPlayerReady() || from != Net().HostId()) return;
+    // the arena's game mode: these come while no arena is on
+    if (op == A_STAGE) {
+        g_modeOn = true;
+        g_lobby = false;
+        Stage();
+        WearChosen();
+        return;
+    }
+    if (op == A_LOBBY) {
+        uint8_t open = r.U8();
+        if (r.Ok() && open) OpenLobby(true);
+        return;
+    }
     if (op == A_START) {
         uint8_t f = r.U8(), p = r.U8(), w = r.U8();
         if (!r.Ok() || f >= kFactionCount || p >= kPlaceCount || w > 10) return;  // 0: no end
@@ -3966,14 +3996,6 @@ void Handle(uint8_t from, Reader& r) {
     } else if (op == A_FLAMER) {
         uint16_t id = r.U16();
         if (r.Ok()) g_vestIds.push_back(id), g_vestIdsUntil = NowMs() + 15000;
-    } else if (op == A_STAGE) {
-        g_modeOn = true;
-        g_lobby = false;
-        Stage();
-        WearChosen();
-    } else if (op == A_LOBBY) {
-        uint8_t open = r.U8();
-        if (r.Ok() && open) OpenLobby(true);
     } else if (op == A_WALLS) {
         uint8_t n = r.U8();
         std::vector<Wall> walls;
@@ -4568,7 +4590,7 @@ public:
     void OnPostProcess() override {
         if (g_arena.on && core::IsPlayerReady()) Update();
         GameMode();
-        if (core::IsPlayerReady()) HouseFrame();
+        if (core::IsPlayerReady()) HouseFrame(), KeepInHouse();
     }
     void OnRender() override {
         if (!g_arena.on || MenuActive()) return;
