@@ -214,6 +214,8 @@ bool g_fireWave = false;
 bool g_hasUgl = false, g_uglLoaded = false;
 uint64_t g_uglReadyMs = 0;                     // the 10% event: this wave is four flamethrower men and nothing else
 bool g_lobby = false, g_modeLost = false;  // the arena's game mode: in its lobby now; the last one lost (GameMode)
+bool g_modeOn = false;  // this game plays the arena's game mode (the host's choice; a partner learns it from A_STAGE)
+void WearChosen();
 void OpenLobby(bool open);
 std::vector<std::pair<int, uint8_t>> g_hiddenSaves;  // the save disks hidden meanwhile (HideSaves): the pickup, its type
 // a partner's: the Twins' copies (by index: Otto, Ernando) and their net ids till the copies are here
@@ -1897,7 +1899,6 @@ void PutDownGun() {
         wr.U16(ammo);
         wr.U8(special);
     });
-    ui::TheChat().AddSystem(Format(TR("Вы положили %s — подберёт напарник.", "You put down %s for a team mate."), WeaponName(weapon)));
 }
 void ClearDrops() {
     for (Drop& d : g_drops) DelObj(d.handle);
@@ -3663,8 +3664,11 @@ void Clear() {
 // all the players in the place voted (M, between the waves): another place, the same wave, the weapons kept
 void MapVote(uint8_t by) {  // host
     if (!g_break || !g_arena.nextWaveMs || kPlaceCount < 2) return;
+    size_t before = g_mapVotes.size();
     g_mapVotes.insert(by);
     SendVotes();
+    if (g_mapVotes.size() > before)
+        ui::TheChat().AddSystem(Format(TR("Смена арены: %d из %d (/arena смена)", "Another arena: %d of %d (/arena change)"), g_mapVoteCount, g_voteNeed));
     if (g_mapVoteCount < g_voteNeed) return;
     int place = g_arena.place;
     while (place == g_arena.place) place = RandInt(0, kPlaceCount - 1);
@@ -3733,6 +3737,8 @@ void End(bool tell) {
     TakeBack();
     if (CPlayerPed* me = FindPlayerPed(0); me && was) me->Armour() = 0.0f;  // the armour of the battle stays there
     game::challenge::End();
+    if (g_modeOn)
+        if (CPlayerPed* me2 = FindPlayerPed(0)) Cmd(0x048F).I(GetPedRef(me2)).Run();  // the mode: the save's weapons stay away
     LOGI("Arena over (%s)", g_arena.won ? "won" : "lost");
     g_arena = Arena{};
 }
@@ -3751,6 +3757,15 @@ void Start(int faction, int place, int waves) {
     g_barsSolid = true;
     SetBreak(true, g_arena.nextWaveMs);
     game::challenge::Begin();
+    if (g_modeOn)
+        if (CPlayerPed* me = FindPlayerPed(0)) {  // the mode: nothing of the save, a pistol and full health
+            int h = GetPedRef(me);
+            Cmd(0x048F).I(h).Run();  // REMOVE_ALL_CHAR_WEAPONS
+            Give(h, WEAPON_PISTOL, 68);
+            Cmd(0x01B9).I(h).I(WEAPON_PISTOL).Run();
+            me->Health() = std::max(me->Health(), 100.0f);
+            me->Armour() = 0.0f;
+        }
     TakeIn();
     g_lastSpawns.clear(), g_spawnsNow.clear(), g_lastItemsAt.clear();
     if (g_arena.host) {
@@ -3901,8 +3916,8 @@ void Handle(uint8_t from, Reader& r) {
         uint8_t secs = r.U8();
         if (r.Ok()) {
             SetBreak(true, NowMs() + (uint64_t)secs * 1000);
-            ui::TheChat().AddSystem(Format(TR("Волна отбита! Следующая через %d секунд. Y — проголосовать за пропуск.",
-                                              "The wave is beaten! The next one in %d seconds. Y votes to skip it."), (int)secs));
+            ui::TheChat().AddSystem(Format(TR("Волна отбита! Следующая через %d секунд. Y — пропустить, /arena смена — сменить арену.",
+                                              "The wave is beaten! The next one in %d seconds. Y skips, /arena change moves to another arena."), (int)secs));
         }
     } else if (op == A_BARS) {
         uint8_t n = r.U8();
@@ -3927,7 +3942,10 @@ void Handle(uint8_t from, Reader& r) {
         for (size_t i = 0; i < g_bars.size(); ++i) g_bars[i].boards = bars[i].boards, ShowBar(g_bars[i]);
     } else if (op == A_VOTES) {
         uint8_t c = r.U8(), n = r.U8(), m = r.U8();
-        if (r.Ok()) g_voteCount = c, g_voteNeed = std::max<int>(1, n), g_mapVoteCount = m;
+        if (!r.Ok()) return;
+        if (m > g_mapVoteCount)
+            ui::TheChat().AddSystem(Format(TR("Смена арены: %d из %d (/arena смена)", "Another arena: %d of %d (/arena change)"), (int)m, std::max<int>(1, n)));
+        g_voteCount = c, g_voteNeed = std::max<int>(1, n), g_mapVoteCount = m;
     } else if (op == A_HIT) {
         KnockDown();  // the Butcher's charge ran into this player
     } else if (op == A_SHELL) {
@@ -3947,7 +3965,10 @@ void Handle(uint8_t from, Reader& r) {
         uint16_t id = r.U16();
         if (r.Ok()) g_vestIds.push_back(id), g_vestIdsUntil = NowMs() + 15000;
     } else if (op == A_STAGE) {
+        g_modeOn = true;
+        g_lobby = false;
         Stage();
+        WearChosen();
     } else if (op == A_LOBBY) {
         uint8_t open = r.U8();
         if (r.Ok() && open) OpenLobby(true);
@@ -4235,8 +4256,8 @@ void Update() {
             g_arena.nextWaveMs = now + PrepMs(false);
             g_arena.itemsFor = g_arena.wave + 1;
             Send(A_PREP, [secs](Writer& w) { w.U8((uint8_t)secs); });
-            ui::TheChat().AddSystem(Format(TR("Волна отбита! Следующая через %d секунд. Y — проголосовать за пропуск.",
-                                              "The wave is beaten! The next one in %d seconds. Y votes to skip it."), secs));
+            ui::TheChat().AddSystem(Format(TR("Волна отбита! Следующая через %d секунд. Y — пропустить, /arena смена — сменить арену.",
+                                              "The wave is beaten! The next one in %d seconds. Y skips, /arena change moves to another arena."), secs));
         }
         if (now >= g_arena.nextWaveMs) {
             g_arena.nextWaveMs = 0;
@@ -4280,7 +4301,7 @@ void DrawCod() {
     float s = g.Scale();
     uint64_t now = NowMs();
     if (g_break && !g_arena.endAt && g_breakEndMs > now) {  // the wait: its seconds and the vote, on the right
-        float pw = 360 * s, ph = g.LineHeight(ui::FONT_NORMAL) * 3 + g.LineHeight(ui::FONT_SMALL) + 32 * s;
+        float pw = 360 * s, ph = g.LineHeight(ui::FONT_NORMAL) * 2 + g.LineHeight(ui::FONT_SMALL) + 28 * s;
         float px = g.Width() - pw - 24 * s, py = g.Height() * 0.36f;
         g.Rect(px, py, pw, ph, 0xC0000000);
         g.Text(ui::FONT_NORMAL, px + 14 * s, py + 10 * s,
@@ -4288,12 +4309,9 @@ void DrawCod() {
                ui::TEXT_SHADOW);
         g.Text(ui::FONT_NORMAL, px + 14 * s, py + 14 * s + g.LineHeight(ui::FONT_NORMAL),
                Format(TR("Пропустить: %d из %d", "Skip: %d of %d"), g_voteCount, g_voteNeed), 0xFFFFFFFF, ui::TEXT_SHADOW);
-        g.Text(ui::FONT_NORMAL, px + 14 * s, py + 18 * s + g.LineHeight(ui::FONT_NORMAL) * 2,
-               Format(TR("Сменить арену: %d из %d", "Another arena: %d of %d"), g_mapVoteCount, g_voteNeed), 0xFF90D0FF, ui::TEXT_SHADOW);
-        g.Text(ui::FONT_SMALL, px + 14 * s, py + 22 * s + g.LineHeight(ui::FONT_NORMAL) * 3,
-               TR("Y — пропустить · M — сменить арену · сквозь баррикады можно пройти",
-                  "Y skips · M moves to another arena · the barricades let you through"),
-               0xFFB0B0B0, ui::TEXT_SHADOW);
+        g.Text(ui::FONT_SMALL, px + 14 * s, py + 18 * s + g.LineHeight(ui::FONT_NORMAL) * 2,
+               TR("Y — пропустить · сквозь баррикады можно пройти", "Y skips · the barricades let you through"), 0xFFB0B0B0,
+               ui::TEXT_SHADOW);
     }
     float x = g.Width() - 40 * s, y = g.Height() * 0.62f;
     g.Text(ui::FONT_BIG, x, y, Format("%d", g_points), 0xFFFFFFFF, ui::TEXT_RIGHT | ui::TEXT_OUTLINE);
@@ -4302,8 +4320,7 @@ void DrawCod() {
         g.Text(ui::FONT_NORMAL, x - 130 * s, y - t * 40 * s, p.text, ui::WithAlpha(p.color, 1.0f - t), ui::TEXT_RIGHT | ui::TEXT_OUTLINE);
     }
     y += g.LineHeight(ui::FONT_BIG);
-    if (g_hasUgl) {
-        CPlayerPed* me = FindPlayerPed(0);
+    if (CPlayerPed* me = FindPlayerPed(0); g_hasUgl && me && me->ActiveWeapon().type == 30) {  // only with the AK in hand
         std::string t = g_uglReadyMs ? std::string(TR("Подствольник: заряжается...", "Launcher: loading..."))
                         : g_uglLoaded ? std::string(TR("Подствольник: заряжен · N — огонь", "Launcher: loaded · N fires"))
                                       : Format(TR("Подствольник: пуст · N — зарядить (гранат: %d)", "Launcher: empty · N loads (grenades: %d)"),
@@ -4332,8 +4349,7 @@ void DrawCod() {
     if (saw && IsPedValid(saw) && saw->Health() > 0.0f) {
         auto it = g_info.find(saw);
         bool winding = it != g_info.end() && it->second.sawStage == 1;
-        Label(saw->GetPosition() + CVector{0, 0, 1.25f}, winding ? TR("Мясник заводит пилу!", "The Butcher revs the saw!") : TR("Мясник", "The Butcher"),
-              0xFFFF6050, 25.0f);
+        if (!winding) Label(saw->GetPosition() + CVector{0, 0, 1.25f}, TR("Мясник", "The Butcher"), 0xFFFF6050, 25.0f);  // nothing over him as he revs
     }
     if (officer && IsPedValid(officer) && officer->Health() > 0.0f) {
         Label(officer->GetPosition() + CVector{0, 0, 1.25f}, TR("Офицер", "The Officer"), 0xFFFFB040, 20.0f);
@@ -4344,7 +4360,8 @@ void DrawCod() {
         Label(w.pos + CVector{0, 0, 0.35f}, Format("%s · %d", WeaponName(g.weapon), g.price), 0xFFB0FFB0, 15.0f);
     }
     for (const Drop& d : g_drops)
-        Label(d.pos + CVector{0, 0, 0.6f}, DropName(d), d.type == D_HEALTH ? 0xFF60FF60 : d.type == D_GUN ? 0xFFB0FFB0 : 0xFFFFE060,
+        if (d.type != D_GUN)  // a weapon put down: no writing over it
+            Label(d.pos + CVector{0, 0, 0.6f}, DropName(d), d.type == D_HEALTH ? 0xFF60FF60 : d.type == D_GUN ? 0xFFB0FFB0 : 0xFFFFE060,
               d.type == D_AMMO || d.type == D_HEALTH ? 30.0f : 15.0f);
     if (g_box.placed && g_box.handle >= 0) {
         std::string t = Format(TR("Ящик с оружием · %d", "Weapon box · %d"), kBoxCost);
@@ -4374,7 +4391,6 @@ void Launch(int faction, int place, int waves) {
 // enemies, place and waves starts by itself after 15 s, and the next one 20 s after each ends. The host plays the
 // character it picked in the lobby too (the partners get theirs as always).
 uint64_t g_modeReadyMs = 0, g_modeNextMs = 0;
-bool g_modeSkinDone = false;
 // After a lost arena in this mode everyone is back in the lobby (the F9 window opens with it): the host picks the
 // enemies, the place and the waves again and starts the next one, each player may pick another character there
 void WearPicked() {
@@ -4384,17 +4400,22 @@ void WearPicked() {
     int k = std::clamp(skin::ChosenIndex(), 0, count - 1);
     skin::Wear(list[k].model);
 }
+// After a lost arena in this mode everyone is back in the co-op lobby (the F9 window, as before the game): ready / the
+// host's start, the characters, the next arena's choices; the host's start goes on in the same game (flow::ReturnToLobby)
 void OpenLobby(bool open) {
     g_lobby = open;
     if (open) {
-        Stage();  // whoever is not there (back from the hospital) waits in CJ's house too
-        ui::SetConnectMenuVisible(true);
-        ui::TheChat().AddSystem(TR("Арена проиграна — все в лобби. Выберите персонажа; хост выберет врагов, место и волны.",
-                                   "The arena is lost: everyone is in the lobby. Pick a character; the host picks the enemies, the place and the waves."));
-    } else {
-        ui::SetConnectMenuVisible(false);
-        WearPicked();
+        Stage();  // whoever is not there (back from the hospital) waits in CJ's house
+        if (Net().IsHost()) flow::ReturnToLobby();
+        ui::TheChat().AddSystem(TR("Арена проиграна — все в лобби.", "The arena is lost: everyone is in the lobby."));
     }
+}
+// this player becomes the character it picked in the lobby (not the one of the save or the profile)
+void WearChosen() {
+    int count = 0;
+    const skin::Choice* list = skin::Choices(count);
+    int k = std::clamp(skin::ChosenIndex(), 0, count - 1);
+    skin::Wear(list[k].model);
 }
 void GameMode() {
     if (Cfg().gameMode != 2 || !Net().Online() || !Net().IsHost() || !core::IsPlayerReady() || flow::InLobby()) {
@@ -4404,17 +4425,13 @@ void GameMode() {
     uint64_t now = NowMs();
     if (!g_modeReadyMs) {
         g_modeReadyMs = now;
-        Send(A_STAGE);  // everyone into CJ's house first
+        g_lobby = false;
+        g_modeOn = true;
+        Send(A_STAGE);  // everyone into CJ's house first, as the character picked in the lobby
         Stage();
+        WearChosen();
         g_modeNextMs = now + 15000;
         ui::TheChat().AddSystem(TR("Режим «Арена»: бой начнётся через 15 секунд.", "The arena mode: the battle begins in 15 seconds."));
-    }
-    if (!g_modeSkinDone && skin::Picked()) {
-        g_modeSkinDone = true;
-        int count = 0;
-        const skin::Choice* list = skin::Choices(count);
-        int k = std::clamp(skin::ChosenIndex(), 0, count - 1);
-        if (list[k].model) skin::Wear(list[k].model);
     }
     if (g_arena.on) {
         g_modeNextMs = now + 20000;  // the next one 20 s after a won one
@@ -4425,6 +4442,7 @@ void GameMode() {
         g_modeLost = false;
         Send(A_LOBBY, [](Writer& w) { w.U8(1); });
         OpenLobby(true);
+        return;
     }
     if (g_lobby) return;
     CPlayerPed* me = FindPlayerPed(0);
@@ -4447,12 +4465,64 @@ bool __fastcall HookHasAmmo(CWeapon* w, void* edx) {
     return g_origHasAmmo(w, edx);
 }
 
+// ---- CJ's house in the arena mode (where everyone waits): no markers in it (the scripts' arrows and cylinders, the
+// wardrobe's, the doors' yellow cones), its doors shut (nobody walks out of it) and its save disk gone
+const CVector kHouse{2496.05f, -1695.24f, 1014.74f};
+bool InHouse() {
+    if (!(g_modeOn || (Net().Online() && Net().IsHost() && Cfg().gameMode == 2)) || g_arena.on) return false;
+    CPlayerPed* me = core::IsPlayerReady() ? FindPlayerPed(0) : nullptr;
+    return me && me->AreaCode() == 3 && (me->GetPosition() - kHouse).Length() < 60.0f;
+}
+using PlaceMarkerFn = void*(__cdecl*)(uint32_t, uint32_t, CVector*, float, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, float, int32_t,
+                                      CVector, uint32_t);
+PlaceMarkerFn g_origPlaceMarker = nullptr;
+void* __cdecl HookPlaceMarker(uint32_t id, uint32_t type, CVector* pos, float size, uint32_t r, uint32_t g, uint32_t b, uint32_t a, uint32_t pulse,
+                              float frac, int32_t rot, CVector normal, uint32_t zCheck) {
+    if (InHouse()) return nullptr;
+    return g_origPlaceMarker(id, type, pos, size, r, g, b, a, pulse, frac, rot, normal, zCheck);
+}
+using PlaceConeFn = void(__cdecl*)(uint32_t, CVector*, float, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, float, int32_t, uint32_t);
+PlaceConeFn g_origPlaceCone = nullptr;
+void __cdecl HookPlaceCone(uint32_t id, CVector* pos, float size, uint32_t r, uint32_t g, uint32_t b, uint32_t a, uint32_t pulse, float frac,
+                           int32_t rot, uint32_t coll) {
+    if (InHouse()) return;
+    g_origPlaceCone(id, pos, size, r, g, b, a, pulse, frac, rot, coll);
+}
+std::vector<std::pair<int, uint16_t>> g_houseDoors;  // the house's doors shut: pool index, its flags before
+void ShutHouse(bool shut) {
+    auto* pool = Ref<CPoolHeader*>(0x96A7D8);  // CEntryExitManager::mp_poolEntryExits
+    if (!pool) return;
+    if (!shut) {
+        for (auto& [i, flags] : g_houseDoors)
+            if (i < pool->size && pool->byteMap[i] >= 0) Ref<uint16_t>((uintptr_t)pool->objects + (uintptr_t)i * 0x3C + 0x30) = flags;
+        g_houseDoors.clear();
+        return;
+    }
+    if (!g_houseDoors.empty()) return;
+    for (int i = 0; i < pool->size; ++i) {
+        if (pool->byteMap[i] < 0) continue;
+        uintptr_t e = (uintptr_t)pool->objects + (uintptr_t)i * 0x3C;
+        if (Ref<int8_t>(e + 0x32) != 3 || (DoorSpot((void*)e) - kHouse).Length2D() > 40.0f) continue;
+        g_houseDoors.push_back({i, Ref<uint16_t>(e + 0x30)});
+        Ref<uint16_t>(e + 0x30) &= (uint16_t)~0x4000;  // bEnableAccess off: no marker, no way out
+    }
+}
+void HouseFrame() {
+    bool in = InHouse();
+    ShutHouse(in);
+    static bool hid = false;
+    if (in) HideSaves(true), hid = true;
+    else if (hid && !g_arena.on) HideSaves(false), hid = false;
+}
+
 class ArenaModule : public Module {
 public:
     const char* Name() const override { return "Arena"; }
     void OnInstallHooks() override {
         Net().SetHandler(proto::G_ARENA, &Handle);
         mem::HookFn(0x73B2A0, &HookHasAmmo, &g_origHasAmmo, "CWeapon::HasWeaponAmmoToBeUsed");
+        mem::HookFn(0x725120, &HookPlaceMarker, &g_origPlaceMarker, "C3dMarkers::PlaceMarker");
+        mem::HookFn(0x726D40, &HookPlaceCone, &g_origPlaceCone, "C3dMarkers::PlaceMarkerCone");
     }
     void OnGameShutdown() override {
         if (g_arena.on) game::challenge::End();
@@ -4479,14 +4549,15 @@ public:
             g_arena = Arena{};
     }
     void OnSessionEnd() override {
-        g_lobby = g_modeLost = false;
+        g_lobby = g_modeLost = g_modeOn = false;
+        ShutHouse(false);
         g_modeReadyMs = 0;
-        g_modeSkinDone = false;
         if (g_arena.on) End(false);
     }
     void OnPostProcess() override {
         if (g_arena.on && core::IsPlayerReady()) Update();
         GameMode();
+        if (core::IsPlayerReady()) HouseFrame();
     }
     void OnRender() override {
         if (!g_arena.on || MenuActive()) return;
@@ -4545,6 +4616,17 @@ public:
             if (!g_arena.on) ui::TheChat().AddError(TR("Арена не идёт.", "No arena is on."));
             else if (Hosting()) Skip(Net().MyId());
             else Send(A_SKIP);
+            return true;
+        }
+        if (a0 == "смена" || a0 == "сменить" || a0 == "change") {  // the vote for another arena, between the waves
+            if (!g_arena.on || !g_break || !g_arena.taken) {
+                ui::TheChat().AddError(TR("Сменить арену можно только между волнами.", "The arena can be changed between the waves only."));
+            } else if (!g_iMapVoted) {
+                g_iMapVoted = true;
+                ui::TheChat().AddSystem(TR("Вы проголосовали за смену арены.", "You voted for another arena."));
+                if (g_arena.host) MapVote(Net().MyId());
+                else Send(A_MAPVOTE);
+            }
             return true;
         }
         if (!Hosting()) {
@@ -4674,7 +4756,7 @@ void OnLocalKill(CPed* victim, int weapon, bool headshot) {
     AddPoints(pts, headshot ? 0xFFFF8040 : 0xFFFFE060);
 }
 
-bool InLobby() { return g_lobby && Net().Online(); }
+bool InLobby() { return Net().Online() && flow::InLobby() && (g_modeOn || (Net().IsHost() && Cfg().gameMode == 2)); }
 void LobbyStart() {
     if (!g_lobby || !Net().IsHost()) return;
     int faction = std::clamp(Cfg().arenaFaction, 0, kFactionCount - 1);
@@ -4697,16 +4779,7 @@ bool KeyDown(int vk, bool repeat) {
         if (!repeat) PlayerUgl();
         return true;
     }
-    if (vk == 'M') {  // the vote for another place, between the waves
-        if (!g_break || repeat) return g_break;
-        if (!g_iMapVoted) {
-            g_iMapVoted = true;
-            ui::TheChat().AddSystem(TR("Вы проголосовали за смену арены.", "You voted for another arena."));
-            if (g_arena.host) MapVote(Net().MyId());
-            else Send(A_MAPVOTE);
-        }
-        return true;
-    }
+
     if (vk == 'Y') {  // the vote to skip the wait between the waves
         if (!g_break || repeat) return g_break;
         if (!g_iVoted) {

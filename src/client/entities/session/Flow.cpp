@@ -60,6 +60,7 @@ bool g_hasSpot = false;
 // the lobby
 enum : uint8_t { LOBBY_QUERY = 1, LOBBY_STATE = 2, LOBBY_READY = 3 };
 bool g_lobbyStarted = false;   // host: the game is on (started from the lobby, or hosted from inside a game)
+bool g_backInGame = false;  // the lobby again in the middle of a game (ReturnToLobby): its start goes on in that game
 bool g_lobbyKnown = false;     // partner: the host answered whether the game is on
 uint64_t g_lobbyAskMs = 0;
 bool g_myReady = false;
@@ -283,7 +284,22 @@ void HandleLobby(uint8_t from, Reader& r) {
     } else if (op == LOBBY_STATE && from == net.HostId() && !net.IsHost()) {
         g_lobbyKnown = true;
         g_hostNewGame = (value & 2) != 0;
+        if ((value & 4) && !(value & 1)) {  // back in the lobby, the game goes on behind it
+            g_backInGame = true;
+            g_myReady = false;
+            SetPhase(Phase::Lobby);
+            core::ShowConnectMenu(true);
+            LOGI("The host took everyone back to the lobby");
+            return;
+        }
         if ((value & 1) && g_phase == Phase::Lobby) {
+            if (g_backInGame && core::IsInGame()) {
+                g_backInGame = false;
+                SetPhase(Phase::Playing);
+                core::ShowConnectMenu(false);
+                LOGI("The host started again from the lobby: the game goes on");
+                return;
+            }
             LOGI("The host started the game: its world comes");
             RequestWorld();
         }
@@ -477,7 +493,7 @@ void Leave() {
     Net().Disconnect();
     StopServerProcess();
     g_isHosting = g_follower = g_prologueWait = g_worldNone = g_progressUpload = g_hasSpot = false;
-    g_lobbyStarted = g_myReady = false;
+    g_lobbyStarted = g_myReady = g_backInGame = false;
     g_ready.clear();
     g_pendingWorld.clear();
     SetPhase(Phase::Idle);
@@ -718,8 +734,28 @@ bool InSharedWorld() { return Net().Online() && (Net().IsHost() || InHostWorld()
 
 bool InLobby() { return Net().Online() && g_phase == Phase::Lobby; }
 
+void ReturnToLobby() {
+    if (!Net().Online() || !Net().IsHost() || g_phase != Phase::Playing) return;
+    g_lobbyStarted = false;
+    g_backInGame = true;
+    g_ready.clear();
+    SetPhase(Phase::Lobby);
+    SendLobby(LOBBY_STATE, 4 | (g_hostSlot < 0 ? 2 : 0));
+    core::ShowConnectMenu(true);
+    LOGI("Lobby: everyone back in it (the game goes on)");
+}
+
 void LobbyStart() {
     if (!InLobby() || !Net().IsHost()) return;
+    if (g_backInGame && core::IsInGame()) {
+        g_lobbyStarted = true;
+        g_backInGame = false;
+        SendLobby(LOBBY_STATE, 1 | (g_hostSlot < 0 ? 2 : 0));
+        SetPhase(Phase::Playing);
+        core::ShowConnectMenu(false);
+        LOGI("Lobby: the host starts again in the same game");
+        return;
+    }
     g_lobbyStarted = true;
     SendLobby(LOBBY_STATE, 1 | (g_hostSlot < 0 ? 2 : 0));
     LOGI("Lobby: the host starts the game");

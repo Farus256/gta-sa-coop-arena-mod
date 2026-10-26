@@ -40,6 +40,9 @@ void LobbySetReady(bool ready);   // partner
 bool LobbyReady(uint8_t id);      // what that partner said
 bool LobbyMyReady();
 bool LobbyHostNewGame();          // partner: the host starts a new game from the lobby (everyone starts over)
+// host: everyone back in the lobby without leaving the game (the arena mode after a lost arena); the host's start puts
+// them back into the same game
+void ReturnToLobby();
 
 std::vector<SaveSlotInfo> ListSaveSlots();
 void Update();             // per frame

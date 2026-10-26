@@ -543,13 +543,11 @@ void RenderConnectMenu() {
                     c.arenaPlace = (c.arenaPlace + 1 + d + pc + 1) % (pc + 1) - 1;
                 std::string wv = c.arenaWaves ? Format("%d", c.arenaWaves) : std::string(TR("без конца", "no end"));
                 if (int d = w::Selector("lwaves", cx + (third + 14 * s) * 2, cy, third, rowH, wv)) c.arenaWaves = (c.arenaWaves + d + 11) % 11;
-                cy += rowH + 14 * s;
-                if (w::Button("arstart", cx, cy, cw, bh + 10 * s, TR("Начать арену", "Start the arena"), true, true, true)) arena::LobbyStart();
-                cy += bh + 16 * s;
+                cy += rowH + 4 * s;
             } else {
                 para(TR("Хост выбирает следующую арену. Выберите персонажа справа.",
                         "The host picks the next arena. Pick a character on the right."),
-                     kSaMuted, FONT_NORMAL, true);
+                     kSaMuted, FONT_SMALL, true);
             }
         }
         if (lobby) {  // the host starts the game for everyone, a partner says it is ready
