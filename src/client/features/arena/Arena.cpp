@@ -197,7 +197,7 @@ enum ArenaOp : uint8_t {
     A_START = 1, A_WAVE, A_LEFT, A_BOSS, A_END, A_ITEMS, A_PREP, A_MARK, A_SKIP,
     A_SCORE, A_BARS, A_BOARD, A_REPAIR, A_BOX, A_BOXUSE, A_BOXROLL, A_PERKS, A_PSPAWN, A_GRAB, A_POWER, A_TWINS,
     A_WALLS, A_DROP, A_TAKE, A_TAKEN, A_BUILD, A_LOBBY, A_FLAMER, A_STAGE, A_VOTE, A_VOTES, A_GIVE, A_MAPVOTE, A_MOVE,
-    A_HEALGAS, A_BOSSNAME, A_HIT, A_SHELL, A_SPEC, A_BOXTAKEN, A_SPOT, A_DRONEHIT, A_ALERT /* not used any more */, A_GUARDNAME, A_GUARDREQ
+    A_HEALGAS, A_BOSSNAME, A_HIT, A_SHELL, A_SPEC, A_BOXTAKEN, A_SPOT, A_DRONEHIT, A_ALERT /* not used any more */, A_GUARDNAME, A_GUARDREQ, A_ZONE, A_EBAR, A_SAWHIT, A_HALVE
 };
 struct Arena {
     bool on = false, host = false;
@@ -295,10 +295,30 @@ int g_voteCount = 0, g_voteNeed = 1, g_mapVoteCount = 0;
 bool g_iVoted = false, g_iMapVoted = false;
 void MapVote(uint8_t by);
 void Relocate(int place);
+void StopOwnMoves();
+void SawKill(game::CPed* p);
+void DashFrame(uint64_t now);
+void HoloFrame(uint64_t now);
+extern uint64_t g_fewSince;
 int MountQuad(int h);
 bool RcPlace() { return std::string(kPlaces[g_arena.place].keys[0][1]) == "rc"; }
 int g_dronesLeft = 0;  // host: the RC helicopters still to come this wave
 uint64_t g_nextDroneMs = 0;
+// the host's own points of a place (coop\arena-spots.ini): where the players come in, where the enemies come from
+bool g_hasOwnSpawn = false;
+game::CVector g_ownSpawn;
+std::vector<game::CVector> g_enemyPts;
+// the crack palace's zones: each wave the enemies go for the next one (every game knows the wave's, A_ZONE)
+std::vector<game::CVector> g_zones;  // host
+int g_zoneNow = -1;                  // every game: the wave's zone (its number from 0), -1: none
+game::CVector g_zoneAt;
+game::CPed* g_operator = nullptr;  // host: the RC helicopters' man
+// host: this arena's boss carries the AK-47 with the grenade launcher (T-Bone always, the others half the time) or a
+// katana (spins at the players, the bullets bounce off him meanwhile)
+bool g_bossUgl = false, g_bossKatana = false;
+void MakeOperator(int wave);
+void ZoneWave(int wave);
+bool CrackPlace() { return std::string(kPlaces[g_arena.place].keys[0][1]) == "crack"; }
 int BoxCost();
 int RepairCost();
 void SendVotes();
@@ -496,7 +516,9 @@ void SeedGrid(const CVector& start) {
     g_cellAt[CellKey(i, j, start.z)] = 0;
     g_open.push_back(0);
 }
+void LoadOwnPoints();
 void StartGrid() {
+    LoadOwnPoints();
     g_cells.clear();
     g_cellAt.clear();
     g_open.clear();
@@ -697,13 +719,23 @@ constexpr int kEmptyDecisionMaker = 65542;  // SET_CHAR_DECISION_MAKER "Empty": 
 // and gets the fallen up; R_TWIN: one of the Twins, the mini-boss (two sawn-offs / two desert eagles)
 // R_SAW: the chainsaw mini-boss (winds up, then charges straight on till a wall); R_OFFICER: the mini-boss with a
 // katana who keeps to the back, calls 4 men every 30 s, falls back and heals
-enum Role : uint8_t { R_GUN, R_GRENADIER, R_KNIFE, R_BOSS, R_SNIPER, R_FLAMER, R_MEDIC, R_TWIN, R_SAW, R_OFFICER };
+enum Role : uint8_t { R_GUN, R_GRENADIER, R_KNIFE, R_BOSS, R_SNIPER, R_FLAMER, R_MEDIC, R_TWIN, R_SAW, R_OFFICER, R_OPERATOR, R_BUILDER };
 // what one does now: fights as the game has it, goes round to a back, runs to cover, holds it (down, up and shooting,
 // down), pushes on at the players, (a knifeman) steals up to a back out of the player's sight, (a sniper) moves to
 // another spot it sees the players from
 // M_BREACH: it came at a barricade and tears its boards off before it gets through (the zombies' windows)
 enum Mode : uint8_t { M_FIGHT, M_FLANK, M_COVER_GO, M_COVER_HOLD, M_PUSH, M_SNEAK, M_RELOCATE, M_BREACH };
 struct Enemy {
+    int kStage = 0;          // the katana boss: 0 coming, 1 winding up, 2 spinning, 3 getting his breath, 4 stunned
+    uint64_t kUntil = 0, kNextMs = 0;
+    std::set<CPed*> kHit;
+    uint64_t zoneUntil = 0;  // the crack palace: on its way to the wave's zone till then (or till there, or a player near)
+    CVector zoneSpot;
+    CVector buildSpot;       // a builder's: where it puts the next barricade up
+    bool hasBuildSpot = false;
+    uint64_t buildAt = 0;
+    int builds = 0;
+    uint64_t getUpUntil = 0;  // raised by a medic: getting up off the floor till then
     uint64_t gasUntil = 0;  // a medic's healing gas on the floor: it stands in it till then (or till it is well)
     CVector gasSpot;
     int quad = -1;                         // the quad bike it rides in on (the RC battlefield's mini-bosses), -1: on foot
@@ -801,9 +833,21 @@ bool NearBase(const CVector& p) {
     if (!RcPlace()) return false;
     return (p - kPlaces[g_arena.place].pos).Length2D() < 20.0f;
 }
+CVector MemberSpot(const CVector& anchor, int k);
 CVector SpawnSpot(float angle, float halfSector, float minApart) {
     const Place& pl = kPlaces[g_arena.place];
     std::vector<CVector> players = PlayerSpots();
+    if (!g_enemyPts.empty()) {  // the host's own points: one of them far from the players, beside it
+        CVector best = g_enemyPts[0];
+        float score = -1e9f;
+        for (const CVector& q : g_enemyPts) {
+            float sc = DistToPlayers(q, players) + Rand(0.0f, 8.0f);
+            if (sc > score) score = sc, best = q;
+        }
+        CVector p = GridUsable() ? MemberSpot(best + CVector{0, 0, 1.0f}, RandInt(0, 3)) : best + CVector{0, 0, 1.0f};
+        g_spawnsNow.push_back(p);
+        return p;
+    }
     CVector mid{};
     for (const CVector& q : players) mid = mid + q;
     mid = mid * (1.0f / (float)players.size());
@@ -952,7 +996,7 @@ int MakeEnemy(int model, int weapon, int health, int armour, int accuracy, const
         Cmd(0x0245).I(h).S8("fatman").Run();                       // SET_ANIM_GROUP_FOR_CHAR: heavy and slow
         Cmd(0x02AB).I(h).I(0).I(1).I(0).I(0).I(0).Run();            // SET_CHAR_PROOFS: its own fire does not burn it
         Cmd(0x0946).I(h).I(1).Run();  // its actions not cut by hits: no stagger, no knocking back
-    } else {
+    } else if (weapon > 0) {
         Give(h, weapon, role == R_SNIPER ? 80 : 500);
         weapon = GunFor(weapon);
     }
@@ -961,7 +1005,7 @@ int MakeEnemy(int model, int weapon, int health, int armour, int accuracy, const
         Cmd(0x0946).I(h).I(1).Run();  // no stagger
         if (role == R_SAW) Cmd(0x0245).I(h).S8("player").Run();
     }
-    if (role == R_SNIPER) Cmd(0x0350).I(h).I(1).Run();  // SET_CHAR_STAY_IN_SAME_PLACE: it shoots from where it is
+    if (role == R_SNIPER || role == R_OPERATOR) Cmd(0x0350).I(h).I(1).Run();  // SET_CHAR_STAY_IN_SAME_PLACE: it stays where it is
     if (weapon) Cmd(0x01B9).I(h).I(weapon).Run();  // SET_CURRENT_CHAR_WEAPON
     CPed* ped = GetPed(h);
     if (!ped) return h;
@@ -995,7 +1039,7 @@ int MakeEnemy(int model, int weapon, int health, int armour, int accuracy, const
 // the SWAT's armour is half the others' (they do not die of a headshot, Difficulty)
 int ArmourFor(int wave, int extra) {
     int a = std::min(250, 25 * wave + extra);
-    return kFactions[g_arena.faction].models[0] == 285 ? a / 2 : a;
+    return a;  // the SWAT as the others (their own toughness, Difficulty's, is not for the arena)
 }
 
 // the barricade a squad comes through (host): one whose spawn is far from the players, not the last wave's if it can be;
@@ -1605,9 +1649,10 @@ CVector EntrySpot() {
     float r = g_spotOwn ? 0.7f : 1.2f;  // the upper floor's spot has room round it for sure only that far
     return Net().Online() ? base + CVector{std::cos(a) * r, std::sin(a) * r, 0.0f} : base;
 }
+bool g_spotApplied = false;  // this place's spot taken the players there once
 void ForgetSpot() {  // a new place, a new arena: none yet
     ClearBlockers();
-    g_hasSpot = g_spotOwn = false;
+    g_hasSpot = g_spotOwn = g_spotApplied = false;
     g_lowZ = g_minZ = -1e9f;
 }
 // every game: the host's spot came (or the host made it): an upper place takes its players up there
@@ -1617,8 +1662,10 @@ void ApplySpot() {
     for (const Blocker& b : g_blockers) shown &= !b.handles.empty();
     if (!shown) ShowBlockers();
     CPlayerPed* me = FindPlayerPed(0);
+    bool first = g_spotOwn && !g_spotApplied;  // the place's own spot: everyone there once, as it begins
+    if (g_spotOwn) g_spotApplied = true;
     if (g_spotOwn && me && g_arena.taken && !g_spectating && me->Health() > 0.0f && me->AreaCode() == kPlaces[g_arena.place].area &&
-        me->GetPosition().z < g_minZ + 0.5f)
+        (me->GetPosition().z < g_minZ + 0.5f || first))
         Teleport(kPlaces[g_arena.place].area, EntrySpot(), Rand(0.0f, 360.0f));
 }
 void OnGridDone() {  // host
@@ -1629,6 +1676,7 @@ void OnGridDone() {  // host
     }
     g_spotOwn = g_minZ > -1e8f && !g_cells.empty();
     if (g_spotOwn) g_spotAt = g_cells[0].p;  // the seed: the middle of the first upper floor
+    if (g_hasOwnSpawn) g_spotOwn = true, g_spotAt = g_ownSpawn;  // the host's own point to come in at
     ClearBlockers();
     if (g_spotOwn) MakeBlockers();
     SendSpot();
@@ -1641,7 +1689,7 @@ void Rescue(uint64_t now) {
     const Place& pl = kPlaces[g_arena.place];
     if (!me || !g_arena.taken || g_spectating || me->Health() <= 0.0f || me->InVehicle() || me->AreaCode() != pl.area || now - lastMs < 2000)
         return;
-    float limit = !g_hasSpot ? pl.pos.z - 40.0f : g_spotOwn ? g_minZ - 2.5f : g_lowZ > -1e8f ? g_lowZ - 12.0f : pl.pos.z - 40.0f;
+    float limit = !g_hasSpot ? pl.pos.z - 40.0f : g_minZ > -1e8f ? g_minZ - 2.5f : g_lowZ > -1e8f ? g_lowZ - 12.0f : pl.pos.z - 40.0f;
     if (me->GetPosition().z >= limit) return;
     lastMs = now;
     LOGI("Arena: the player fell out of the place (z %.1f, the least %.1f): back in", me->GetPosition().z, limit);
@@ -2048,7 +2096,50 @@ void Anchor(int h) {
         o->TurnSpeed() = CVector{};
     }
 }
+// the box's neighbours on its left (every game, its own): a radio (E: the next station of the game's radio, for this
+// player alone) and a drinks machine (E: $10, full health)
+struct Prop {
+    CVector pos;
+    int handle = -1;
+};
+Prop g_radio, g_soda;
+int g_station = -1;  // this player's radio: -1 off, 0..10 the game's stations (their audio zones 52..62)
+const char* const kStations[11] = {"Playback FM", "K-Rose", "K-DST", "Bounce FM", "SF-UR", "Radio Los Santos", "Radio X",
+                                   "CSR 103.9", "K-Jah West", "Master Sounds 98.3", "WCTR"};
+constexpr int kSodaCost = 10;
+void DelProps() {
+    DelObj(g_radio.handle);
+    DelObj(g_soda.handle);
+}
+bool BesideBox(float side, CVector& at) {  // on the floor beside the box: side metres to its right (left: below 0)
+    float r = g_box.heading / 57.29578f;
+    CVector right{std::cos(r), std::sin(r), 0.0f};
+    at = g_box.pos + right * side;
+    float z = 0;
+    if (!FloorBelow(at.x, at.y, at.z + 1.2f, z) || std::fabs(z - g_box.pos.z) > 1.0f) return false;
+    at.z = z;
+    return Clear(g_box.pos + CVector{0, 0, 0.6f}, at + CVector{0, 0, 0.6f});
+}
+void ShowProps() {
+    DelProps();
+    if (!g_box.placed) return;
+    float lift = 0, height = 0;
+    int radio = PickModel({2226, 2103, 2102});  // a boombox, a hi-fi
+    int soda = PickModel({955, 1775, 956});      // a Sprunk machine
+    CVector at;
+    if (radio >= 0 && (BesideBox(-2.4f, at) || BesideBox(4.6f, at))) {
+        g_radio.pos = at;
+        g_radio.handle = MakeObj(radio, at, g_box.heading, lift, height);
+        Anchor(g_radio.handle);
+    }
+    if (soda >= 0 && (BesideBox(-4.4f, at) || BesideBox(6.6f, at) || BesideBox(-2.4f, at))) {
+        g_soda.pos = at;
+        g_soda.handle = MakeObj(soda, at, g_box.heading, lift, height);
+        Anchor(g_soda.handle);
+    }
+}
 void ShowWardrobe() {  // every game: by the box, to its right, on the floor
+    ShowProps();
     DelObj(g_ward.handle);
     if (!g_box.placed) return;
     int model = PickModel({2969, 1220, 1230});  // a small crate
@@ -2263,7 +2354,7 @@ void StartRoll(uint8_t by, int gun, bool teddy) {
 void UseBox(uint8_t by) {
     if (!g_box.placed || g_box.rolling || g_box.offered || g_box.moveAt) return;
     ++g_box.uses;
-    bool teddy = g_box.uses > 4 && RandInt(0, 4) == 0;
+    bool teddy = false;  // no teddy bear any more
     int gun = RollGun();
     Send(A_BOXROLL, [&](Writer& w) {
         w.U8(by);
@@ -2560,7 +2651,7 @@ void ShowDrop(Drop& d) {
 void AddDrop(const Drop& from) {
     Drop d = from;
     d.born = NowMs();
-    d.until = d.born + (d.type == D_GUN ? 90000 : d.type == D_CASH ? 45000 : 30000);
+    d.until = d.born + (d.type == D_GUN ? 90000 : d.type == D_CASH ? 3600000 : 30000);  // money lies till the arena ends
     ShowDrop(d);
     g_drops.push_back(d);
 }
@@ -2754,6 +2845,24 @@ bool ReadVec(const std::string& v, CVector& p, float& h, int* extra = nullptr) {
     if (extra) *extra = e;
     return n == 4;
 }
+// host: the players' spot, the enemies' points and the zones of this place (its own file's)
+void LoadOwnPoints() {
+    g_hasOwnSpawn = false;
+    g_enemyPts.clear();
+    g_zones.clear();
+    Ini ini;
+    if (!ini.Load(SpotsPath())) return;
+    std::string sec = PlaceSection();
+    CVector p;
+    float h = 0;
+    if (ReadVec(ini.Get(sec, "spawn"), p, h)) g_hasOwnSpawn = true, g_ownSpawn = p;
+    for (int k = 1; k <= 8; ++k)
+        if (ReadVec(ini.Get(sec, Format("enemy%d", k)), p, h)) g_enemyPts.push_back(p);
+    for (int k = 1; k <= 4; ++k)
+        if (ReadVec(ini.Get(sec, Format("zone%d", k)), p, h)) g_zones.push_back(p);
+    if (g_hasOwnSpawn || !g_enemyPts.empty() || !g_zones.empty())
+        LOGI("Arena: own points here: spawn %d, %d enemy points, %d zones", g_hasOwnSpawn ? 1 : 0, (int)g_enemyPts.size(), (int)g_zones.size());
+}
 // host: the saved spots instead of the mod's own; true when there were some
 bool LoadSpots() {
     Ini ini;
@@ -2831,11 +2940,27 @@ void SaveSpot(const std::string& what) {
         ini.Set(sec, Format("bar%d", k), line);
         ui::TheChat().AddSystem(Format(TR("Баррикада %d сохранена: враги придут из-за вашей спины. Появится со следующей арены.",
                                           "Barricade %d kept: the enemies come from behind your back. It is there from the next arena on."), k));
+    } else if (what == "spawn") {
+        ini.Set(sec, "spawn", line);
+        ui::TheChat().AddSystem(TR("Точка появления игроков сохранена (со следующей арены).", "The players' spot to come in at is kept (from the next arena on)."));
+    } else if (what == "enemy" || what == "zone") {
+        const char* key = what == "enemy" ? "enemy" : "zone";
+        int most = what == "enemy" ? 8 : 4, k = 1;
+        while (k <= most && !ini.Get(sec, Format("%s%d", key, k)).empty()) ++k;
+        if (k > most) {
+            ui::TheChat().AddError(Format(TR("Уже %d точек для этого места.", "%d points for this place already."), most));
+            return;
+        }
+        ini.Set(sec, Format("%s%d", key, k), line);
+        ui::TheChat().AddSystem(Format(what == "enemy" ? TR("Точка врагов %d сохранена (со следующей арены).", "Enemy point %d kept (from the next arena on).")
+                                                       : TR("Зона %d сохранена (со следующей арены).", "Zone %d kept (from the next arena on)."), k));
     } else if (what == "wall") {
         ui::TheChat().AddError(TR("Оружия на стенах больше нет.", "There are no wall guns any more."));
         return;
     } else if (what == "reset") {
-        for (const char* key : {"box"}) ini.Set(sec, key, "");
+        for (const char* key : {"box", "spawn"}) ini.Set(sec, key, "");
+        for (int k = 1; k <= 8; ++k) ini.Set(sec, Format("enemy%d", k), "");
+        for (int k = 1; k <= 4; ++k) ini.Set(sec, Format("zone%d", k), "");
         for (int k = 1; k <= kMaxBars; ++k) ini.Set(sec, Format("bar%d", k), "");
         for (int k = 1; k <= 8; ++k) ini.Set(sec, Format("wall%d", k), "");
         ui::TheChat().AddSystem(TR("Свои места для этого места забыты: мод снова расставит всё сам.",
@@ -2845,7 +2970,7 @@ void SaveSpot(const std::string& what) {
 }
 
 // ---- E near a barricade or the box
-enum NearKind : uint8_t { N_NONE, N_BAR, N_BOX, N_WALL, N_WARD, N_GUN };
+enum NearKind : uint8_t { N_NONE, N_BAR, N_BOX, N_WALL, N_WARD, N_GUN, N_RADIO, N_SODA };
 NearKind g_nearKind = N_NONE;
 int g_nearIdx = -1;
 void FindNear() {
@@ -2871,6 +2996,14 @@ void FindNear() {
     if (g_ward.handle >= 0) {
         CVector d = g_ward.pos - at;
         if (d.Length2D() < 2.2f && std::fabs(d.z) < 2.0f && d.Length2D() < best) best = d.Length2D(), g_nearKind = N_WARD, g_nearIdx = 0;
+    }
+    if (g_radio.handle >= 0) {
+        CVector d = g_radio.pos - at;
+        if (d.Length2D() < 1.8f && std::fabs(d.z) < 2.0f && d.Length2D() < best) best = d.Length2D(), g_nearKind = N_RADIO, g_nearIdx = 0;
+    }
+    if (g_soda.handle >= 0) {
+        CVector d = g_soda.pos - at;
+        if (d.Length2D() < 1.8f && std::fabs(d.z) < 2.0f && d.Length2D() < best) best = d.Length2D(), g_nearKind = N_SODA, g_nearIdx = 0;
     }
     for (size_t i = 0; i < g_drops.size(); ++i) {  // a team mate's weapon that would take the place of one this player holds
         const Drop& dr = g_drops[i];
@@ -3017,7 +3150,7 @@ void ResetCod() {
     g_box.placed = false;
     DelObj(g_box.handle);
     DelObj(g_box.handle2);
-    DelObj(g_ward.handle);
+    DelObj(g_ward.handle), DelProps();
     g_box = BoxState{};
     DelObj(g_spinHandle);
     g_spinModel = -1;
@@ -3235,7 +3368,8 @@ void SpawnWave() {
     SendBars();
     if (g_hasSpot) SendSpot();  // for whoever came in late
     int w = g_arena.wave;
-    if (RcPlace()) g_dronesLeft = std::min(2 + w, 8), g_nextDroneMs = NowMs() + 8000;  // the RC helicopters of this wave
+    g_operator = nullptr;
+    g_dronesLeft = 0;
     const Faction& fac = kFactions[g_arena.faction];
     g_sawPed = g_officerPed = nullptr;
     // the 10% event (from the 2nd wave, not with a boss or a mini-boss): four flamethrower men, nobody else
@@ -3289,8 +3423,13 @@ void SpawnWave() {
         int model = special ? kBossModel : fac.models[0];
         g_squads.push_back(Squad{});
         int bossSquad = (int)g_squads.size() - 1;
-        // as tough as the SWAT were in 0.4.1: 100 health, 100 armour, no one-shot headshot
-        int h = MakeEnemy(model, kBosses[b].weapon, 100, 100, 85, SpawnSpot(base + 3.14159f, 1.0f, 8.0f), bossSquad, R_BOSS, false);
+        // as tough as the SWAT were in 0.4.1: 100 health, 100 armour, no one-shot headshot. Half the bosses come with
+        // the AK-47 and its grenade launcher, a quarter with a katana
+        int roll = RandInt(0, 99);
+        g_bossUgl = b == kTBone || roll < 50;
+        g_bossKatana = !g_bossUgl && roll < 75;
+        int bossWeapon = g_bossKatana ? 8 : g_bossUgl ? 30 : kBosses[b].weapon;
+        int h = MakeEnemy(model, bossWeapon, g_bossKatana ? 300 : 100, 100, 85, SpawnSpot(base + 3.14159f, 1.0f, 8.0f), bossSquad, R_BOSS, false);
         if (CPed* p = h >= 0 ? GetPed(h) : nullptr) g_bossPed = p;
         // his men: once, unannounced, silent, round to the players' backs
         int men = std::min(6, 3 + PlayersIn() - 1);
@@ -3299,6 +3438,8 @@ void SpawnWave() {
         g_arena.boss = b;
         bossLine = BossName(b);
     }
+    if (RcPlace()) MakeOperator(w);  // the RC helicopters' man
+    if (CrackPlace()) ZoneWave(w);
     g_arena.waveMs = NowMs();
     int n = (int)g_enemies.size(), wave = g_arena.wave;
     Send(A_WAVE, [&](Writer& wr) {
@@ -3637,10 +3778,11 @@ void SpinRotor(CVehicle* v) { Ref<float>((uintptr_t)v + 0x84C) = 0.35f; }  // CA
 void SpawnDrone() {
     int model = LoadModelNow(MODEL_RCRAIDER) ? MODEL_RCRAIDER : LoadModelNow(MODEL_RCGOBLIN) ? MODEL_RCGOBLIN : -1;
     if (model < 0 || !HasRoom(VehiclePool(), 6, "vehicle")) return;
-    // from the far end of the place: one of the cells farthest from the players (the farthest tenth)
+    // from the drone operator (over his head), else from the far end of the place (the farthest tenth of the cells)
     CVector at;
     bool picked = false;
-    if (GridUsable()) {
+    if (g_operator && IsPedValid(g_operator)) at = g_operator->GetPosition() + CVector{0, 0, 2.0f}, picked = true;
+    if (!picked && GridUsable()) {
         std::vector<CVector> players = PlayerSpots();
         std::vector<std::pair<float, int>> ends;
         for (int k : StandCells())
@@ -3688,7 +3830,8 @@ void ClearDrones() {
     g_dronesLeft = 0;
 }
 void DronesFrame(uint64_t now) {  // host, every frame
-    if (g_dronesLeft > 0 && !g_break && g_arena.left > 0 && now >= g_nextDroneMs && g_drones.size() < 3 && GridUsable()) {
+    if (g_operator && (!IsPedValid(g_operator) || g_operator->Health() <= 0.0f)) g_operator = nullptr, g_dronesLeft = 0;  // he is down: no more
+    if (g_operator && g_dronesLeft > 0 && !g_break && g_arena.left > 0 && now >= g_nextDroneMs && g_drones.size() < 3) {
         SpawnDrone();
         --g_dronesLeft;
         g_nextDroneMs = now + (uint64_t)RandInt(6000, 9000);
@@ -4075,6 +4218,8 @@ void RaiseFallen() {
                           was.silent);
         if (CPed* np = h >= 0 ? GetPed(h) : nullptr) {
             g_info[np].maxHealth = was.maxHealth;
+            g_info[np].getUpUntil = NowMs() + 1600;
+            Cmd(0x0605).I(h).S("getup_front").S("PED").F(4.0f).I(0).I(0).I(0).I(0).I(-1).Run();  // TASK_PLAY_ANIM: it gets up
             for (CPed*& tw : g_twinPeds)
                 if (tw == q) tw = np;
             for (CPed*& fl : g_flamers)
@@ -4083,6 +4228,226 @@ void RaiseFallen() {
         }
     }
     g_toRaise.clear();
+}
+
+// ---- the crack palace's zones and builders (host). Each wave the enemies go for one zone (zone 1, then 2, ...; the
+// host's own /arena зона points, or 3 the mod picks itself spread over the floor): they run there first, then fight;
+// builders (no weapon, $150 on them) put barricades up round the zone (cover for their own, fences for everyone).
+struct EBar {
+    CVector pos;
+    float heading = 0;
+    int handle = -1;
+};
+std::vector<EBar> g_ebars;  // every game's own fences of the enemies' barricades
+void AddEBar(const CVector& at, float heading) {
+    if (g_ebars.size() >= 10) return;
+    EBar b;
+    b.pos = at, b.heading = heading;
+    int model = PickModel({1418, 1408, 1424});
+    float lift = 0, height = 0;
+    if (model >= 0) b.handle = MakeObj(model, at, heading, lift, height), Anchor(b.handle);
+    g_ebars.push_back(b);
+}
+void ClearEBars() {
+    for (EBar& b : g_ebars) DelObj(b.handle);
+    g_ebars.clear();
+}
+void AutoZones() {  // 3 spots of the floor far from each other and from the players' middle
+    if (!g_zones.empty() || !GridUsable()) return;
+    const Place& pl = kPlaces[g_arena.place];
+    const std::vector<int>& cells = StandCells();
+    for (int z = 0; z < 3; ++z) {
+        float best = -1;
+        CVector at;
+        for (int k : cells) {
+            CVector c = g_cells[(size_t)k].p;
+            float d = (c - pl.pos).Length2D() < 5.0f ? 0.0f : 1e9f;
+            for (const CVector& q : g_zones) d = std::min(d, (c - q).Length());
+            if (g_zones.empty()) d = std::min(d, (c - pl.pos).Length() + Rand(0.0f, 6.0f));
+            if (d > best) best = d, at = c;
+        }
+        if (best <= 6.0f) break;
+        g_zones.push_back(at);
+    }
+    LOGI("Arena: %d zones picked", (int)g_zones.size());
+}
+void ShowZone(int idx, const CVector& at) {  // every game
+    g_zoneNow = idx, g_zoneAt = at;
+    if (idx >= 0) ui::TheChat().AddSystem(Format(TR("Враги атакуют зону %d!", "The enemies attack zone %d!"), idx + 1));
+}
+void ZoneWave(int wave) {  // host, as a wave of the crack palace begins
+    AutoZones();
+    if (g_zones.empty()) return;
+    int idx = (wave - 1) % (int)g_zones.size();
+    CVector at = g_zones[(size_t)idx];
+    Send(A_ZONE, [&](Writer& w) {
+        w.I8((int8_t)idx);
+        w.Vec({at.x, at.y, at.z});
+    });
+    ShowZone(idx, at);
+    uint64_t now = NowMs();
+    for (auto& [q, qe] : g_info) {  // this wave's men run to it first
+        if (qe.role != R_GUN && qe.role != R_GRENADIER && qe.role != R_MEDIC) continue;
+        float a = Rand(0.0f, 6.2831853f), r = Rand(0.5f, 3.0f);
+        CVector sp = at + CVector{std::cos(a) * r, std::sin(a) * r, 0.0f};
+        float z = 0;
+        qe.zoneSpot = FloorBelow(sp.x, sp.y, at.z + 1.0f, z) && std::fabs(z - at.z) < 1.0f ? CVector{sp.x, sp.y, z} : at;
+        qe.zoneUntil = now + 25000;
+    }
+    const Faction& f = kFactions[g_arena.faction];
+    int builders = wave >= 4 ? 2 : 1;
+    for (int k = 0; k < builders; ++k) {
+        g_squads.push_back(Squad{});
+        MakeEnemy(f.models[(size_t)RandInt(0, 3)], 0, 100 + 10 * wave, 0, 50, SpawnSpot(Rand(0.0f, 6.2831853f), 3.2f, 6.0f),
+                  (int)g_squads.size() - 1, R_BUILDER, true);
+    }
+}
+void Builder(CPed* p, Enemy& e, uint64_t now) {  // host, every round of tactics
+    if (g_zoneNow < 0) return;
+    int h = GetPedRef(p);
+    if (!e.hasBuildSpot) {
+        float a = Rand(0.0f, 6.2831853f), r = Rand(1.0f, 4.0f), z = 0;
+        CVector sp = g_zoneAt + CVector{std::cos(a) * r, std::sin(a) * r, 0.0f};
+        e.buildSpot = FloorBelow(sp.x, sp.y, g_zoneAt.z + 1.0f, z) && std::fabs(z - g_zoneAt.z) < 1.0f &&
+                              Clear(g_zoneAt + CVector{0, 0, 0.6f}, CVector{sp.x, sp.y, z + 0.6f})
+                          ? CVector{sp.x, sp.y, z}
+                          : g_zoneAt;
+        e.hasBuildSpot = true;
+    }
+    if (e.builds >= 3) return;  // done: it stays by its barricades
+    if ((p->GetPosition() - CVector{0, 0, 1.0f} - e.buildSpot).Length2D() > 1.2f) {
+        GoTo(p, e, e.buildSpot, 6);
+        e.buildAt = 0;
+        return;
+    }
+    if (!e.buildAt) {  // down on its knees, building
+        e.buildAt = now + 2500;
+        e.routing = false;
+        if (EnsureBlock("BOMBER")) Cmd(0x0605).I(h).S("BOM_Plant_Loop").S("BOMBER").F(4.0f).I(1).I(0).I(0).I(0).I(-1).Run();
+        return;
+    }
+    if (now < e.buildAt) return;
+    e.buildAt = 0;
+    ++e.builds;
+    e.hasBuildSpot = false;
+    Cmd(0x0687).I(h).Run();  // CLEAR_CHAR_TASKS
+    CPed* t = NearestPlayer(p->GetPosition());
+    CVector to = t ? t->GetPosition() - p->GetPosition() : CVector{0, 1, 0};
+    to.z = 0;
+    float l = std::max(0.01f, to.Length());
+    to = to * (1.0f / l);
+    CVector at = p->GetPosition() - CVector{0, 0, 1.0f} + to * 1.0f;
+    float z = 0;
+    if (!FloorBelow(at.x, at.y, at.z + 1.0f, z)) return;
+    at.z = z;
+    float heading = std::atan2(-to.x, to.y) * 57.29578f;
+    Send(A_EBAR, [&](Writer& w) {
+        w.Vec({at.x, at.y, at.z});
+        w.F32(heading);
+    });
+    AddEBar(at, heading);
+}
+
+// ---- the RC battlefield's drone operator (host): a man with no weapon where the snipers sit, the RC helicopters
+// come from him (1 in the first wave, then up to 3 a wave, 3 at once at most); none once he is dead
+void MakeOperator(int wave) {
+    const Faction& f = kFactions[g_arena.faction];
+    g_squads.push_back(Squad{});
+    CVector at;
+    if (!GridUsable() || !SniperSpot({}, nullptr, 0.0f, at)) at = SpawnSpot(Rand(0.0f, 6.2831853f), 3.2f, 8.0f);
+    int h = MakeEnemy(f.models[(size_t)RandInt(0, 3)], 0, 100 + 15 * wave, ArmourFor(wave, 0), 50, at, (int)g_squads.size() - 1, R_OPERATOR, true);
+    g_operator = h >= 0 ? GetPed(h) : nullptr;
+    g_dronesLeft = std::min(3, wave);
+    g_nextDroneMs = NowMs() + 8000;
+    if (g_operator) ui::TheChat().AddSystem(TR("Оператор дронов на позиции.", "A drone operator is in place."));
+}
+
+// ---- the katana boss (host): runs at his player, within 7 m winds up (0.8 s), then spins fast (3.5 s) and comes on at
+// 5 m/s; whoever he gets to loses half of all its health and armour; while he spins the bullets bounce off him (his
+// bullet proof); a player's chainsaw dash into him then stuns him 4 s
+void LoseHalf();  // this player
+bool SawRay(const CVector& a, const CVector& b, CVector& at, CVector& normal);
+void PlayAnim(int h, const char* anim, const char* block, bool loop);
+void SendHalve(uint8_t id) {
+    Writer w(proto::G_ARENA);
+    w.U8(A_HALVE);
+    Net().SendTo(id, proto::CH_RELIABLE, w);
+}
+void Katana(CPed* p, Enemy& e, CPed* t, float d, bool sees, uint64_t now) {
+    int h = GetPedRef(p);
+    if (e.kStage != 0) return;  // the frame does the rest
+    if (sees && d < 7.0f && now >= e.kNextMs) {
+        e.kStage = 1;
+        e.kUntil = now + 800;
+        e.kHit.clear();
+        e.routing = false;
+        Cmd(0x0687).I(h).Run();  // CLEAR_CHAR_TASKS
+        CVector to = t->GetPosition() - p->GetPosition();
+        Cmd(0x0173).I(h).F(std::atan2(-to.x, to.y) * 57.29578f).Run();
+        Cmd(0x05BA).I(h).I(800).Run();  // TASK_STAND_STILL: the wind-up
+        return;
+    }
+    GoTo(p, e, t->GetPosition() - CVector{0, 0, 1.0f}, 7);  // sprinting at him
+}
+void KatanaStun(CPed* p, Enemy& e) {
+    e.kStage = 4;
+    e.kUntil = NowMs() + 4000;
+    int h = GetPedRef(p);
+    Cmd(0x02AB).I(h).I(0).I(0).I(0).I(0).I(0).Run();  // SET_CHAR_PROOFS: off
+    Cmd(0x0792).I(h).Run();
+    PlayAnim(h, "IDLE_tired", "PED", true);
+    ui::TheChat().AddSystem(TR("Босс оглушён!", "The boss is stunned!"));
+}
+void KatanaFrame(uint64_t now) {  // host, every frame
+    float dt = std::min(0.1f, TimeStep() / 50.0f);
+    for (auto& [p, e] : g_info) {
+        if (e.role != R_BOSS || !g_bossKatana || !IsPedValid(p) || p->Health() <= 0.0f) continue;
+        int h = GetPedRef(p);
+        if (e.kStage == 1 && now >= e.kUntil) {
+            e.kStage = 2;
+            e.kUntil = now + 3500;
+            Cmd(0x02AB).I(h).I(1).I(0).I(0).I(0).I(0).Run();  // SET_CHAR_PROOFS: bullets bounce off
+            continue;
+        }
+        if ((e.kStage == 3 || e.kStage == 4) && now >= e.kUntil) {
+            e.kStage = 0;
+            e.kNextMs = now + 3000;
+            Cmd(0x0687).I(h).Run();
+            continue;
+        }
+        if (e.kStage != 2) continue;
+        if (now >= e.kUntil) {
+            e.kStage = 3;
+            e.kUntil = now + 1200;
+            Cmd(0x02AB).I(h).I(0).I(0).I(0).I(0).I(0).Run();
+            continue;
+        }
+        p->CurrentRotation() = p->AimingRotation() = std::fmod(p->CurrentRotation() + 16.0f * dt, 6.2831853f);  // the spin
+        CPed* t = NearestPlayer(p->GetPosition());
+        if (!t) continue;
+        CVector pos = p->GetPosition(), to = t->GetPosition() - pos;
+        to.z = 0;
+        float l = to.Length();
+        if (l > 0.3f) {
+            CVector dir = to * (1.0f / l), next = pos + dir * std::min(l, 5.0f * dt), hit, n;
+            float z = 0;
+            if (!SawRay(pos, next + dir * 0.4f, hit, n) && FloorBelow(next.x, next.y, next.z + 0.3f, z) && std::fabs(z + 1.0f - pos.z) < 1.2f) {
+                next.z = z + 1.0f;
+                p->MoveSpeed() = CVector{};
+                SetEntityPosition(p, next);
+            }
+        }
+        auto struck = [&](CPed* q) {
+            if (!q || e.kHit.count(q) || q->Health() <= 0.0f) return false;
+            CVector dd = q->GetPosition() - p->GetPosition();
+            if (dd.Length2D() > 1.5f || std::fabs(dd.z) > 1.6f) return false;
+            e.kHit.insert(q);
+            return true;
+        };
+        if (struck(FindPlayerPed(0))) LoseHalf();
+        for (auto& [id, rp] : Players::Instance().All())
+            if (rp.ped && struck(rp.ped)) SendHalve(id);
+    }
 }
 
 // The flamethrower man: walks (never runs) at its player; within 7 m it burns, from 9-22 m in sight it throws molotovs
@@ -4575,6 +4940,7 @@ void SpawnTBone() {
     CPlayerPed* me = FindPlayerPed(0);
     if (!me) return;
     int b = kTBone;
+    g_bossUgl = true, g_bossKatana = false;
     Send(A_BOSS, [b](Writer& wr) { wr.U8((uint8_t)b); });
     LoadBoss(b);
     g_arena.boss = b;
@@ -4626,6 +4992,21 @@ void Tactics() {
         float d = (t->GetPosition() - p->GetPosition()).Length();
         CVector eye = p->GetPosition() + CVector{0, 0, 0.6f}, at = t->GetPosition() + CVector{0, 0, 0.4f};
         bool sees = Clear(eye, at);
+        if (now < e.getUpUntil) continue;  // getting up
+        if (e.role == R_OPERATOR) continue;  // he sits there, sending his helicopters
+        if (e.role == R_BUILDER) {
+            Builder(p, e, now);
+            continue;
+        }
+        if (e.zoneUntil) {  // to the zone first
+            if (now > e.zoneUntil || (p->GetPosition() - CVector{0, 0, 1.0f} - e.zoneSpot).Length2D() < 2.0f || (sees && d < 10.0f)) {
+                e.zoneUntil = 0;
+                SetOn(p, e, t);
+            } else {
+                GoTo(p, e, e.zoneSpot, 6);
+                continue;
+            }
+        }
         if (e.quad >= 0 || p->InVehicle()) {  // on its quad bike (or getting off it): nothing else meanwhile
             Ride(p, e, t, now);
             continue;
@@ -4652,7 +5033,7 @@ void Tactics() {
         if ((p->GetPosition() - e.lastPos).Length() > 0.7f || still || sees || d < 4.0f) {
             e.lastPos = p->GetPosition();
             e.lastMoveMs = now;
-        } else if (now - e.lastMoveMs > 4000 && !e.grenadeUntil && !(e.role == R_BOSS && g_arena.boss == kTBone)) {  // T-Bone is never moved by hand
+        } else if (now - e.lastMoveMs > 4000 && !e.grenadeUntil && !(e.role == R_BOSS && (g_bossUgl || g_bossKatana))) {  // the launcher's and the katana's boss are never moved by hand
             Unstick(p, t);
             e.lastPos = p->GetPosition();
             e.lastMoveMs = now;
@@ -4674,7 +5055,11 @@ void Tactics() {
             Saw(p, e, t, d, sees, now);
             continue;
         }
-        if (e.role == R_BOSS && g_arena.boss == kTBone && TBone(p, e, t, d, sees, now)) continue;
+        if (e.role == R_BOSS && g_bossUgl && TBone(p, e, t, d, sees, now)) continue;
+        if (e.role == R_BOSS && g_bossKatana) {
+            Katana(p, e, t, d, sees, now);
+            continue;
+        }
         if (e.role == R_OFFICER) {
             Officer(p, e, t, d, sees, now);
             continue;
@@ -4839,6 +5224,9 @@ void Finish(bool won) {
 void Clear() {
     if (g_arena.host) ReleaseDead();
     ForgetSpot();
+    ClearEBars();
+    g_zoneNow = -1;
+    g_operator = nullptr;
     ClearDrones();
     ClearQuads();
     ClearGuards();
@@ -4895,10 +5283,12 @@ void Relocate(int place) {
     g_spinModel = -1;
     DelObj(g_box.handle);
     DelObj(g_box.handle2);
-    DelObj(g_ward.handle);
+    DelObj(g_ward.handle), DelProps();
     g_box = BoxState{};
     ShutDoors(false);
     ForgetSpot();
+    ClearEBars();
+    g_zoneNow = -1;
     g_arena.place = place;
     CPlayerPed* me = FindPlayerPed(0);
     if (me && me->Health() > 0.0f && g_arena.taken) {
@@ -4971,6 +5361,9 @@ void End(bool tell) {
     Clear();
     bool was = g_arena.taken;
     EndSpectate(false);
+    CancelDown();
+    StopOwnMoves();
+    g_station = -1;
     g_spectators.clear();
     HideSaves(false);
     ShutDoors(false);
@@ -4996,6 +5389,8 @@ void Start(int faction, int place, int waves) {
     g_arena.nextWaveMs = NowMs() + PrepMs(true);
     ResetCod();
     ForgetSpot();
+    g_station = -1;
+    g_bossUgl = g_bossKatana = false;
     // every arena from the same money: what was left of the last one is gone (out of the mode the save's own money
     // waits aside and comes back when the arena is over)
     if (!g_modeOn) g_moneyBefore = Cash(), g_moneyKept = true;
@@ -5108,6 +5503,17 @@ void Handle(uint8_t from, Reader& r) {
         if (owner == Net().MyId()) ui::TheChat().AddSystem(Format(TR("Кент %s с вами.", "%s, a homie, is with you."), kGuardNames[name][Lang()]));
         return;
     }
+    if (r.Ok() && op == A_SAWHIT) {  // host: a partner's chainsaw dash got to one of the arena's people
+        uint16_t id = r.U16();
+        if (!r.Ok() || !g_arena.host) return;
+        int h = Peds::Instance().HandleOf(id);
+        if (CPed* p = h >= 0 ? GetPed(h) : nullptr) SawKill(p);
+        return;
+    }
+    if (op == A_HALVE) {  // the host's katana boss got to this player
+        if (from == Net().HostId() && g_arena.on && g_arena.taken) LoseHalf();
+        return;
+    }
     if (r.Ok() && op == A_GUARDREQ) {  // host: a partner took a homie from the box
         if (g_arena.on && g_arena.host) SpawnBodyguard(from);
         return;
@@ -5177,6 +5583,8 @@ void Handle(uint8_t from, Reader& r) {
     if (op == A_START) {
         uint8_t f = r.U8(), p = r.U8(), w = r.U8();
         if (!r.Ok() || f >= kFactionCount || p >= kPlaceCount || w > 10) return;  // 0: no end
+        uint8_t mode = r.U8();
+        if (r.Ok() && mode) g_modeOn = true;
         if (g_arena.on) End(false);
         if (g_lobby) OpenLobby(false);
         Start(f, p, w);
@@ -5225,6 +5633,14 @@ void Handle(uint8_t from, Reader& r) {
         if (r.Ok()) {
             SetBreak(true, NowMs() + (uint64_t)secs * 1000);
         }
+    } else if (op == A_ZONE) {
+        int8_t idx = r.I8();
+        Vec3 v = r.Vec();
+        if (r.Ok()) ShowZone(idx, {v.x, v.y, v.z});
+    } else if (op == A_EBAR) {
+        Vec3 v = r.Vec();
+        float hd = r.F32();
+        if (r.Ok()) AddEBar({v.x, v.y, v.z}, hd);
     } else if (op == A_SPOT) {
         bool own = r.U8() != 0;
         Vec3 at = r.Vec();
@@ -5473,11 +5889,19 @@ void Update() {
                         Ref<float>((uintptr_t)assoc + 0x24) = 2.0f;                  // CAnimBlendAssociation::m_Speed
     Rescue(now);
     GuardCopies();
+    DashFrame(now);
+    HoloFrame(now);
+    if (!g_break && g_arena.left > 0 && g_arena.left <= 3) {
+        if (!g_fewSince) g_fewSince = now;
+    } else {
+        g_fewSince = 0;
+    }
+    if (g_arena.host) KatanaFrame(now);
     static uint64_t scoreMs = 0;  // the score now and then too: one that came in late has everyone's
     if (now - scoreMs > 3000) scoreMs = now, SendScore();
     if (g_arena.host) DronesFrame(now);
     else DroneCopies();
-    if (g_arena.host && g_spotOwn && GridUsable()) {  // an enemy that fell under the upper floors: back up, far from the players
+    if (g_arena.host && g_minZ > -1e8f && GridUsable()) {  // an enemy that fell under the upper floors: back up, far from the players
         static uint64_t enemyCheckMs = 0;
         if (now - enemyCheckMs > 1000) {
             enemyCheckMs = now;
@@ -5544,8 +5968,10 @@ void Update() {
         CVector at = q->GetPosition() + CVector{0, 0, -0.3f};
         // its money falls where it lies: more for the special ones
         int cash = qe.role == R_BOSS ? 500 : qe.role == R_SAW || qe.role == R_OFFICER ? 300 : qe.role == R_TWIN ? 250
-                 : qe.role == R_FLAMER ? 200 : qe.role == R_SNIPER ? 100 : qe.role == R_KNIFE || qe.role == R_MEDIC ? 80 : 50;
+                 : qe.role == R_FLAMER || qe.role == R_BUILDER ? (qe.role == R_BUILDER ? 150 : 200) : qe.role == R_SNIPER ? 100
+                 : qe.role == R_KNIFE || qe.role == R_MEDIC ? 80 : 50;
         cash += RandInt(0, 4) * 5;
+        if (int8_t by = Field<int8_t>(q, 0x760); by >= 0 && by <= 15) cash *= 2;  // CPed::m_nLastWeaponDamage: a melee kill pays double
         SpawnDrop(D_CASH, at + CVector{Rand(-0.4f, 0.4f), Rand(-0.4f, 0.4f), 0}, 0, (uint16_t)cash);
         bool special = qe.role == R_FLAMER || qe.role == R_TWIN || qe.role == R_BOSS || qe.role == R_SAW || qe.role == R_OFFICER;
         if (qe.role == R_MEDIC) special = RandInt(0, 99) < 35;  // a medic: now and then
@@ -5553,7 +5979,9 @@ void Update() {
             if (RandInt(0, 99) < 5) SpawnDrop(D_SMALL, at);  // a common enemy: now and then a few clips, never its gun
             continue;
         }
-        if (qe.role == R_BOSS && g_arena.boss == kTBone) SpawnDrop(D_GUN, at + CVector{0, 0.7f, 0}, 30, 300, 0xFF, 1);  // his AK
+        if (qe.role == R_BOSS && g_bossUgl) SpawnDrop(D_GUN, at + CVector{0, 0.7f, 0}, 30, 300, 0xFF, 1);  // his AK
+        if (qe.role == R_BOSS && g_bossKatana && RandInt(0, 1) == 0) SpawnDrop(D_GUN, at + CVector{0, 0.7f, 0}, 8, 1);  // the katana
+        if (qe.role == R_SAW) SpawnDrop(D_GUN, at + CVector{0.7f, 0, 0}, 9, 1);  // the Butcher's chainsaw: a dash of its own
         if (qe.role == R_BOSS) {
             SpawnDrop(D_AMMO, at + CVector{0.6f, 0, 0});
             SpawnDrop(D_HEALTH, at - CVector{0.6f, 0, 0});
@@ -5597,13 +6025,15 @@ void Update() {
     // everyone dead or out of the place: lost
     int area = kPlaces[g_arena.place].area;
     bool anyIn = false;
-    if (CPlayerPed* me = FindPlayerPed(0)) anyIn |= !g_spectating && me->Health() > 0.0f && me->AreaCode() == area;
+    // (a wounded one lying there counts as out: everyone down at once ends it)
+    if (CPlayerPed* me = FindPlayerPed(0))
+        anyIn |= !g_spectating && me->Health() > 0.0f && me->AreaCode() == area && !Players::Instance().LocalDowned();
     for (auto& [id, rp] : Players::Instance().All())
         if (rp.hasState && !Spectator(id))
-            anyIn |= !(rp.state.flags & OnFootState::F_DEAD) && rp.state.area == area && now - rp.stateRecvMs < 5000;
+            anyIn |= !(rp.state.flags & (OnFootState::F_DEAD | OnFootState::F_DOWNED)) && rp.state.area == area && now - rp.stateRecvMs < 5000;
     if (!anyIn && now - g_arena.startMs > 8000) {
         if (!g_arena.outSince) g_arena.outSince = now;
-        if (now - g_arena.outSince > 4000) {
+        if (now - g_arena.outSince > 300) {  // at once (a moment for the states to come)
             Finish(false);
             Send(A_END, [](Writer& w) { w.U8(0); });
             g_arena.endAt = now;  // ends next frame
@@ -5705,10 +6135,268 @@ void DrawScoreboard() {
 
 // The screen: the money (bottom right) and what it just got, the break's seconds and votes, the launcher when the AK is
 // in hand; over the world only the Officer's mark and, near the box, its price or what it turns over
+// ---- this player's own moves (every game)
+// The katana's spin got to this player: half of all its health and armour (the armour first), never dead of it
+void LoseHalf() {
+    CPlayerPed* me = FindPlayerPed(0);
+    if (!me || me->Health() <= 0.0f || g_spectating) return;
+    float total = me->Health() + me->Armour(), lose = total * 0.5f;
+    float fromArmour = std::min(me->Armour(), lose);
+    me->Armour() -= fromArmour;
+    me->Health() = std::max(1.0f, me->Health() - (lose - fromArmour));
+    Call<0x50A970>((void*)addr::TheCamera, 0.25f);  // CCamera::CamShakeNoPos
+    ui::TheChat().AddSystem(TR("Катана босса: -50% здоровья и брони!", "The boss's katana: -50% health and armour!"));
+}
+
+// The chainsaw dash (the Butcher's saw in hand): the right button held shows the way (straight on where the camera
+// looks, up to 14 m, to the first wall or edge), the left one then sends this player along it at 17 m/s; everyone of
+// the arena's people it passes dies (the host's game does it: A_SAWHIT), the katana boss spinning is stunned instead.
+// 3 s between two dashes.
+constexpr int WEAPON_CHAINSAW = 9;
+bool g_dashAim = false, g_dashing = false;
+CVector g_dashDir, g_dashEnd;
+float g_dashLeft = 0;
+uint64_t g_dashReadyMs = 0;
+std::set<CPed*> g_dashHit;
+bool g_fireHeld = false;  // we hold the game's own fire back (the dash aim, the barricade's hologram)
+uint8_t g_fireWas = 0;
+void HoldFire(bool on) {
+    CPad* pad = GetPad(0);
+    if (on && !g_fireHeld) g_fireWas = pad->bDisablePlayerFireWeapon, pad->bDisablePlayerFireWeapon = 1, g_fireHeld = true;
+    else if (!on && g_fireHeld) pad->bDisablePlayerFireWeapon = g_fireWas, g_fireHeld = false;
+}
+void SawKill(CPed* p) {  // host: the dash got to one of the arena's people
+    auto it = g_info.find(p);
+    if (it == g_info.end() || p->Health() <= 0.0f) return;
+    if (it->second.role == R_BOSS && g_bossKatana && it->second.kStage == 2) return KatanaStun(p, it->second);
+    Field<int8_t>(p, 0x760) = WEAPON_CHAINSAW;  // CPed::m_nLastWeaponDamage: a melee kill (double money)
+    Cmd(0x0223).I(GetPedRef(p)).I(0).Run();     // SET_CHAR_HEALTH 0
+}
+bool DashFrom(const CVector& from, const CVector& dir, CVector& end) {  // the way: true when it goes anywhere
+    CVector pos = from, hit, n;
+    float went = 0;
+    for (; went < 14.0f; went += 0.4f) {
+        CVector next = pos + dir * 0.4f;
+        float z = 0;
+        if (SawRay(pos + CVector{0, 0, 0.2f}, next + dir * 0.3f + CVector{0, 0, 0.2f}, hit, n) ||
+            SawRay(pos - CVector{0, 0, 0.5f}, next + dir * 0.3f - CVector{0, 0, 0.5f}, hit, n) ||
+            !FloorBelow(next.x, next.y, next.z + 0.3f, z) || std::fabs(z + 1.0f - pos.z) > 1.2f)
+            break;
+        next.z = z + 1.0f;
+        pos = next;
+    }
+    end = pos;
+    return went >= 1.0f;
+}
+void DashFrame(uint64_t now) {
+    CPlayerPed* me = FindPlayerPed(0);
+    bool can = me && me->Health() > 0.0f && !me->InVehicle() && !g_spectating && !Players::Instance().LocalDowned() &&
+               me->ActiveWeapon().type == WEAPON_CHAINSAW && IsForeground() && !MenuActive() && !ui::TheChat().IsOpen();
+    float dt = std::min(0.1f, TimeStep() / 50.0f);
+    if (g_dashing && me) {
+        CVector pos = me->GetPosition(), next = pos + g_dashDir * std::min(g_dashLeft, 17.0f * dt), hit, n;
+        float z = 0;
+        bool stop = g_dashLeft <= 0.05f || SawRay(pos + CVector{0, 0, 0.2f}, next + g_dashDir * 0.3f + CVector{0, 0, 0.2f}, hit, n) ||
+                    !FloorBelow(next.x, next.y, next.z + 0.3f, z) || std::fabs(z + 1.0f - pos.z) > 1.2f;
+        if (stop) {
+            g_dashing = false;
+            Cmd(0x0687).I(GetPedRef(me)).Run();
+        } else {
+            g_dashLeft -= (next - pos).Length();
+            next.z = z + 1.0f;
+            me->MoveSpeed() = CVector{};
+            SetEntityPosition(me, next);
+            CPoolHeader* pool = PedPool();
+            for (int i = 0; pool && i < pool->size; ++i) {
+                if (pool->byteMap[i] < 0) continue;
+                auto* p = (CPed*)(pool->objects + (size_t)i * kPedPoolElemSize);
+                if (p->IsPlayer() || p->Health() <= 0.0f || g_dashHit.count(p) || !arena::IsEnemy(p)) continue;
+                CVector d = p->GetPosition() - next;
+                if (d.Length2D() > 1.4f || std::fabs(d.z) > 1.6f) continue;
+                g_dashHit.insert(p);
+                if (g_arena.host) SawKill(p);
+                else if (NetPed* np = Peds::Instance().Find(p)) {
+                    uint16_t id = np->netId;
+                    Send(A_SAWHIT, [id](Writer& w) { w.U16(id); });
+                }
+            }
+        }
+        HoldFire(true);
+        return;
+    }
+    bool rmb = can && (GetAsyncKeyState(VK_RBUTTON) & 0x8000);
+    g_dashAim = rmb;
+    HoldFire(rmb);
+    if (!rmb) return;
+    CVector f = cam::Front();
+    f.z = 0;
+    float l = f.Length();
+    g_dashDir = l > 0.01f ? f * (1.0f / l) : CVector{0, 1, 0};
+    bool way = DashFrom(me->GetPosition(), g_dashDir, g_dashEnd);
+    static bool lmbWas = false;
+    bool lmb = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
+    if (lmb && !lmbWas && way && now >= g_dashReadyMs) {
+        g_dashing = true;
+        g_dashLeft = (g_dashEnd - me->GetPosition()).Length();
+        g_dashReadyMs = now + 3000;
+        g_dashHit.clear();
+        int h = GetPedRef(me);
+        Cmd(0x0173).I(h).F(std::atan2(-g_dashDir.x, g_dashDir.y) * 57.29578f).Run();
+        PlayAnim(h, "sprint_civi", "PED", true);
+    }
+    lmbWas = lmb;
+}
+void DrawDash() {
+    if (!g_dashAim || g_dashing) return;
+    CPlayerPed* me = FindPlayerPed(0);
+    if (!me) return;
+    auto& g = ui::Gfx();
+    float s = g.Scale();
+    bool ready = NowMs() >= g_dashReadyMs;
+    uint32_t c = ready ? 0xE0FF4020 : 0x80A0A0A0;
+    CVector from = me->GetPosition() - CVector{0, 0, 0.9f}, to = g_dashEnd - CVector{0, 0, 0.9f};
+    float px = 0, py = 0;
+    bool prev = false;
+    for (int k = 0; k <= 20; ++k) {
+        float x, y, depth;
+        bool on = WorldToScreen(from + (to - from) * ((float)k / 20.0f), x, y, depth) && depth > 0.2f;
+        if (on && prev && k % 2 == 0) g.Line(px, py, x, y, 3.0f * s, c);
+        prev = on, px = x, py = y;
+    }
+    float x, y, depth;
+    if (WorldToScreen(to, x, y, depth) && depth > 0.2f) g.Ellipse(x, y, 7 * s, 4 * s, c);
+}
+
+// The barricade's hologram (H): a see-through fence in front of this player that only it sees; the left button starts
+// building it there (1.5 s, the player on its knees), H again or the right button puts it away
+bool g_holo = false, g_holoBuild = false, g_holoOk = false;
+int g_holoObj = -1;
+CVector g_holoAt;
+float g_holoHeading = 0;
+uint64_t g_holoEnd = 0;
+void HoloOff() {
+    DelObj(g_holoObj);
+    if (g_holoBuild) Cmd(0x01B4).I(0).I(1).Run();  // SET_PLAYER_CONTROL: back
+    g_holo = g_holoBuild = false;
+}
+bool HoloKey() {  // H
+    if (g_holo && !g_holoBuild) return HoloOff(), true;
+    if (g_holo) return true;
+    CPlayerPed* me = FindPlayerPed(0);
+    if (!me || me->Health() <= 0.0f || me->InVehicle() || me->AreaCode() != kPlaces[g_arena.place].area || g_arena.endAt) return false;
+    if ((int)g_bars.size() >= kMaxBars) {
+        ui::TheChat().AddError(TR("Баррикад уже слишком много.", "There are too many barricades already."));
+        return true;
+    }
+    if (Cash() < kBuildCost) {
+        ui::TheChat().AddError(Format(TR("Нужно $%d.", "You need $%d."), kBuildCost));
+        return true;
+    }
+    int model = PickModel({1418, 1408, 1424});
+    float lift = 0, height = 0;
+    if (model < 0) return true;
+    g_holoObj = MakeObj(model, me->GetPosition(), 0.0f, lift, height);
+    if (g_holoObj < 0) return true;
+    Cmd(0x0382).I(g_holoObj).I(0).Run();  // SET_OBJECT_COLLISION: none
+    g_holo = true;
+    ui::TheChat().AddSystem(TR("[ЛКМ] Строить здесь  [H] Убрать", "[LMB] Build here  [H] Put away"));
+    return true;
+}
+void HoloFrame(uint64_t now) {
+    if (!g_holo) return;
+    CPlayerPed* me = FindPlayerPed(0);
+    CObject* o = g_holoObj >= 0 ? GetObject(g_holoObj) : nullptr;
+    if (!me || !o || me->Health() <= 0.0f || g_spectating || g_arena.endAt) return HoloOff(), HoldFire(false);
+    float lift = 0, height = 0;
+    ColOf(o->ModelIndex(), lift, height);
+    if (g_holoBuild) {
+        if (now >= g_holoEnd) {  // built: the real one (the host's)
+            HoloOff();
+            Cmd(0x0687).I(GetPedRef(me)).Run();
+            if (Cash() >= kBuildCost && (int)g_bars.size() < kMaxBars) {
+                AddPoints(-kBuildCost);
+                if (g_arena.host) BuildBar(g_holoAt, g_holoHeading, Net().MyId());
+                else Send(A_BUILD, [&](Writer& w) {
+                    w.Vec({g_holoAt.x, g_holoAt.y, g_holoAt.z});
+                    w.F32(g_holoHeading);
+                });
+            }
+            HoldFire(false);
+        }
+        return;
+    }
+    HoldFire(true);
+    CVector f = cam::Front();
+    f.z = 0;
+    float l = f.Length();
+    f = l > 0.01f ? f * (1.0f / l) : CVector{0, 1, 0};
+    CVector front = me->GetPosition() + f * 1.6f;
+    float z = 0;
+    g_holoOk = FloorBelow(front.x, front.y, front.z + 0.5f, z) && std::fabs(z - (me->GetPosition().z - 1.0f)) < 1.0f && Clear(me->GetPosition(), front);
+    if (g_holoOk) g_holoAt = {front.x, front.y, z};
+    else g_holoAt = me->GetPosition() - CVector{0, 0, 1.0f} + f * 1.6f;
+    g_holoHeading = std::atan2(-f.x, f.y) * 57.29578f;
+    Cmd(0x01BC).I(g_holoObj).F(g_holoAt.x).F(g_holoAt.y).F(g_holoAt.z + lift).Run();  // SET_OBJECT_COORDINATES
+    Cmd(0x0177).I(g_holoObj).F(g_holoHeading).Run();
+    CallMethod<0x5332C0>((void*)o, g_holoOk ? 110 : 45);  // CEntity::SetRwObjectAlpha: see-through (fainter where it cannot go)
+    bool rmb = IsForeground() && (GetAsyncKeyState(VK_RBUTTON) & 0x8000);
+    bool lmb = IsForeground() && (GetAsyncKeyState(VK_LBUTTON) & 0x8000) && !ui::TheChat().IsOpen() && !MenuActive();
+    if (rmb) return HoloOff(), HoldFire(false);
+    if (lmb && g_holoOk) {
+        g_holoBuild = true;
+        g_holoEnd = now + 1500;
+        int h = GetPedRef(me);
+        Cmd(0x01B4).I(0).I(0).Run();  // SET_PLAYER_CONTROL: off while it builds
+        if (EnsureBlock("BOMBER")) Cmd(0x0605).I(h).S("BOM_Plant_Loop").S("BOMBER").F(4.0f).I(1).I(0).I(0).I(0).I(-1).Run();
+    }
+}
+void DrawHolo(uint64_t now) {
+    if (!g_holo || !g_holoBuild) return;
+    auto& g = ui::Gfx();
+    float s = g.Scale(), w = 260 * s, h = 14 * s, x = (g.Width() - w) * 0.5f, y = g.Height() * 0.62f;
+    float k = std::clamp(1.0f - (float)(g_holoEnd > now ? g_holoEnd - now : 0) / 1500.0f, 0.0f, 1.0f);
+    g.Rect(x, y, w, h, 0xA0000000);
+    g.Rect(x, y, w * k, h, 0xE060D060);
+    g.Text(ui::FONT_SMALL, g.Width() * 0.5f, y - g.LineHeight(ui::FONT_SMALL), TR("Стройка баррикады", "Building a barricade"), 0xFFFFFFFF,
+           ui::TEXT_CENTER | ui::TEXT_OUTLINE);
+}
+
+void StopOwnMoves() {  // the arena is over: no dash, no hologram
+    if (g_holo) HoloOff();
+    g_dashing = g_dashAim = false;
+    HoldFire(false);
+}
+
+// The last 3 enemies of a wave: after 6 s an arrow over each, seen through walls
+uint64_t g_fewSince = 0;  // the last 3 enemies left since
+void DrawArrows(uint64_t now) {
+    if (!g_fewSince || now - g_fewSince < 6000) return;
+    CPoolHeader* pool = PedPool();
+    if (!pool) return;
+    auto& g = ui::Gfx();
+    float s = g.Scale(), bob = std::sin((float)(now % 1000) / 1000.0f * 6.2831853f) * 4 * s;
+    int area = kPlaces[g_arena.place].area;
+    for (int i = 0; i < pool->size; ++i) {
+        if (pool->byteMap[i] < 0) continue;
+        auto* p = (CPed*)(pool->objects + (size_t)i * kPedPoolElemSize);
+        if (p->IsPlayer() || p->Health() <= 0.0f || p->AreaCode() != area || !arena::IsEnemy(p)) continue;
+        float x, y, depth;
+        if (!WorldToScreen(p->GetPosition() + CVector{0, 0, 1.4f}, x, y, depth) || depth < 0.2f) continue;
+        y += bob;
+        g.Tri(x - 11 * s, y - 16 * s, x + 11 * s, y - 16 * s, x, y, 0xFF000000);
+        g.Tri(x - 8 * s, y - 14 * s, x + 8 * s, y - 14 * s, x, y - 3 * s, 0xFFFF3030);
+    }
+}
+
 void DrawCod() {
     auto& g = ui::Gfx();
     float s = g.Scale();
     uint64_t now = NowMs();
+    DrawDash();
+    DrawHolo(now);
+    DrawArrows(now);
+    if (g_zoneNow >= 0)
+        Label(g_zoneAt + CVector{0, 0, 1.3f}, Format(TR("ЗОНА %d", "ZONE %d"), g_zoneNow + 1), 0xFFFFA040, 300.0f, true);
     for (auto& [h, name] : g_guardNames)  // the homies' names
         if (CPed* gp = GetPed(h); gp && gp->Health() > 0.0f) Label(gp->GetPosition() + CVector{0, 0, 1.15f}, kGuardNames[name][Lang()], 0xFF80FF80, 30.0f);
     if (g_break && !g_arena.endAt && g_breakEndMs > now) {  // the break: one line on the right
@@ -5754,6 +6442,7 @@ void Launch(int faction, int place, int waves) {
         w.U8((uint8_t)faction);
         w.U8((uint8_t)place);
         w.U8((uint8_t)waves);
+        w.U8(g_modeOn);  // the mode: a partner that missed A_STAGE plays it too (from nothing)
     });
     Start(faction, place, waves);
     LOGI("Arena started: faction %d, place %d, %d waves", faction, place, waves);
@@ -5885,14 +6574,14 @@ using PlaceMarkerFn = void*(__cdecl*)(uint32_t, uint32_t, CVector*, float, uint3
 PlaceMarkerFn g_origPlaceMarker = nullptr;
 void* __cdecl HookPlaceMarker(uint32_t id, uint32_t type, CVector* pos, float size, uint32_t r, uint32_t g, uint32_t b, uint32_t a, uint32_t pulse,
                               float frac, int32_t rot, CVector normal, uint32_t zCheck) {
-    if (InHouse()) return nullptr;
+    if (InHouse() || arena::On()) return nullptr;  // none in CJ's house in the mode, none in an arena
     return g_origPlaceMarker(id, type, pos, size, r, g, b, a, pulse, frac, rot, normal, zCheck);
 }
 using PlaceConeFn = void(__cdecl*)(uint32_t, CVector*, float, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, float, int32_t, uint32_t);
 PlaceConeFn g_origPlaceCone = nullptr;
 void __cdecl HookPlaceCone(uint32_t id, CVector* pos, float size, uint32_t r, uint32_t g, uint32_t b, uint32_t a, uint32_t pulse, float frac,
                            int32_t rot, uint32_t coll) {
-    if (InHouse()) return;
+    if (InHouse() || arena::On()) return;
     g_origPlaceCone(id, pos, size, r, g, b, a, pulse, frac, rot, coll);
 }
 std::vector<std::pair<int, uint16_t>> g_houseDoors;  // the house's doors shut: pool index, its flags before
@@ -5934,14 +6623,22 @@ void MoveWhileShooting() {
 // while this player is in the arena: the game finds no audio zone then, and its track fades out
 using AmbienceFn = void(__fastcall*)(void*, void*);
 AmbienceFn g_origAmbience = nullptr;
+// The radio by the box: the game's own on-foot radio of a club's audio zone (zones 52..62 play a station), here the
+// first audio box made that zone for this one update, so the game itself plays the chosen station (and stops it).
 void __fastcall HookAmbience(void* self, void* edx) {
     if (!arena::On()) return g_origAmbience(self, edx);
     uint32_t& boxes = Ref<uint32_t>(0xB6DCBC);    // CAudioZones::m_NumActiveBoxes
     uint32_t& spheres = Ref<uint32_t>(0xB6DCC0);  // CAudioZones::m_NumActiveSpheres
+    int32_t& active0 = Ref<int32_t>(0xB6DC6C);    // CAudioZones::m_aActiveBoxes[0]
+    int16_t& zone0 = Ref<int16_t>(0xB6DCD0 + 8);  // CAudioZones::m_aBoxes[0].m_nAudioZone
     uint32_t b = boxes, sp = spheres;
-    boxes = spheres = 0;
+    int32_t a0 = active0;
+    int16_t z0 = zone0;
+    spheres = 0;
+    if (g_station >= 0 && Ref<uint32_t>(0xB6DCC4) > 0) boxes = 1, active0 = 0, zone0 = (int16_t)(52 + g_station);
+    else boxes = 0;
     g_origAmbience(self, edx);
-    boxes = b, spheres = sp;
+    boxes = b, spheres = sp, active0 = a0, zone0 = z0;
 }
 
 // The game raises a weapon's skill itself on hits (CStats::UpdateStatsWhenWeaponHit): in the arena only its kills
@@ -6078,7 +6775,19 @@ public:
             return true;
         }
         // the host's own spots for this place: where it stands now
+        if (a0 == "где" || a0 == "pos" || a0 == "where") {  // where this player stands
+            if (CPlayerPed* me = FindPlayerPed(0)) {
+                CVector p = me->GetPosition();
+                ui::TheChat().AddSystem(Format(TR("Вы стоите: %.2f %.2f %.2f, поворот %.1f, интерьер %d", "You stand at: %.2f %.2f %.2f, heading %.1f, interior %d"),
+                                               p.x, p.y, p.z, me->CurrentRotation() * 57.29578f, (int)me->AreaCode()));
+                LOGI("Position: %.2f %.2f %.2f, heading %.1f, interior %d", p.x, p.y, p.z, me->CurrentRotation() * 57.29578f, (int)me->AreaCode());
+            }
+            return true;
+        }
         const char* spot = a0 == "ящик" || a0 == "box"               ? "box"
+                           : a0 == "спавн" || a0 == "spawn"         ? "spawn"
+                           : a0 == "враги" || a0 == "enemy"         ? "enemy"
+                           : a0 == "зона" || a0 == "zone"           ? "zone"
                            : a0 == "баррикада" || a0 == "barricade" ? "bar"
                            : a0 == "стена" || a0 == "wall"          ? "wall"
                            : a0 == "сброс" || a0 == "reset"         ? "reset"
@@ -6216,6 +6925,7 @@ void OnLocalKill(CPed* victim, int weapon, bool headshot) {
     SendScore();
 }
 
+bool IsArenaEnemy(CPed* p) { return IsEnemy(p); }
 bool InLobby() { return false; }  // the arena mode keeps everyone in the game: no lobby after a lost arena
 bool Running() { return g_arena.on; }
 void StartNow() {  // the host's button (F9): the next arena now
@@ -6240,7 +6950,7 @@ std::string PlaceTitle(int i) { return i >= 0 && i < kPlaceCount ? PlaceName(i) 
 bool KeyDown(int vk, bool repeat) {
     std::string hint;
     if (!On() || !ReviveText(hint).empty()) return false;
-    if (vk == 'H') return !repeat && TryBuild();
+    if (vk == 'H') return !repeat && HoloKey();
     if (vk == 'J') return !repeat && (PutDownGun(), true);
     if (vk == 'N') {  // T-Bone's launcher; without it N goes on (a side activity's "no")
         if (!g_hasUgl) return false;
@@ -6280,6 +6990,25 @@ bool KeyDown(int vk, bool repeat) {
         BuyOutfit();
         return true;
     }
+    if (g_nearKind == N_RADIO) {  // the next station, then off
+        g_station = g_station >= 10 ? -1 : g_station + 1;
+        ui::TheChat().AddSystem(g_station < 0 ? std::string(TR("Радио выключено.", "The radio is off."))
+                                              : Format(TR("Радио: %s", "Radio: %s"), kStations[g_station]));
+        return true;
+    }
+    if (g_nearKind == N_SODA) {
+        CPlayerPed* me = FindPlayerPed(0);
+        float top = std::max<float>(PlayerInfos()[0].maxHealth, 100.0f);
+        if (!me || me->Health() >= top) return true;
+        if (Cash() < kSodaCost) {
+            ui::TheChat().AddError(Format(TR("Нужно $%d.", "You need $%d."), kSodaCost));
+            return true;
+        }
+        AddPoints(-kSodaCost);
+        me->Health() = top;
+        CallMethod<0x506EA0>((void*)0xB6BC90, 40 /* AE_FRONTEND_PURCHASE_WEAPON */, 0.0f, 1.0f);
+        return true;
+    }
     if (g_nearKind == N_GUN) {  // a team mate's weapon for the one in hand of its kind
         uint8_t id = g_drops[(size_t)g_nearIdx].id;
         g_drops[(size_t)g_nearIdx].asked = true;
@@ -6315,6 +7044,14 @@ std::string PromptText(std::string& hint) {
     if (g_nearKind == N_WARD) {
         hint = Format(TR("[E] Случайная одежда  $%d", "[E] Random clothes  $%d"), kWardCost);
         return TR("Одежда", "Clothes");
+    }
+    if (g_nearKind == N_RADIO) {
+        hint = TR("[E] Другая станция", "[E] Next station");
+        return g_station < 0 ? std::string(TR("Радио (выключено)", "Radio (off)")) : std::string(kStations[g_station]);
+    }
+    if (g_nearKind == N_SODA) {
+        hint = Format(TR("[E] Выпить  $%d", "[E] Drink  $%d"), kSodaCost);
+        return TR("Газировка: полное здоровье", "Soda: full health");
     }
     if (g_nearKind == N_GUN) {
         const Drop& d = g_drops[(size_t)g_nearIdx];

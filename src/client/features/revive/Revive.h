@@ -20,5 +20,7 @@ void KnockDown();
 // the arena: a blow that kills elsewhere (a knifeman's cut throat) lays this player down wounded, or, with nobody to
 // revive it, it watches till the next wave: no death, no hospital
 void ArenaWound();
+// the arena is over: a wounded player gets up at once (no bleeding out, no hospital)
+void CancelDown();
 
 }  // namespace coop

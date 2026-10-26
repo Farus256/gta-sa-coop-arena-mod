@@ -614,6 +614,15 @@ void KnockDown() {
     }
     me->Health() = std::max(0.0f, me->Health() - 120.0f);
 }
+void CancelDown() {
+    CPlayerPed* me = core::IsPlayerReady() ? FindPlayerPed(0) : nullptr;
+    g_wantDown = g_wantFall = false;
+    if (!g_down) return;
+    EndDown(me);
+    if (!me) return;
+    Cmd(0x0792).I(GetPedRef(me)).Run();  // CLEAR_CHAR_TASKS_IMMEDIATELY: up
+    me->Health() = std::max(me->Health(), std::max<float>(PlayerInfos()[0].maxHealth, 100.0f) * 0.5f);
+}
 void ArenaWound() {
     CPlayerPed* me = core::IsPlayerReady() ? FindPlayerPed(0) : nullptr;
     if (!me || g_down || g_wantDown || g_dyingMs) return;
