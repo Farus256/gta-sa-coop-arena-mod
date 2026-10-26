@@ -1162,7 +1162,8 @@ uint64_t PrepMs(bool first) { return first ? 20000 : 30000; }
 // them (rare ones too: the minigun, rockets, the flamethrower); now and then a teddy bear: the points back, and the box
 // moves elsewhere.
 constexpr int kStartPoints = 500, kBoxCost = 950, kRepairCost = 10;
-int g_points = kStartPoints;
+// the arena's money is the game's own (CPlayerInfo::m_nMoney): the HUD shows it, the enemies drop it, the box takes it
+int32_t& Cash() { return PlayerInfos()[0].money; }
 // the other players' line on the scoreboard (Tab): their money, kills, falls
 struct Score {
     int cash = 0, kills = 0, falls = 0;
@@ -1184,15 +1185,15 @@ bool g_dead = false;                // this player died in the arena: back at th
 
 void SendScore() {
     Send(A_SCORE, [](Writer& w) {
-        w.I32(g_points);
+        w.I32(Cash());
         w.U16((uint16_t)std::min(g_kills, 65000));
         w.U16((uint16_t)std::min(g_falls, 65000));
     });
 }
-// the arena's money (g_points): what the enemies drop, spent at the box, the wardrobe, the barricades
+// the arena's money (the game's): what the enemies drop, spent at the box, the accessories, the barricades
 void AddPoints(int n, uint32_t color = 0xFF70E070) {
     if (n == 0) return;
-    g_points = std::max(0, g_points + n);
+    Cash() = std::max(0, Cash() + n);
     g_popups.push_back({Format(n > 0 ? "+$%d" : "-$%d", n > 0 ? n : -n), NowMs(), n > 0 ? color : 0xFFFF5050});
     if (g_popups.size() > 8) g_popups.erase(g_popups.begin());
     SendScore();
@@ -1415,6 +1416,7 @@ struct BoxState {
 
 void PreloadBoxGuns();
 void ShowWardrobe();
+void Anchor(int h);
 // The box is big: two crates side by side, each half as big again (CObject::m_fScale +0x15C): three crates wide and
 // one and a half high
 void ShowBox() {
@@ -1438,6 +1440,7 @@ void ShowBox() {
         if (h < 0) continue;
         Cmd(0x01BC).I(h).F(at.x).F(at.y).F(at.z + lift * kScale).Run();  // SET_OBJECT_COORDINATES: on the floor, grown
         if (CObject* o = GetObject(h)) Field<float>(o, 0x15C) = kScale;    // CObject::m_fScale
+        Anchor(h);  // shots and pushes do not move it
         (k ? g_box.handle2 : g_box.handle) = h;
     }
     g_box.lift = lift * kScale;
@@ -1453,36 +1456,57 @@ void SendBox() {
     });
 }
 // host: a spot for the box on the floor (near the middle, away from where it stood and from the barricades)
-// ---- the wardrobe: a box of clothes by the weapon box; E and $600: a random outfit, each with its own perk
+// ---- the accessories box: by the weapon box; E and $600: a random accessory for CJ (a hat, glasses, a watch, a chain),
+// each with its own perk. One a body part (a new hat takes the old one's place, and its perk), the others add up. They
+// are CJ's own clothes (GIVE_PLAYER_CLOTHES_OUTSIDE_SHOP, the body parts 13-16), so the other players see them too; what
+// CJ wore before the arena comes back after it.
 enum OutfitPerk : uint8_t { O_ARMOUR, O_REGEN, O_HEALTH, O_SPRINT, O_RELOAD, O_CASH };
-struct Outfit {
-    int model;
+struct Accessory {
+    const char* texture;
+    const char* model;
+    int part;  // 13 the neck, 14 the wrist, 15 the face, 16 the head
     const char* name[2];
     const char* perk[2];
     OutfitPerk kind;
 };
-const Outfit kOutfits[] = {
-    {285, TRP("Спецназ", "SWAT"), TRP("+50 брони каждую волну", "+50 armour each wave"), O_ARMOUR},
-    {274, TRP("Медик", "Medic"), TRP("здоровье само восстанавливается", "health comes back by itself"), O_REGEN},
-    {287, TRP("Солдат", "Soldier"), TRP("150 здоровья", "150 health"), O_HEALTH},
-    {247, TRP("Байкер", "Biker"), TRP("бег без усталости", "running without tiring"), O_SPRINT},
-    {108, TRP("Вагос", "Vagos"), TRP("быстрая перезарядка", "fast reload"), O_RELOAD},
-    {111, TRP("Мафиози", "Mafioso"), TRP("+50% денег", "+50% money"), O_CASH},
+const Accessory kAccs[] = {
+    {"helmet", "helmet", 16, TRP("Каска", "Helmet"), TRP("+50 брони каждую волну", "+50 armour each wave"), O_ARMOUR},
+    {"hockey", "hockeymask", 16, TRP("Хоккейная маска", "Hockey mask"), TRP("150 здоровья", "150 health"), O_HEALTH},
+    {"bandred", "bandana", 16, TRP("Бандана", "Bandana"), TRP("бег без усталости", "running without tiring"), O_SPRINT},
+    {"watchpro", "watch", 14, TRP("Часы", "Watch"), TRP("быстрая перезарядка", "fast reload"), O_RELOAD},
+    {"neckgold", "neck2", 13, TRP("Золотая цепь", "Gold chain"), TRP("+50% денег", "+50% money"), O_CASH},
+    {"glasses01dark", "glasses01", 15, TRP("Тёмные очки", "Dark glasses"), TRP("здоровье восстанавливается", "health comes back"), O_REGEN},
 };
-constexpr int kOutfitCount = (int)(sizeof(kOutfits) / sizeof(kOutfits[0]));
+constexpr int kAccCount = (int)(sizeof(kAccs) / sizeof(kAccs[0]));
 constexpr int kWardCost = 600;
 struct Wardrobe {
     CVector pos;
     float heading = 0;
     int handle = -1;
 } g_ward;
-int g_outfit = -1;            // this player's outfit in the arena (-1: none)
-int g_modelBefore = -1;       // what it wore before it
+int g_worn[4] = {-1, -1, -1, -1};  // the accessory on each body part (13..16), -1: none
 uint8_t g_maxHealthBefore = 0;
+CPedClothesDesc g_clothesBefore;   // CJ's clothes before the first accessory
+bool g_clothesSaved = false;
+bool HasPerk(OutfitPerk k) {
+    for (int w : g_worn)
+        if (w >= 0 && kAccs[w].kind == k) return true;
+    return false;
+}
+// an object nothing moves or breaks (the boxes): no move or turn by a hit or a push, every proof
+void Anchor(int h) {
+    if (CObject* o = h >= 0 ? GetObject(h) : nullptr) {
+        uint32_t& f = o->PhysicalFlags();
+        f |= (1u << 4) | (1u << 5) | (1u << 6) | (1u << 13);  // bDisableTurnForce, bDisableMoveForce, bInfiniteMass, bDontApplySpeed
+        f |= 0xFC0000;                                       // bullet, fire, collision, melee proof, invulnerable, explosion proof
+        o->MoveSpeed() = CVector{};
+        o->TurnSpeed() = CVector{};
+    }
+}
 void ShowWardrobe() {  // every game: by the box, to its right, on the floor
     DelObj(g_ward.handle);
     if (!g_box.placed) return;
-    int model = PickModel({1220, 1230, 1221});  // a cardboard box
+    int model = PickModel({2969, 1220, 1230});  // a small crate
     if (model < 0) return;
     float r = g_box.heading / 57.29578f;
     CVector right{std::cos(r), std::sin(r), 0.0f};
@@ -1494,59 +1518,59 @@ void ShowWardrobe() {  // every game: by the box, to its right, on the floor
     g_ward.pos = at;
     g_ward.heading = g_box.heading;
     g_ward.handle = MakeObj(model, at, g_box.heading, lift, height);
-    if (CObject* o = g_ward.handle >= 0 ? GetObject(g_ward.handle) : nullptr) {
-        Field<float>(o, 0x15C) = 1.6f;  // CObject::m_fScale
-        Cmd(0x01BC).I(g_ward.handle).F(at.x).F(at.y).F(at.z + lift * 1.6f).Run();
-    }
+    Anchor(g_ward.handle);
 }
-void OutfitPerks(bool on) {  // the perks that stay on while it is worn
-    if (g_outfit < 0) return;
-    OutfitPerk k = kOutfits[g_outfit].kind;
-    if (k == O_SPRINT) Cmd(0x0330).I(0).I(on ? 1 : 0).Run();  // SET_PLAYER_NEVER_GETS_TIRED
-    if (k == O_RELOAD) Cmd(0x0331).I(0).I(on ? 1 : 0).Run();  // SET_PLAYER_FAST_RELOAD
-    if (k == O_CASH) g_cashMult = on ? 1.5f : 1.0f;
-    if (k == O_HEALTH) {
-        if (on) {
-            if (!g_maxHealthBefore) g_maxHealthBefore = PlayerInfos()[0].maxHealth;
-            PlayerInfos()[0].maxHealth = 150;
-        } else if (g_maxHealthBefore) {
-            PlayerInfos()[0].maxHealth = g_maxHealthBefore;
-            g_maxHealthBefore = 0;
-        }
+void OutfitPerks(bool on) {  // the perks that stay on while worn
+    if (HasPerk(O_SPRINT)) Cmd(0x0330).I(0).I(on ? 1 : 0).Run();  // SET_PLAYER_NEVER_GETS_TIRED
+    if (HasPerk(O_RELOAD)) Cmd(0x0331).I(0).I(on ? 1 : 0).Run();  // SET_PLAYER_FAST_RELOAD
+    g_cashMult = on && HasPerk(O_CASH) ? 1.5f : 1.0f;
+    if (on && HasPerk(O_HEALTH)) {
+        if (!g_maxHealthBefore) g_maxHealthBefore = PlayerInfos()[0].maxHealth;
+        PlayerInfos()[0].maxHealth = 150;
+    } else if (g_maxHealthBefore) {
+        PlayerInfos()[0].maxHealth = g_maxHealthBefore;
+        g_maxHealthBefore = 0;
     }
 }
 void OutfitWaveStart() {  // at each wave: the armour, the health
     CPlayerPed* me = FindPlayerPed(0);
-    if (g_outfit < 0 || !me || g_spectating) return;
-    OutfitPerk k = kOutfits[g_outfit].kind;
-    if (k == O_ARMOUR) me->Armour() = std::min(100.0f, me->Armour() + 50.0f);
-    if (k == O_HEALTH) me->Health() = std::max(me->Health(), 150.0f);
+    if (!me || g_spectating) return;
+    if (HasPerk(O_ARMOUR)) me->Armour() = std::min(100.0f, me->Armour() + 50.0f);
+    if (HasPerk(O_HEALTH)) me->Health() = std::max(me->Health(), 150.0f);
 }
 void BuyOutfit() {
     CPlayerPed* me = FindPlayerPed(0);
     if (!me) return;
-    if (g_points < kWardCost) {
+    if (Cash() < kWardCost) {
         ui::TheChat().AddError(Format(TR("Нужно $%d.", "You need $%d."), kWardCost));
         return;
     }
-    int k = RandInt(0, kOutfitCount - 1);
-    if (k == g_outfit) k = (k + 1) % kOutfitCount;
-    OutfitPerks(false);
-    if (g_modelBefore < 0) g_modelBefore = me->ModelIndex();
-    g_outfit = k;
+    int k = RandInt(0, kAccCount - 1);
+    if (k == g_worn[kAccs[k].part - 13]) k = (k + 1) % kAccCount;  // not the one it wears already
+    const Accessory& a = kAccs[k];
     AddPoints(-kWardCost);
-    skin::Wear((uint16_t)kOutfits[k].model);
+    OutfitPerks(false);
+    g_worn[a.part - 13] = k;
     OutfitPerks(true);
     OutfitWaveStart();
+    if (me->ModelIndex() == 0) {  // CJ: on him (another character keeps only the perk)
+        if (!g_clothesSaved && me->ClothesDesc()) g_clothesBefore = *me->ClothesDesc(), g_clothesSaved = true;
+        Cmd(0x087B).I(0).S(a.texture).S(a.model).I(a.part).Run();  // GIVE_PLAYER_CLOTHES_OUTSIDE_SHOP
+        Cmd(0x070D).I(0).Run();                                     // BUILD_PLAYER_MODEL
+    }
     CallMethod<0x506EA0>((void*)0xB6BC90, 40 /* AE_FRONTEND_PURCHASE_WEAPON */, 0.0f, 1.0f);
-    ui::TheChat().AddSystem(Format("%s: %s", kOutfits[k].name[Lang()], kOutfits[k].perk[Lang()]));
+    ui::TheChat().AddSystem(Format("%s: %s", a.name[Lang()], a.perk[Lang()]));
 }
-void TakeOffOutfit() {  // the arena is over: its perks go, the clothes from before it come back
+void TakeOffOutfit() {  // the arena is over: the perks go, CJ's clothes from before it come back
     OutfitPerks(false);
-    if (g_outfit >= 0 && g_modelBefore >= 0) skin::Wear((uint16_t)g_modelBefore);
-    g_outfit = -1;
-    g_modelBefore = -1;
+    for (int& w : g_worn) w = -1;
     g_cashMult = 1.0f;
+    CPlayerPed* me = FindPlayerPed(0);
+    if (g_clothesSaved && me && me->ModelIndex() == 0 && me->ClothesDesc()) {
+        *me->ClothesDesc() = g_clothesBefore;
+        Call<0x5A82C0>(me, false);  // CClothes::RebuildPlayer
+    }
+    g_clothesSaved = false;
 }
 
 // ---- the homie from the box: a Grove Street man with an M4 who follows this player (its group) and fights the arena's
@@ -1881,7 +1905,7 @@ void BuyWall(int i) {
     bool have = false;
     for (int k = 0; k < NUM_WEAPON_SLOTS; ++k) have |= me->Weapons()[k].type == g.weapon;
     int price = have ? g.price / 2 : g.price;
-    if (g_points < price) {
+    if (Cash() < price) {
         ui::TheChat().AddError(Format(TR("Нужно %d очков.", "You need %d points."), price));
         return;
     }
@@ -2089,7 +2113,7 @@ bool TryBuild() {
         ui::TheChat().AddError(TR("Баррикад уже слишком много.", "There are too many barricades already."));
         return true;
     }
-    if (g_points < kBuildCost) {
+    if (Cash() < kBuildCost) {
         ui::TheChat().AddError(Format(TR("Нужно %d очков.", "You need %d points."), kBuildCost));
         return true;
     }
@@ -2272,7 +2296,7 @@ void Spectate() {
     Cmd(0x01B4).I(0).I(0).Run();          // SET_PLAYER_CONTROL off
     g_hasUgl = g_uglLoaded = false;
     ++g_falls;
-    AddPoints(-g_points / 10);
+    AddPoints(-Cash() / 10);
     g_spectators.insert(Net().MyId());
     Send(A_SPEC, [](Writer& w) { w.U8(1); });
     ui::TheChat().AddSystem(TR("Вы выбыли до следующей волны. [ЛКМ] Другой игрок.", "Out till the next wave. [LMB] Next player."));
@@ -2366,7 +2390,6 @@ void ResetCod() {
     g_spinModel = -1;
     ClearWalls();
     ClearDrops();
-    g_points = kStartPoints;
     g_kills = g_falls = 0;
     g_scores.clear();
     g_popups.clear();
@@ -4005,6 +4028,7 @@ void Start(int faction, int place, int waves) {
     g_arena.startMs = NowMs();
     g_arena.nextWaveMs = NowMs() + PrepMs(true);
     ResetCod();
+    if (Cash() < kStartPoints) Cash() = kStartPoints;  // something to start with at the box
     g_break = false;
     g_barsSolid = true;
     SetBreak(true, g_arena.nextWaveMs);
@@ -4417,7 +4441,7 @@ void Update() {
     UpdateGas(now);
     UpdateShells(now);
     static uint64_t regenMs = 0;  // the medic's outfit: 2 health a second
-    if (g_outfit >= 0 && kOutfits[g_outfit].kind == O_REGEN && now - regenMs > 1000 && !g_spectating) {
+    if (HasPerk(O_REGEN) && now - regenMs > 1000 && !g_spectating) {
         regenMs = now;
         CPlayerPed* me = FindPlayerPed(0);
         float top = std::max<float>(PlayerInfos()[0].maxHealth, 100.0f);
@@ -4444,7 +4468,7 @@ void Update() {
             g_hasUgl = g_uglLoaded = false;  // the AK goes with the death
             g_uglReadyMs = 0;
             g_deadWave = g_arena.wave;
-            AddPoints(-g_points / 10);
+            AddPoints(-Cash() / 10);
         }
     }
     if (!g_arena.host) return;
@@ -4593,7 +4617,7 @@ void DrawScoreboard() {
         bool me, out;
     };
     std::vector<Row> rows;
-    rows.push_back({Net().Online() ? Cfg().nickname : std::string(TR("Вы", "You")), {g_points, g_kills, g_falls}, true, g_spectating});
+    rows.push_back({Net().Online() ? Cfg().nickname : std::string(TR("Вы", "You")), {Cash(), g_kills, g_falls}, true, g_spectating});
     for (auto& [id, sc] : g_scores)
         if (Net().Online() && Net().Peers().count(id)) rows.push_back({Net().PeerName(id), sc, false, Spectator(id)});
     std::sort(rows.begin(), rows.end(), [](const Row& a, const Row& b) { return a.sc.kills > b.sc.kills; });
@@ -4633,13 +4657,12 @@ void DrawCod() {
         g.Rect(px, py, tw, g.LineHeight(ui::FONT_NORMAL) + 16 * s, 0xA0000000);
         g.Text(ui::FONT_NORMAL, px + 14 * s, py + 8 * s, t, 0xFFFFFFFF, ui::TEXT_SHADOW);
     }
-    float x = g.Width() - 40 * s, y = g.Height() * 0.62f;
-    g.Text(ui::FONT_BIG, x, y, Format("$%d", g_points), 0xFF70E070, ui::TEXT_RIGHT | ui::TEXT_OUTLINE);
+    float x = g.Width() - 40 * s, y = g.Height() * 0.24f;  // under the game's own money
     for (const Popup& p : g_popups) {
         float t = (float)(now - p.at) / 1500.0f;
-        g.Text(ui::FONT_NORMAL, x - 160 * s, y - t * 40 * s, p.text, ui::WithAlpha(p.color, 1.0f - t), ui::TEXT_RIGHT | ui::TEXT_OUTLINE);
+        g.Text(ui::FONT_NORMAL, x, y + t * 30 * s, p.text, ui::WithAlpha(p.color, 1.0f - t), ui::TEXT_RIGHT | ui::TEXT_OUTLINE);
     }
-    y += g.LineHeight(ui::FONT_BIG);
+    y = g.Height() * 0.62f;
     if (CPlayerPed* me = FindPlayerPed(0); g_hasUgl && me && me->ActiveWeapon().type == 30) {  // only with the AK in hand
         std::string t = g_uglReadyMs  ? std::string(TR("Подствольник: заряжается", "Launcher: loading"))
                         : g_uglLoaded ? std::string(TR("Подствольник [N]", "Launcher [N]"))
@@ -4700,7 +4723,7 @@ void OpenLobby(bool open) {
 // this player becomes the character it picked in the lobby (not the one of the save or the profile)
 void WearChosen() {
     if (g_modeOn || (Net().Online() && Net().IsHost() && Cfg().gameMode == 2)) {  // the arena mode: CJ, the wardrobe dresses him
-        if (g_outfit < 0) skin::Wear(0);
+        skin::Wear(0);
         return;
     }
     int count = 0;
@@ -4878,7 +4901,8 @@ public:
         g_box = BoxState{};
         g_ward.handle = -1;
         g_guards.clear();
-        g_outfit = -1, g_modelBefore = -1, g_maxHealthBefore = 0;
+        g_maxHealthBefore = 0, g_clothesSaved = false;
+        for (int& w : g_worn) w = -1;
             g_arena = Arena{};
     }
     void OnSessionEnd() override {
@@ -5047,7 +5071,7 @@ bool IsEnemy(CPed* p) {
 void OnLocalHit(CPed* victim, int weapon, int damage, int piece) {}  // money now falls off the dead (D_CASH)
 
 // Weapon skills grow with kills in the arena: the game's own skill stats (the pistol's, the AK's...: poor, gangster,
-// hitman at 1000), +40 a kill, +80 a headshot; a step up shows
+// hitman at 1000), +10 a kill, +20 a headshot; a step up shows
 int SkillStat(int weapon) {
     switch (weapon) {
         case 22: return 69;
@@ -5069,7 +5093,7 @@ void GrowSkill(int weapon, bool headshot) {
     int stat = SkillStat(weapon);
     if (stat < 0) return;
     float was = Call<0x558E40, float>((uint16_t)stat);  // CStats::GetStatValue
-    float now = std::min(1000.0f, was + (headshot ? 80.0f : 40.0f));
+    float now = std::min(1000.0f, was + (headshot ? 20.0f : 10.0f));  // a hitman after some 100 kills
     Call<0x55C180>((uint16_t)stat, now);                 // CStats::SetStatValue
     if ((was < 200.0f && now >= 200.0f) || (was < 999.0f && now >= 999.0f))
         g_popups.push_back({Format("%s: %s", WeaponName(weapon), SkillName(now)), NowMs(), 0xFF80C0FF});
@@ -5130,7 +5154,7 @@ bool KeyDown(int vk, bool repeat) {
     if (g_nearKind == N_BAR) {
         if (now - g_lastRepairMs < 650) return true;  // held: one board at a time
         g_lastRepairMs = now;
-        if (g_points < kRepairCost) {
+        if (Cash() < kRepairCost) {
             ui::TheChat().AddError(Format(TR("Нужно $%d.", "You need $%d."), kRepairCost));
             return true;
         }
@@ -5160,7 +5184,7 @@ bool KeyDown(int vk, bool repeat) {
             return true;
         }
         if (g_box.rolling) return true;
-        if (g_points < kBoxCost) {
+        if (Cash() < kBoxCost) {
             ui::TheChat().AddError(Format(TR("Нужно $%d.", "You need $%d."), kBoxCost));
             return true;
         }
@@ -5179,8 +5203,8 @@ std::string PromptText(std::string& hint) {
         return TR("Баррикада", "Barricade");
     }
     if (g_nearKind == N_WARD) {
-        hint = Format(TR("[E] Случайная одежда  $%d", "[E] Random outfit  $%d"), kWardCost);
-        return TR("Гардероб", "Wardrobe");
+        hint = Format(TR("[E] Случайный аксессуар  $%d", "[E] Random accessory  $%d"), kWardCost);
+        return TR("Аксессуары", "Accessories");
     }
     if (g_nearKind == N_GUN) {
         const Drop& d = g_drops[(size_t)g_nearIdx];
