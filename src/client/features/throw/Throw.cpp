@@ -114,12 +114,16 @@ void Aim(CPlayerPed* me, uint64_t now) {
 void Release(CPlayerPed* me) {
     g_releaseAt = 0;
     CWeapon& w = me->ActiveWeapon();
-    if (me->Health() <= 0.0f || w.type != g_weapon || w.ammoTotal <= 0 || !LoadModelNow(ModelOf(g_weapon))) return;
+    if (me->Health() <= 0.0f || w.type != g_weapon || w.ammoTotal <= 0 || !LoadModelNow(ModelOf(g_weapon))) {
+        LOGI("Throw: not thrown (health %.0f, weapon %d of %d, ammo %d)", me->Health(), w.type, g_weapon, w.ammoTotal);
+        return;
+    }
     CVector dir = g_vel * (1.0f / std::max(0.01f, g_vel.Length()));
     game::challenge::SetNextThrow(true, g_from, g_vel * (1.0f / 50.0f));  // metres a frame; Fire sets it on the projectile
     bool ok = Call<0x737C80, bool>((CEntity*)me, g_weapon, g_from, 1.0f, &dir, (CEntity*)nullptr);  // AddProjectile
     CVector f, sp;
     game::challenge::NextThrow(f, sp);  // left over (the hook did not take it): cleared
+    LOGI("Throw: weapon %d thrown (%s)", g_weapon, ok ? "made" : "not made by the game");
     if (!ok) return;
     --w.ammoTotal;
     w.ammoInClip = std::min(w.ammoInClip, w.ammoTotal);

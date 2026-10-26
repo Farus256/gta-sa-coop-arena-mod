@@ -197,7 +197,7 @@ enum ArenaOp : uint8_t {
     A_START = 1, A_WAVE, A_LEFT, A_BOSS, A_END, A_ITEMS, A_PREP, A_MARK, A_SKIP,
     A_SCORE, A_BARS, A_BOARD, A_REPAIR, A_BOX, A_BOXUSE, A_BOXROLL, A_PERKS, A_PSPAWN, A_GRAB, A_POWER, A_TWINS,
     A_WALLS, A_DROP, A_TAKE, A_TAKEN, A_BUILD, A_LOBBY, A_FLAMER, A_STAGE, A_VOTE, A_VOTES, A_GIVE, A_MAPVOTE, A_MOVE,
-    A_HEALGAS, A_BOSSNAME, A_HIT, A_SHELL, A_SPEC, A_BOXTAKEN, A_SPOT, A_DRONEHIT, A_ALERT /* not used any more */, A_GUARDNAME
+    A_HEALGAS, A_BOSSNAME, A_HIT, A_SHELL, A_SPEC, A_BOXTAKEN, A_SPOT, A_DRONEHIT, A_ALERT /* not used any more */, A_GUARDNAME, A_GUARDREQ
 };
 struct Arena {
     bool on = false, host = false;
@@ -295,7 +295,6 @@ int g_voteCount = 0, g_voteNeed = 1, g_mapVoteCount = 0;
 bool g_iVoted = false, g_iMapVoted = false;
 void MapVote(uint8_t by);
 void Relocate(int place);
-void LaserFrame();
 int MountQuad(int h);
 bool RcPlace() { return std::string(kPlaces[g_arena.place].keys[0][1]) == "rc"; }
 int g_dronesLeft = 0;  // host: the RC helicopters still to come this wave
@@ -946,7 +945,6 @@ int MakeEnemy(int model, int weapon, int health, int armour, int accuracy, const
     if (role == R_KNIFE) {
         Give(h, WEAPON_KNIFE, 1);
         weapon = WEAPON_KNIFE;
-        Cmd(0x0245).I(h).S8("player").Run();  // SET_ANIM_GROUP_FOR_CHAR: it runs as CJ does
     } else if (role == R_FLAMER) {
         Give(h, WEAPON_MOLOTOV, 5);  // the bottles it throws (in hand only for the throw)
         Give(h, WEAPON_FLAMETHROWER, 5000);
@@ -2143,23 +2141,32 @@ const char* const kGuardNames[5][2] = {TRP("Олэг", "Oleg"), TRP("Витал�
                                        TRP("Славик", "Slavik"), TRP("Костя", "Kostya")};
 std::map<int, int> g_guardNames;          // a homie here (this game's, or a copy of another's): its name
 std::vector<std::pair<uint16_t, int>> g_guardIds;  // copies of other games' homies not here yet: net id, name
-void SendGuardName(CPed* p, int name) {
+void SendGuardName(CPed* p, int name, uint8_t owner) {
     NetPed* np = p ? Peds::Instance().Find(p) : nullptr;
     if (!np) return;
     uint16_t id = np->netId;
     Send(A_GUARDNAME, [&](Writer& w) {
         w.U16(id);
         w.U8((uint8_t)name);
+        w.U8(owner);
     });
 }
-void SpawnBodyguard() {
+std::vector<int> g_guardGroups;  // host: the groups made for partners' homies (a partner's copy leads each)
+// The homie (host): the host's game makes every homie, a partner's too, so that he fights the host's own enemies (a
+// partner's game has only copies of them, which nothing it does there hurts). He follows his player: the host's in
+// its group, a partner's copy in a group of its own.
+void SpawnBodyguard(uint8_t owner) {
     CPlayerPed* me = FindPlayerPed(0);
+    bool mine = owner == Net().MyId() || !Net().Online();
+    CPed* leader = mine ? (CPed*)me : nullptr;
+    if (!mine)
+        if (RemotePlayer* rp = Players::Instance().Get(owner)) leader = rp->ped;
     int model = 105 + RandInt(0, 2);
-    if (!me || !LoadModelNow(model) || !HasRoom(PedPool(), kKeepPeds + 2, "ped")) return;
-    CVector f = cam::Front();
+    if (!leader || !IsPedValid(leader) || !LoadModelNow(model) || !HasRoom(PedPool(), kKeepPeds + 2, "ped")) return;
+    CVector f = mine ? cam::Front() : CVector{-std::sin(leader->GetHeading()), std::cos(leader->GetHeading()), 0.0f};
     f.z = 0;
     float l = std::max(0.01f, f.Length());
-    CVector at = me->GetPosition() - f * (1.2f / l);
+    CVector at = leader->GetPosition() - f * (1.2f / l);
     int h = -1;
     Cmd(0x009A).I(8 /* PED_TYPE_GANG2 */).I(model).F(at.x).F(at.y).F(at.z - 1.0f).Out(&h).Run();  // CREATE_CHAR
     if (h < 0) return;
@@ -2167,7 +2174,7 @@ void SpawnBodyguard() {
         Peds::Instance().Share(made);
         made->Armour() = 100.0f;
     }
-    Cmd(0x0860).I(h).I(me->AreaCode()).Run();  // SET_CHAR_AREA_VISIBLE
+    Cmd(0x0860).I(h).I(leader->AreaCode()).Run();  // SET_CHAR_AREA_VISIBLE
     Cmd(0x0223).I(h).I(300).Run();             // SET_CHAR_HEALTH
     Cmd(0x087E).I(h).I(0).Run();               // no weapons off him
     Give(h, 31, 9999);
@@ -2175,13 +2182,18 @@ void SpawnBodyguard() {
     Cmd(0x02E2).I(h).I(75).Run();              // SET_CHAR_ACCURACY
     Cmd(0x077A).I(h).I(4).I(PED_TYPE_MISSION1).Run();  // SET_CHAR_RELATIONSHIP: hates the arena's people
     int group = -1;
-    Cmd(0x07AF).I(0).Out(&group).Run();        // GET_PLAYER_GROUP
-    if (group >= 0) Cmd(0x0631).I(group).I(h).Run();  // SET_GROUP_MEMBER: he follows and fights for this player
+    if (mine) {
+        Cmd(0x07AF).I(0).Out(&group).Run();  // GET_PLAYER_GROUP
+    } else {
+        Cmd(0x062F).I(0).Out(&group).Run();  // CREATE_GROUP
+        if (group >= 0) Cmd(0x0630).I(group).I(GetPedRef(leader)).Run(), g_guardGroups.push_back(group);  // SET_GROUP_LEADER
+    }
+    if (group >= 0) Cmd(0x0631).I(group).I(h).Run();  // SET_GROUP_MEMBER: he follows and fights for his player
     g_guards.push_back(h);
     int name = RandInt(0, 4);
     g_guardNames[h] = name;
-    SendGuardName(GetPed(h), name);
-    ui::TheChat().AddSystem(Format(TR("Кент %s с вами.", "%s, a homie, is with you."), kGuardNames[name][Lang()]));
+    SendGuardName(GetPed(h), name, owner);
+    if (mine) ui::TheChat().AddSystem(Format(TR("Кент %s с вами.", "%s, a homie, is with you."), kGuardNames[name][Lang()]));
 }
 void GuardsTo(const CVector& at, int area) {  // with this player to another place
     for (int h : g_guards)
@@ -2201,6 +2213,8 @@ void GuardCopies() {  // every frame: the names of other games' homies once thei
 void ClearGuards() {
     g_guardNames.clear();
     g_guardIds.clear();
+    for (int grp : g_guardGroups) Cmd(0x0632).I(grp).Run();  // REMOVE_GROUP
+    g_guardGroups.clear();
     for (int h : g_guards)
         if (GetPed(h)) Cmd(0x009B).I(h).Run();  // DELETE_CHAR
     g_guards.clear();
@@ -2258,7 +2272,7 @@ void UseBox(uint8_t by) {
     });
     StartRoll(by, gun, teddy);
 }
-void SpawnBodyguard();
+void SpawnBodyguard(uint8_t owner);
 // E at the box while its weapon waits for this player: it takes it (a weapon in the same slot goes for it)
 void TakeOffer() {
     if (!g_box.offered || !(g_box.by == Net().MyId() || !Net().Online())) return;
@@ -2266,7 +2280,8 @@ void TakeOffer() {
     Send(A_BOXTAKEN);
     const BoxGun& g = kBoxGuns[(size_t)g_box.gun % (sizeof(kBoxGuns) / sizeof(kBoxGuns[0]))];
     if (!g.weapon) {
-        SpawnBodyguard();
+        if (g_arena.host) SpawnBodyguard(Net().MyId());
+        else Send(A_GUARDREQ);  // the host's game makes him
         return;
     }
     if (CPlayerPed* me = FindPlayerPed(0)) {
@@ -2959,7 +2974,7 @@ void SpectateFrame(uint64_t now) {
     float mx = Ref<float>(0xB73418 + 0x0C), my = Ref<float>(0xB73418 + 0x10);
     if (IsForeground() && !ui::TheChat().IsOpen()) {
         g_specYaw -= mx * 0.006f;
-        g_specPitch = std::clamp(g_specPitch - my * 0.004f, -0.25f, 1.2f);
+        g_specPitch = std::clamp(g_specPitch - my * 0.006f, -0.25f, 1.2f);  // as fast as left-right
     }
     float dist = 4.5f;
     CVector back{std::sin(g_specYaw) * std::cos(g_specPitch), -std::cos(g_specYaw) * std::cos(g_specPitch), std::sin(g_specPitch)};
@@ -3106,12 +3121,12 @@ void MakeMedic(int wave) {
     MakeEnemy(model, weapon, 100 + 15 * wave, ArmourFor(wave, 0), 45, SpawnSpot(Rand(0.0f, 6.2831853f), 3.2f, 6.0f),
               (int)g_squads.size() - 1, R_MEDIC, false);
 }
-// The flamethrower man (Bikers, Vagos): 525 health and armour, slow, comes unannounced, a flamethrower close by and molotovs from afar
+// The flamethrower man (Bikers, Vagos): 250 health and 50 armour, slow, comes unannounced, a flamethrower close by and molotovs from afar
 void MakeFlamer(int wave) {
     const Faction& f = kFactions[g_arena.faction];
     g_squads.push_back(Squad{});
     int model = f.models[3];
-    int h = MakeEnemy(model, WEAPON_FLAMETHROWER, 525, 100, 60, SpawnSpot(Rand(0.0f, 6.2831853f), 3.2f, 8.0f),
+    int h = MakeEnemy(model, WEAPON_FLAMETHROWER, 250, 50, 60, SpawnSpot(Rand(0.0f, 6.2831853f), 3.2f, 8.0f),
                       (int)g_squads.size() - 1, R_FLAMER, true);
     if (CPed* p = h >= 0 ? GetPed(h) : nullptr) {
         g_flamers.push_back(p);
@@ -4926,20 +4941,29 @@ void TagCopies() {
 }
 int32_t g_moneyBefore = 0;  // out of the mode: the save's money while the arena is on
 bool g_moneyKept = false;
-// the weapon skills (CStats 69-79): every arena from nothing; out of the mode the save's own come back after it
-float g_skillsBefore[11] = {};
+// CJ as at the game's start every arena: the weapon skills (CStats 69-79) and the body (fat 21, stamina 22, muscle
+// 23) from nothing, his body rebuilt (not fat, not muscled); out of the mode the save's own come back after it
+const uint16_t kResetStats[] = {21, 22, 23, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79};
+constexpr int kResetCount = (int)(sizeof(kResetStats) / sizeof(kResetStats[0]));
+float g_skillsBefore[kResetCount] = {};
 bool g_skillsKept = false;
+void RebuildBody() {
+    CPlayerPed* me = FindPlayerPed(0);
+    if (me && me->ModelIndex() == 0 && me->ClothesDesc()) Call<0x5A82C0>(me, false);  // CClothes::RebuildPlayer
+}
 void ResetSkills(bool keep) {
-    for (int i = 0; i < 11; ++i) {
-        if (keep) g_skillsBefore[i] = Call<0x558E40, float>((uint16_t)(69 + i));  // CStats::GetStatValue
-        Call<0x55C180>((uint16_t)(69 + i), 0.0f);                                // CStats::SetStatValue
+    for (int i = 0; i < kResetCount; ++i) {
+        if (keep) g_skillsBefore[i] = Call<0x558E40, float>(kResetStats[i]);  // CStats::GetStatValue
+        Call<0x55C180>(kResetStats[i], 0.0f);                                  // CStats::SetStatValue
     }
     if (keep) g_skillsKept = true;
+    RebuildBody();
 }
 void RestoreSkills() {
     if (!g_skillsKept) return;
-    for (int i = 0; i < 11; ++i) Call<0x55C180>((uint16_t)(69 + i), g_skillsBefore[i]);
+    for (int i = 0; i < kResetCount; ++i) Call<0x55C180>(kResetStats[i], g_skillsBefore[i]);
     g_skillsKept = false;
+    RebuildBody();
 }
 void End(bool tell) {
     if (!g_arena.on) return;
@@ -5078,7 +5102,14 @@ void Handle(uint8_t from, Reader& r) {
     if (r.Ok() && op == A_GUARDNAME) {  // another game's homie: its name, for its copy here
         uint16_t id = r.U16();
         uint8_t name = r.U8();
-        if (r.Ok() && name < 5) g_guardIds.push_back({id, name});
+        uint8_t owner = r.U8();
+        if (!r.Ok() || name >= 5) return;
+        g_guardIds.push_back({id, name});
+        if (owner == Net().MyId()) ui::TheChat().AddSystem(Format(TR("Кент %s с вами.", "%s, a homie, is with you."), kGuardNames[name][Lang()]));
+        return;
+    }
+    if (r.Ok() && op == A_GUARDREQ) {  // host: a partner took a homie from the box
+        if (g_arena.on && g_arena.host) SpawnBodyguard(from);
         return;
     }
     if (op == A_DRONEHIT) {  // host: a partner hit a helicopter's copy
@@ -5442,7 +5473,6 @@ void Update() {
                         Ref<float>((uintptr_t)assoc + 0x24) = 2.0f;                  // CAnimBlendAssociation::m_Speed
     Rescue(now);
     GuardCopies();
-    LaserFrame();
     static uint64_t scoreMs = 0;  // the score now and then too: one that came in late has everyone's
     if (now - scoreMs > 3000) scoreMs = now, SendScore();
     if (g_arena.host) DronesFrame(now);
@@ -5675,87 +5705,98 @@ void DrawScoreboard() {
 
 // The screen: the money (bottom right) and what it just got, the break's seconds and votes, the launcher when the AK is
 // in hand; over the world only the Officer's mark and, near the box, its price or what it turns over
-// ---- the snipers' laser sights: a thin red beam in the world from a sniper (one with the sniper rifle in hand, here
-// or a copy) to the player it aims at (the nearest one it sees), or ahead of it to the first wall, and a red dot where
-// it ends. Worked out each frame (LaserFrame), drawn among the game's own effects (RenderEffects: after the world, with
-// its depth, so walls hide it) as two thin quads facing the camera, and the dot as a corona.
-struct Laser {
-    CVector from, to;
-};
-std::vector<Laser> g_lasers;
-void LaserFrame() {
-    g_lasers.clear();
-    CPlayerPed* me = FindPlayerPed(0);
-    CPoolHeader* pool = PedPool();
-    if (!me || !pool || !g_arena.on) return;
-    int area = kPlaces[g_arena.place].area;
-    for (int i = 0; i < pool->size; ++i) {
-        if (pool->byteMap[i] < 0) continue;
-        auto* p = (CPed*)(pool->objects + (size_t)i * kPedPoolElemSize);
-        if (p->IsPlayer() || p->Health() <= 0.0f || p->AreaCode() != area || p->ActiveWeapon().type != WEAPON_SNIPER || !arena::IsEnemy(p)) continue;
-        if ((p->GetPosition() - me->GetPosition()).Length() > 150.0f) continue;
-        float hd = p->GetHeading();
-        CVector f{-std::sin(hd), std::cos(hd), 0.0f};
-        CVector from = p->GetPosition() + CVector{0, 0, 0.55f} + f * 0.55f, to = from + f * 60.0f, hit;
-        if (CPed* t = NearestPlayer(p->GetPosition()); t && Clear(from, t->GetPosition() + CVector{0, 0, 0.3f}))
-            to = t->GetPosition() + CVector{0, 0, 0.3f};
-        else if (Ray(from, to, hit))
-            to = hit;
-        g_lasers.push_back({from, to});
-        // the dot: a small red corona (hidden behind walls), one per sniper
-        Call<0x6FC580>(0x1A5E0000u + (uint32_t)(i & 0xFFFF), (CEntity*)nullptr, (uint8_t)255, (uint8_t)20, (uint8_t)20, (uint8_t)255, &to,
-                       0.12f, 150.0f, 0, 0, 0, 1, 0, 0.0f, false, 0.2f, false, 15.0f, false, false);  // CCoronas::RegisterCorona
-    }
+// ---- the arena's music: a quiet loop of its own, made here (no recording): A minor at 112 beats a minute, 8 bars
+// (Am F C G Am F Dm E): a soft kick and snare, hats, a triangle bass in eighths, a square arpeggio in sixteenths and a
+// sine pad, mixed low. Windows plays it (PlaySound, looped) while this player is in an arena and the game is in front;
+// /arena музыка turns it off and on.
+std::vector<uint8_t> g_musicWav;
+bool g_musicOn = true, g_musicPlaying = false;
+using PlaySoundFn = BOOL(WINAPI*)(LPCSTR, HMODULE, DWORD);
+PlaySoundFn PlaySoundPtr() {
+    static PlaySoundFn f = (PlaySoundFn)GetProcAddress(LoadLibraryA("winmm.dll"), "PlaySoundA");
+    return f;
 }
-struct RwVert {
-    float x, y, z, nx, ny, nz;
-    uint32_t color;  // RwRGBA: r, g, b, a
-    float u, v;
-};
-void RenderLasers() {
-    if (!g_arena.on) g_lasers.clear();
-    if (g_lasers.empty()) return;
-    auto state = [](uint32_t st, uint32_t v) { Call<0x7FC2D0>(st, v); };  // RwRenderStateSet
-    state(8, 0);   // ZWRITEENABLE off
-    state(6, 1);   // ZTESTENABLE on: walls in front hide it
-    state(12, 1);  // VERTEXALPHAENABLE
-    state(10, 5);  // SRCBLEND: SRCALPHA
-    state(11, 2);  // DESTBLEND: ONE (it glows)
-    state(20, 1);  // CULLMODE: none
-    state(1, 0);   // TEXTURERASTER: none
-    CVector eye = cam::Source();
-    for (const Laser& l : g_lasers) {
-        CVector dir = l.to - l.from;
-        float len = dir.Length();
-        if (len < 0.1f) continue;
-        dir = dir * (1.0f / len);
-        CVector mid = (l.from + l.to) * 0.5f - eye;
-        CVector side{dir.y * mid.z - dir.z * mid.y, dir.z * mid.x - dir.x * mid.z, dir.x * mid.y - dir.y * mid.x};
-        float sl = side.Length();
-        if (sl < 0.0001f) continue;
-        side = side * (1.0f / sl);
-        for (int pass = 0; pass < 2; ++pass) {  // the core, then a faint glow round it
-            float w = pass == 0 ? 0.008f : 0.03f;
-            uint32_t c = pass == 0 ? 0xD01818FFu : 0x401010FFu;  // a, b, g, r from the top byte down
-            CVector o = side * w;
-            CVector pts[4] = {l.from + o, l.from - o, l.to + o, l.to - o};
-            RwVert v[4];
-            for (int k = 0; k < 4; ++k) v[k] = {pts[k].x, pts[k].y, pts[k].z, 0, 0, 1, c, 0, 0};
-            uint16_t idx[6] = {0, 1, 2, 1, 3, 2};
-            if (Call<0x7EF450, void*>((void*)v, 4u, (void*)nullptr, 8u | 16u)) {  // RwIm3DTransform: XYZ, RGBA
-                Call<0x7EF550>(3, (uint16_t*)idx, 6);  // RwIm3DRenderIndexedPrimitive: a triangle list
-                Call<0x7EF520>();                      // RwIm3DEnd
+void BuildMusic() {
+    const int rate = 22050;
+    const double beat = 60.0 / 112.0, bar = beat * 4;
+    const int bars = 8;
+    const int n = (int)(bar * bars * rate);
+    std::vector<float> mix((size_t)n, 0.0f);
+    auto hz = [](int midi) { return 440.0 * std::pow(2.0, (midi - 69) / 12.0); };
+    struct Chord {
+        int bass;
+        int tones[3];
+    };
+    const Chord chords[bars] = {{45, {69, 72, 76}}, {41, {65, 69, 72}}, {48, {67, 72, 76}}, {43, {67, 71, 74}},
+                                {45, {69, 72, 76}}, {41, {65, 69, 72}}, {38, {62, 65, 69}}, {40, {64, 68, 71}}};
+    uint32_t seed = 12345;
+    auto noise = [&seed]() {
+        seed = seed * 1664525u + 1013904223u;
+        return (float)((seed >> 9) & 0x7FFF) / 16384.0f - 1.0f;
+    };
+    auto add = [&](double start, double len, auto voice) {
+        int a = (int)(start * rate), b = std::min(n, (int)((start + len) * rate));
+        for (int i = std::max(0, a); i < b; ++i) mix[(size_t)i] += voice((double)(i - a) / rate);
+    };
+    for (int b = 0; b < bars; ++b) {
+        const Chord& c = chords[b];
+        double t0 = b * bar;
+        for (int k = 0; k < 4; ++k) {  // drums
+            double t = t0 + k * beat;
+            if (k == 0 || k == 2)
+                add(t, 0.22, [](double x) { return (float)(std::sin(6.2831853 * (45.0 * x + 40.0 * (1 - std::exp(-x * 30)) / 30.0)) * std::exp(-x * 14) * 0.55); });
+            if (k == 1 || k == 3) {
+                add(t, 0.16, [&](double x) { return (float)((noise() * 0.6 + std::sin(6.2831853 * 190 * x) * 0.4) * std::exp(-x * 22) * 0.22); });
             }
+            for (int h = 0; h < 2; ++h)
+                add(t + h * beat * 0.5, 0.04, [&](double x) { return (float)(noise() * std::exp(-x * 90) * 0.05); });
+        }
+        for (int e = 0; e < 8; ++e) {  // bass: eighths, a triangle
+            double f = hz(c.bass);
+            add(t0 + e * beat * 0.5, beat * 0.45, [f](double x) {
+                double ph = std::fmod(f * x, 1.0);
+                double tri = 4.0 * std::fabs(ph - 0.5) - 1.0;
+                return (float)(tri * std::min(1.0, x * 200) * std::exp(-x * 3) * 0.22);
+            });
+        }
+        for (int q = 0; q < 16; ++q) {  // arpeggio: sixteenths, a soft square
+            int tone = q % 4 == 3 ? c.tones[0] + 12 : c.tones[q % 4];
+            double f = hz(tone);
+            add(t0 + q * beat * 0.25, beat * 0.24, [f](double x) {
+                double ph = std::fmod(f * x, 1.0);
+                return (float)((ph < 0.3 ? 1.0 : -1.0) * std::min(1.0, x * 300) * std::exp(-x * 9) * 0.045);
+            });
+        }
+        for (int tn : c.tones) {  // the pad: the chord, sines, slow in and out
+            double f = hz(tn - 12);
+            add(t0, bar, [f, bar](double x) {
+                double env = std::min(1.0, x / 0.3) * std::min(1.0, (bar - x) / 0.3);
+                return (float)(std::sin(6.2831853 * f * x) * env * 0.035);
+            });
         }
     }
-    state(8, 1);   // ZWRITEENABLE back
-    state(11, 6);  // DESTBLEND: INVSRCALPHA, as it was
+    float peak = 0.001f;
+    for (float v : mix) peak = std::max(peak, std::fabs(v));
+    const float gain = 0.22f / peak;  // quiet
+    std::vector<uint8_t>& w = g_musicWav;
+    auto put32 = [](uint32_t v) { for (int k = 0; k < 4; ++k) g_musicWav.push_back((uint8_t)(v >> (8 * k))); };
+    auto put16 = [](uint16_t v) { g_musicWav.push_back((uint8_t)v), g_musicWav.push_back((uint8_t)(v >> 8)); };
+    uint32_t data = (uint32_t)n * 2;
+    w.clear();
+    w.insert(w.end(), {'R', 'I', 'F', 'F'}), put32(36 + data), w.insert(w.end(), {'W', 'A', 'V', 'E', 'f', 'm', 't', ' '});
+    put32(16), put16(1), put16(1), put32((uint32_t)rate), put32((uint32_t)rate * 2), put16(2), put16(16);
+    w.insert(w.end(), {'d', 'a', 't', 'a'}), put32(data);
+    for (float v : mix) put16((uint16_t)(int16_t)std::clamp(v * gain * 32767.0f, -32767.0f, 32767.0f));
 }
-using RenderEffectsFn = void(__cdecl*)();
-RenderEffectsFn g_origRenderEffects = nullptr;
-void __cdecl HookRenderEffects() {
-    g_origRenderEffects();
-    RenderLasers();
+void Music(bool play) {
+    if (play == g_musicPlaying || !PlaySoundPtr()) return;
+    if (play) {
+        if (g_musicWav.empty()) BuildMusic();
+        PlaySoundPtr()((LPCSTR)g_musicWav.data(), nullptr, 0x0004 /* SND_MEMORY */ | 0x0001 /* SND_ASYNC */ | 0x0008 /* SND_LOOP */ | 0x0002);
+    } else {
+        PlaySoundPtr()(nullptr, nullptr, 0);
+    }
+    g_musicPlaying = play;
 }
 
 void DrawCod() {
@@ -6013,7 +6054,6 @@ public:
         Net().SetHandler(proto::G_ARENA, &Handle);
         mem::HookFn(0x55CEB0, &HookWeaponHitStats, &g_origWeaponHitStats, "CStats::UpdateStatsWhenWeaponHit");
         mem::HookFn(0x4D6E60, &HookAmbience, &g_origAmbience, "CAEAmbienceTrackManager::UpdateAmbienceTrackAndVolume");
-        mem::HookFn(0x53E170, &HookRenderEffects, &g_origRenderEffects, "RenderEffects");
         mem::HookFn(0x73B2A0, &HookHasAmmo, &g_origHasAmmo, "CWeapon::HasWeaponAmmoToBeUsed");
         mem::HookFn(0x725120, &HookPlaceMarker, &g_origPlaceMarker, "C3dMarkers::PlaceMarker");
         mem::HookFn(0x726D40, &HookPlaceCone, &g_origPlaceCone, "C3dMarkers::PlaceMarkerCone");
@@ -6032,6 +6072,10 @@ public:
         g_drops.clear();
         g_hiddenSaves.clear();
         g_blockers.clear();  // their objects, vehicles went with the game too
+        g_guardGroups.clear();
+        g_guardNames.clear();
+        g_guardIds.clear();
+        Music(false);
         g_drones.clear();
         g_quads.clear();
         g_dronesLeft = 0;
@@ -6058,11 +6102,14 @@ public:
     }
     void OnGameStarted() override { MoveWhileShooting(); }
     void OnPostProcess() override {
+        // the mouse as fast up and down as left and right (the game's vertical sensitivity was its own, slower)
+        Ref<float>(0xB6EC18) = Ref<float>(0xB6EC1C);  // CCamera::m_fMouseAccelVertical = m_fMouseAccelHorzntl
         if (g_arena.on && core::IsPlayerReady()) Update();
         GameMode();
         if (core::IsPlayerReady()) HouseFrame(), KeepInHouse();
     }
     void OnRender() override {
+        Music(g_musicOn && g_arena.on && g_arena.taken && !MenuActive() && IsForeground());
         if (!g_arena.on || MenuActive()) return;
         DrawMarks();
         auto& g = ui::Gfx();
@@ -6119,6 +6166,11 @@ public:
                 End(true);
                 ui::TheChat().AddSystem(TR("Арена остановлена.", "The arena is stopped."));
             }
+            return true;
+        }
+        if (a0 == "музыка" || a0 == "music") {  // the arena's music off and on (this game's own)
+            g_musicOn = !g_musicOn;
+            ui::TheChat().AddSystem(g_musicOn ? TR("Музыка арены включена.", "The arena's music is on.") : TR("Музыка арены выключена.", "The arena's music is off."));
             return true;
         }
         if (a0 == "тибон" || a0 == "тибоун" || a0 == "tbone") {  // a test: T-Bone now
