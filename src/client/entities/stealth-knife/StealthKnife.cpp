@@ -9,6 +9,8 @@
 #include "common/lib/util/Util.h"
 #include "entities/ped/Peds.h"
 #include "entities/player/Players.h"
+#include "features/arena/Arena.h"
+#include "features/revive/Revive.h"
 #include "shared/api/net-session/Session.h"
 #include "shared/game/Game.h"
 #include "shared/game/Script.h"
@@ -85,6 +87,12 @@ void Dying() {  // every frame while it goes on
     }
     if (g_fallAt && now >= g_fallAt) {
         g_fallAt = 0;
+        if (arena::On()) {  // the arena: no death and no hospital, it falls wounded (or watches) instead
+            g_deadAt = 0;
+            Cmd(0x01B4).I(0).I(1).Run();  // SET_PLAYER_CONTROL: back (the wound takes it from here)
+            ArenaWound();
+            return;
+        }
         if (EnsureBlock("KNIFE")) Cmd(0x0829).I(h).S("KILL_Knife_Ped_Die").S("KNIFE").F(4.0f).I(-1).Run();  // TASK_DIE_NAMED_ANIM
     }
     if (g_deadAt && now >= g_deadAt) {

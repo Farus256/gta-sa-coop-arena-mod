@@ -17,5 +17,8 @@ std::string ReviveText(std::string& hint);
 bool ReviveKeyPressed();
 // a blow that lays this player down wounded at once (the arena's chainsaw charge); with nobody to revive it, a hard hit
 void KnockDown();
+// the arena: a blow that kills elsewhere (a knifeman's cut throat) lays this player down wounded, or, with nobody to
+// revive it, it watches till the next wave: no death, no hospital
+void ArenaWound();
 
 }  // namespace coop

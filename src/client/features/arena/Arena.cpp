@@ -790,6 +790,11 @@ bool PlayersSee(const CVector& at, const std::vector<CVector>& players) {
 // towards `angle` round the players (radians) if it can be, and out of the players' sight rather than in it. The
 // distance kept from the players is what the place allows (a narrow hall has its far ends only). `minApart` from this
 // wave's others; off the cells (too few): towards the angle from the middle.
+// the RC battlefield's "base": round the players' spot to come in at (20 m), where no enemy comes in
+bool NearBase(const CVector& p) {
+    if (!RcPlace()) return false;
+    return (p - kPlaces[g_arena.place].pos).Length2D() < 20.0f;
+}
 CVector SpawnSpot(float angle, float halfSector, float minApart) {
     const Place& pl = kPlaces[g_arena.place];
     std::vector<CVector> players = PlayerSpots();
@@ -810,7 +815,7 @@ CVector SpawnSpot(float angle, float halfSector, float minApart) {
             for (int k : cells) {
                 const CVector& c = g_cells[(size_t)k].p;
                 float dp = DistToPlayers(c, players);
-                if (dp < safe) continue;
+                if (dp < safe || NearBase(c)) continue;
                 float apart = 1e9f;
                 for (const CVector& sp : g_spawnsNow) apart = std::min(apart, (sp - c - CVector{0, 0, 1.0f}).Length());
                 if (apart < minApart) continue;
@@ -1073,19 +1078,36 @@ void MakeKnifeman(int wave) {
     };
     CVector at;
     bool found = false;
+    // with the others: by one of this wave's squads (the one farthest from the players), not at anyone's back
+    if (!g_spawnsNow.empty()) {
+        float most = -1;
+        for (const CVector& sp : g_spawnsNow) {
+            float d = DistToPlayers(sp, players) + Rand(0.0f, 5.0f);
+            if (d > most) most = d, at = sp;
+        }
+        CVector beside = MemberSpot(at, RandInt(0, 3));
+        if (DistToPlayers(beside, players) >= 9.0f && !behind(beside) && !NearBase(beside)) at = beside;
+        found = DistToPlayers(at, players) >= 9.0f;
+    }
+    if (found) {
+        g_spawnsNow.push_back(at);
+        int model = g_knifeModel >= 0 && IsModelLoaded(g_knifeModel) ? g_knifeModel : f.models[(size_t)RandInt(0, 3)];
+        MakeEnemy(model, WEAPON_KNIFE, 100 + 15 * wave, ArmourFor(wave, 0), 60, at, (int)g_squads.size() - 1, R_KNIFE, true);
+        return;
+    }
     // the far side of the place from the squads (from the middle of where they came from), never close to a player
     // and never at a player's back: 15 m off at the least (12 m, then 9 m when the place has no such spot)
     CVector squadsMid{};
     for (const CVector& sp : g_spawnsNow) squadsMid = squadsMid + sp;
     if (!g_spawnsNow.empty()) squadsMid = squadsMid * (1.0f / (float)g_spawnsNow.size());
-    if (GridUsable()) {
+    if (GridUsable() && !found) {
         const float minDs[] = {15.0f, 12.0f, 9.0f, 9.0f};  // the last pass: anywhere 9 m off, a tiny place
         for (int pass = 0; pass < 4 && !found; ++pass) {
             float best = -1e9f;
             for (int k : StandCells()) {
                 CVector p = g_cells[(size_t)k].p + CVector{0, 0, 1.0f};
                 float dp = DistToPlayers(p, players);
-                if (dp < minDs[pass] || (pass < 3 && behind(p))) continue;
+                if (dp < minDs[pass] || (pass < 3 && behind(p)) || NearBase(p)) continue;
                 float fromSquads = 1e9f;
                 for (const CVector& s : g_spawnsNow) fromSquads = std::min(fromSquads, (s - p).Length());
                 float away = g_spawnsNow.empty() ? std::min(fromSquads, 40.0f) : (p - squadsMid).Length();
@@ -1125,7 +1147,7 @@ bool SniperSpot(const CVector& from, CPed* target, float maxMove, CVector& out) 
         CVector body = g_cells[(size_t)k].p + CVector{0, 0, 1.0f};
         if (maxMove > 0 && (body - from).Length() > maxMove) continue;
         float dp = DistToPlayers(body, players);
-        if (dp < want * 0.5f) continue;
+        if (dp < want * 0.5f || NearBase(body)) continue;
         bool apart = true;
         for (auto& [q, e] : g_info)
             if (e.role == R_SNIPER && IsPedValid(q) && (q->GetPosition() - body).Length() < 8.0f && (q->GetPosition() - from).Length() > 1.0f)
@@ -3161,6 +3183,7 @@ void SpawnWave() {
         return;
     }
     int count = std::min(14, 2 + w * 2 + PlayersIn());
+    if (MiniBoss(w) == 2) count = std::max(2, count * 6 / 10);  // the Butcher's wave: fewer of the others
     // squads of 3-4, spread evenly round the players; the first comes straight on, the others go round; the knifemen
     // (1 from 6 enemies, 2 from 11) alone, from elsewhere
     int knives = count >= 11 ? 2 : count >= 6 ? 1 : 0;
@@ -3545,7 +3568,7 @@ void SpinRotor(CVehicle* v) { Ref<float>((uintptr_t)v + 0x84C) = 0.35f; }  // CA
 void SpawnDrone() {
     int model = LoadModelNow(MODEL_RCRAIDER) ? MODEL_RCRAIDER : LoadModelNow(MODEL_RCGOBLIN) ? MODEL_RCGOBLIN : -1;
     if (model < 0 || !HasRoom(VehiclePool(), 6, "vehicle")) return;
-    CVector at = SpawnSpot(Rand(0.0f, 6.2831853f), 3.2f, 4.0f) + CVector{0, 0, 1.5f};
+    CVector at = SpawnSpot(Rand(0.0f, 6.2831853f), 3.2f, 4.0f) + CVector{0, 0, 2.5f};
     int car = -1;
     Cmd(0x00A5).I(model).F(at.x).F(at.y).F(at.z).Out(&car).Run();  // CREATE_CAR
     if (car < 0) return;
@@ -3607,14 +3630,23 @@ void DronesFrame(uint64_t now) {  // host, every frame
         }
         if (now - d.wpMs > 250) {
             d.wpMs = now;
-            if (Clear(pos, chest)) d.wp = chest;
-            else if (CVector cell; WaypointAlong(pos, StepsFor(t), cell, 2.2f)) d.wp = cell + CVector{0, 0, 2.2f};
-            else d.wp = chest;
+            // high over the floor (4 m, under the ceiling) till the player is near and in sight: then down at it
+            float flat = (chest - pos).Length2D();
+            if (Clear(pos, chest)) {
+                d.wp = chest;
+                if (flat > 7.0f) d.wp.z = std::max(chest.z, std::min(pos.z, chest.z + 3.0f));  // the dive at the end
+            } else if (CVector cell; WaypointAlong(pos, StepsFor(t), cell, 3.0f)) {
+                CVector up;
+                float top = Ray(cell + CVector{0, 0, 0.5f}, cell + CVector{0, 0, 4.5f}, up) ? up.z - cell.z - 0.8f : 4.0f;
+                d.wp = cell + CVector{0, 0, std::clamp(top, 1.8f, 4.0f)};
+            } else {
+                d.wp = chest;
+            }
         }
         CVector dir = d.wp - pos;
         float len = dir.Length();
-        CVector want = len > 0.05f ? dir * (std::min(6.5f, len * 3.0f) / len) : CVector{};
-        float k = std::min(1.0f, dt * 4.0f);
+        CVector want = len > 0.05f ? dir * (std::min(11.0f, len * 4.0f) / len) : CVector{};  // faster than a running man
+        float k = std::min(1.0f, dt * 5.0f);
         d.vel = d.vel + (want - d.vel) * k;
         v->MoveSpeed() = d.vel * (1.0f / 50.0f) + CVector{0, 0, 0.008f * TimeStep()};  // metres a frame, the gravity made up for
         v->TurnSpeed() = CVector{};
@@ -4792,6 +4824,21 @@ void TagCopies() {
 }
 int32_t g_moneyBefore = 0;  // out of the mode: the save's money while the arena is on
 bool g_moneyKept = false;
+// the weapon skills (CStats 69-79): every arena from nothing; out of the mode the save's own come back after it
+float g_skillsBefore[11] = {};
+bool g_skillsKept = false;
+void ResetSkills(bool keep) {
+    for (int i = 0; i < 11; ++i) {
+        if (keep) g_skillsBefore[i] = Call<0x558E40, float>((uint16_t)(69 + i));  // CStats::GetStatValue
+        Call<0x55C180>((uint16_t)(69 + i), 0.0f);                                // CStats::SetStatValue
+    }
+    if (keep) g_skillsKept = true;
+}
+void RestoreSkills() {
+    if (!g_skillsKept) return;
+    for (int i = 0; i < 11; ++i) Call<0x55C180>((uint16_t)(69 + i), g_skillsBefore[i]);
+    g_skillsKept = false;
+}
 void End(bool tell) {
     if (!g_arena.on) return;
     if (tell && g_arena.host) Send(A_END, [](Writer& w) { w.U8(g_arena.won); });
@@ -4804,6 +4851,7 @@ void End(bool tell) {
     TakeBack();
     if (CPlayerPed* me = FindPlayerPed(0); me && was) me->Armour() = 0.0f;  // the armour of the battle stays there
     if (g_moneyKept) Cash() = g_moneyBefore, g_moneyKept = false;  // the save's money back, the arena's stays there
+    RestoreSkills();
     game::challenge::End();
     if (g_modeOn)
         if (CPlayerPed* me2 = FindPlayerPed(0)) Cmd(0x048F).I(GetPedRef(me2)).Run();  // the mode: the save's weapons stay away
@@ -4826,6 +4874,7 @@ void Start(int faction, int place, int waves) {
     // waits aside and comes back when the arena is over)
     if (!g_modeOn) g_moneyBefore = Cash(), g_moneyKept = true;
     Cash() = kStartPoints;
+    ResetSkills(!g_modeOn && !g_skillsKept);
     g_break = false;
     g_barsSolid = true;
     SetBreak(true, g_arena.nextWaveMs);
@@ -4837,9 +4886,10 @@ void Start(int faction, int place, int waves) {
             Give(h, WEAPON_PISTOL, 68);
             Cmd(0x01B9).I(h).I(WEAPON_PISTOL).Run();
             me->Health() = std::max(me->Health(), 100.0f);
-            me->Armour() = 0.0f;
         }
+    if (CPlayerPed* me = FindPlayerPed(0)) me->Armour() = 100.0f;  // everyone starts in a vest
     TakeIn();
+    SendScore();
     g_lastSpawns.clear(), g_spawnsNow.clear(), g_lastItemsAt.clear();
     if (g_arena.host) {
         StartGrid();  // the floor's cells, over the next frames (the scene's collision is in by then)
@@ -5283,6 +5333,8 @@ void Update() {
                     if (void* assoc = Call<0x4D68B0, void*>(clump, (uint32_t)anim))  // RpAnimBlendClumpGetAssociation
                         Ref<float>((uintptr_t)assoc + 0x24) = 2.0f;                  // CAnimBlendAssociation::m_Speed
     Rescue(now);
+    static uint64_t scoreMs = 0;  // the score now and then too: one that came in late has everyone's
+    if (now - scoreMs > 3000) scoreMs = now, SendScore();
     if (g_arena.host) DronesFrame(now);
     else DroneCopies();
     if (g_arena.host && g_spotOwn && GridUsable()) {  // an enemy that fell under the upper floors: back up, far from the players
@@ -5481,8 +5533,13 @@ void DrawScoreboard() {
     };
     std::vector<Row> rows;
     rows.push_back({Net().Online() ? Cfg().nickname : std::string(TR("Вы", "You")), {Cash(), g_kills, g_falls}, true, g_spectating});
-    for (auto& [id, sc] : g_scores)
-        if (Net().Online() && Net().Peers().count(id)) rows.push_back({Net().PeerName(id), sc, false, Spectator(id)});
+    if (Net().Online())  // every player in the game, its score once it has sent one ($500 and nothing yet before that)
+        for (auto& [id, peer] : Net().Peers()) {
+            if (id == Net().MyId()) continue;
+            auto it = g_scores.find(id);
+            Score sc = it != g_scores.end() ? it->second : Score{kStartPoints, 0, 0};
+            rows.push_back({Net().PeerName(id), sc, false, Spectator(id)});
+        }
     std::sort(rows.begin(), rows.end(), [](const Row& a, const Row& b) { return a.sc.kills > b.sc.kills; });
     float lh = g.LineHeight(ui::FONT_NORMAL) + 8 * s;
     float w = 620 * s, h = lh * (float)(rows.size() + 1) + 24 * s;

@@ -163,7 +163,7 @@ using WillKillFn = void(__fastcall*)(void*, void*, CPed*, uint8_t*, bool);
 WillKillFn g_origWillKill = nullptr;
 void __fastcall HookWillKill(void* calc, void* edx, CPed* ped, uint8_t* rsp, bool speak) {
     g_origWillKill(calc, edx, ped, rsp, speak);
-    if (!rsp[8] || !Net().Online() || g_dyingMs) return;
+    if (!rsp[8] || (!Net().Online() && !arena::On()) || g_dyingMs) return;
     CPlayerPed* me = FindPlayerPed(0);
     if (ped != me) return;
     if (arena::Spectating()) {  // watching: nothing hurts it
@@ -562,6 +562,7 @@ public:
     void OnPostProcess() override {
         if (!Net().Online() || !core::IsPlayerReady()) {
             if (g_down || g_target >= 0) ResetAll();
+            if (g_wantFall && core::IsPlayerReady()) g_wantFall = false, arena::Fall();  // the arena alone: it watches
             return;
         }
         CPlayerPed* me = FindPlayerPed(0);
@@ -612,6 +613,13 @@ void KnockDown() {
         return;
     }
     me->Health() = std::max(0.0f, me->Health() - 120.0f);
+}
+void ArenaWound() {
+    CPlayerPed* me = core::IsPlayerReady() ? FindPlayerPed(0) : nullptr;
+    if (!me || g_down || g_wantDown || g_dyingMs) return;
+    me->Health() = std::max(me->Health(), 1.0f);
+    if (Net().Online() && CanGoDown(me, 0)) g_wantDown = true;
+    else g_wantFall = true;  // nobody to revive it: it watches till the next wave
 }
 
 bool ReviveKeyPressed() {
