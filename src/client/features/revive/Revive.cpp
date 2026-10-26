@@ -201,7 +201,7 @@ void GoDown(CPlayerPed* me) {
     g_animCheckMs = NowMs();
     Players::Instance().SetLocalDowned(true, (uint8_t)(kDownMs / 1000));
     LeaveAlone(me, true);  // nobody shoots at it or arrests it while it lies there
-    ui::TheChat().AddSystem(Format(TR("Вы ранены: %d с на помощь, %s — сдаться.", "Wounded: %d s for help, hold %s to give up."),
+    ui::TheChat().AddSystem(Format(TR("Вы ранены. Ждите помощи %d с. Держите [%s], чтобы сдаться.", "Wounded. Help has %d s. Hold [%s] to give up."),
                                    (int)(kDownMs / 1000), Key().c_str()));
     LOGI("Wounded: lying for %llu s (revives left %d)", (unsigned long long)(kDownMs / 1000), RevivesLeft());
 }
@@ -587,18 +587,17 @@ std::string ReviveText(std::string& hint) {
         } else if (g_kicker.handle >= 0 && g_kicker.stage == 1) {
             hint = TR("Вас добивают ногами!", "You are being kicked to death!");
         } else {
-            hint = Format(TR("Ждите напарника · удерживайте %s, чтобы сдаться", "Wait for a partner · hold %s to give up"),
-                          Key().c_str());
+            hint = Format(TR("Держите [%s], чтобы сдаться", "Hold [%s] to give up"), Key().c_str());
         }
-        return Format(TR("Вы ранены · %d с", "You are wounded · %d s"), secs);
+        return Format(TR("Вы ранены  %d с", "Wounded  %d s"), secs);
     }
     if (g_target >= 0) {
         int secs = (int)((CprMs() - std::min<uint64_t>(CprMs(), NowMs() - g_cprStart) + 999) / 1000);
-        hint = Format(TR("%s — прервать", "%s — stop"), Key().c_str());
-        return Format(TR("Откачиваете %s · %d с", "Reviving %s · %d s"), Name(g_target).c_str(), secs);
+        hint = Format(TR("[%s] Прервать", "[%s] Stop"), Key().c_str());
+        return Format(TR("Откачиваете %s  %d с", "Reviving %s  %d s"), Name(g_target).c_str(), secs);
     }
     if (g_candidate >= 0) {
-        hint = Format(TR("%s — откачать", "%s — revive"), Key().c_str());
+        hint = Format(TR("[%s] Откачать", "[%s] Revive"), Key().c_str());
         return Format(TR("%s ранен", "%s is wounded"), Name(g_candidate).c_str());
     }
     return {};

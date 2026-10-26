@@ -398,7 +398,7 @@ void RenderConnectMenu() {
     float x = (g.Width() - W) * 0.5f, y = (g.Height() - H) * 0.5f;
     // everyone in the lobby (the host too, for now: to try the characters): the character window right of the lobby
     // (the lobby stays in the middle while both fit)
-    bool picker = online && (flow::InLobby() || arena::InLobby());
+    bool picker = online && (flow::InLobby() || arena::InLobby()) && !flow::HostArena();  // the arena: outfits come from its wardrobe
     float pickW = 380 * s, pickGap = 24 * s, pickH = H;
     if (picker) {
         float need = W + pickGap + pickW, margin = 16 * s;
@@ -448,6 +448,7 @@ void RenderConnectMenu() {
         bool host = net.IsHost();
         bool lobby = flow::InLobby();
         bool arenaLobby = arena::InLobby();
+        bool arenaHost = host && Cfg().gameMode == 2 && !lobby;  // the arena's host in the game: the next arena's choices
         g.Text(FONT_BIG, cx, cy,
                lobby || arenaLobby ? TR("Лобби", "Lobby") : host ? TR("Сервер запущен", "Server running") : TR("Вы в игре", "Connected"), kSaBlue,
                TEXT_SHADOW);
@@ -526,7 +527,7 @@ void RenderConnectMenu() {
         row(net.MyId(), Cfg().nickname, host, net.Rtt(), true);
         for (auto& [id, p] : net.Peers()) row(id, p.name, p.isHost, p.ping, false);
         if (host && net.Peers().empty()) para(TR("Ждём друзей...", "Waiting for your friends..."), kSaMuted);
-        if (arenaLobby) {  // after a lost arena: the host picks the next one and starts it, everyone picks a character
+        if (arenaLobby || arenaHost) {  // the arena mode: the host picks what comes next (it starts by itself)
             cy += 10 * s;
             auto& c = Cfg();
             if (host) {
@@ -543,11 +544,18 @@ void RenderConnectMenu() {
                     c.arenaPlace = (c.arenaPlace + 1 + d + pc + 1) % (pc + 1) - 1;
                 std::string wv = c.arenaWaves ? Format("%d", c.arenaWaves) : std::string(TR("без конца", "no end"));
                 if (int d = w::Selector("lwaves", cx + (third + 14 * s) * 2, cy, third, rowH, wv)) c.arenaWaves = (c.arenaWaves + d + 11) % 11;
-                cy += rowH + 4 * s;
+                cy += rowH + 10 * s;
+                if (!arena::Running()) {
+                    if (w::Button("arnow", cx, cy, cw, bh + 10 * s, TR("Начать арену сейчас", "Start the arena now"), true, true, true)) {
+                        flow::SaveConnectSettings();
+                        arena::StartNow();
+                    }
+                    cy += bh + 14 * s;
+                }
+                para(TR("Следующая арена начнётся сама с этими настройками.", "The next arena starts by itself with these settings."), kSaMuted,
+                     FONT_SMALL, true);
             } else {
-                para(TR("Хост выбирает следующую арену. Выберите персонажа справа.",
-                        "The host picks the next arena. Pick a character on the right."),
-                     kSaMuted, FONT_SMALL, true);
+                para(TR("Хост выбирает следующую арену.", "The host picks the next arena."), kSaMuted, FONT_SMALL, true);
             }
         }
         if (lobby) {  // the host starts the game for everyone, a partner says it is ready
@@ -640,13 +648,7 @@ void RenderConnectMenu() {
             }
             float sx = cx + mw + gap, sw = cw - mw - gap;
             if (!inGame && mode == 2) {
-                // the arena: no save to pick (the world under it is the newest save's; a new game when there is none)
-                hostSlot = -1;
-                for (const auto& sl : g_slots)
-                    if (sl.exists && sl.slot > 0) {
-                        hostSlot = sl.slot;
-                        break;
-                    }
+                hostSlot = -1;  // the arena: always a new game, its prologue left out (no save in it)
             } else if (inGame || mode == 1) {
                 g.Rect(sx, cy, sw, rowH, 0xFF090C10);
                 g.Text(FONT_NORMAL, sx + 12 * s, cy + (rowH - lh) * 0.5f,
@@ -699,7 +701,10 @@ void RenderConnectMenu() {
 
         // the main action: a big menu item in the middle, lit like the selected entry of the game's menus
         bool can = g_tab == 0 ? !Trim(Narrow(g_addr)).empty() : inGame || hostSlot != 0;
-        if ((w::Button("go", cx, cy, cw, bh + 10 * s, g_tab == 0 ? TR("Подключиться", "Connect") : TR("Создать сервер", "Start the server"),
+        const char* goLabel = g_tab == 0                               ? TR("Подключиться", "Connect")
+                              : !inGame && Cfg().gameMode == 2 ? TR("Создать арену", "Create the arena")
+                                                               : TR("Создать сервер", "Start the server");
+        if ((w::Button("go", cx, cy, cw, bh + 10 * s, goLabel,
                        can, true, true) ||
              (enter && can)) &&
             ApplyNick()) {
@@ -717,7 +722,8 @@ void RenderConnectMenu() {
         else if (g_tab == 1 && !inGame && !hostSlot)
             para(TR("В этом слоте нет сохранения.", "This slot has no save."), kSaMuted, FONT_SMALL, true);
         else if (g_tab == 1 && !inGame && Cfg().gameMode == 2)
-            para(TR("Арена начнётся сама. Персонажа выберете в лобби.", "The arena starts by itself. Pick a character in the lobby."),
+            para(TR("Друзья заходят по вашему IP. Арена начнётся сама, когда вы нажмёте «Начать игру» в лобби.",
+                    "Friends join with your IP. The arena starts by itself once you press Start in the lobby."),
                  kSaMuted, FONT_SMALL, true);
         else if (g_tab == 1 && !inGame && Cfg().gameMode == 1)
             para(TR("Все начнут новую игру без сюжета и пролога. Банду каждый выберет в лобби.",

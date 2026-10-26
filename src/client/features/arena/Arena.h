@@ -31,6 +31,8 @@ bool KeyDown(int vk, bool repeat);
 // (the F9 window): the host starts the next one from there
 bool InLobby();
 void LobbyStart();  // host
+bool Running();     // an arena is on now
+void StartNow();    // host: the next arena now (F9)
 int FactionCount();
 std::string FactionTitle(int i);
 int PlaceCount();
