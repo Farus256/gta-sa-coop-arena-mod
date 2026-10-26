@@ -3505,7 +3505,7 @@ void Relocate(int place) {
         g_arena.nextWaveMs = now + PrepMs(true);
     }
     g_breakEndMs = now + PrepMs(true);
-    ui::TheChat().AddSystem(Format(TR("Смена места: %s. Волна и оружие остаются.", "A new place: %s. The wave and the weapons stay."),
+    ui::TheChat().AddSystem(Format(TR("Смена арены: %s. Волна и оружие остаются.", "A new arena: %s. The wave and the weapons stay."),
                                    PlaceName(place).c_str()));
     LOGI("Arena: moved to place %d", place);
 }
@@ -4072,10 +4072,10 @@ void DrawCod() {
         g.Text(ui::FONT_NORMAL, px + 14 * s, py + 14 * s + g.LineHeight(ui::FONT_NORMAL),
                Format(TR("Пропустить: %d из %d", "Skip: %d of %d"), g_voteCount, g_voteNeed), 0xFFFFFFFF, ui::TEXT_SHADOW);
         g.Text(ui::FONT_NORMAL, px + 14 * s, py + 18 * s + g.LineHeight(ui::FONT_NORMAL) * 2,
-               Format(TR("Сменить место: %d из %d", "Another place: %d of %d"), g_mapVoteCount, g_voteNeed), 0xFF90D0FF, ui::TEXT_SHADOW);
+               Format(TR("Сменить арену: %d из %d", "Another arena: %d of %d"), g_mapVoteCount, g_voteNeed), 0xFF90D0FF, ui::TEXT_SHADOW);
         g.Text(ui::FONT_SMALL, px + 14 * s, py + 22 * s + g.LineHeight(ui::FONT_NORMAL) * 3,
-               TR("Y — пропустить · M — сменить место · сквозь баррикады можно пройти",
-                  "Y skips · M moves to another place · the barricades let you through"),
+               TR("Y — пропустить · M — сменить арену · сквозь баррикады можно пройти",
+                  "Y skips · M moves to another arena · the barricades let you through"),
                0xFFB0B0B0, ui::TEXT_SHADOW);
     }
     float x = g.Width() - 40 * s, y = g.Height() * 0.62f;
@@ -4463,7 +4463,7 @@ bool KeyDown(int vk, bool repeat) {
         if (!g_break || repeat) return g_break;
         if (!g_iMapVoted) {
             g_iMapVoted = true;
-            ui::TheChat().AddSystem(TR("Вы проголосовали за смену места.", "You voted for another place."));
+            ui::TheChat().AddSystem(TR("Вы проголосовали за смену арены.", "You voted for another arena."));
             if (g_arena.host) MapVote(Net().MyId());
             else Send(A_MAPVOTE);
         }
