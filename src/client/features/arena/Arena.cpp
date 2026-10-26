@@ -51,6 +51,7 @@
 #include "entities/stealth-knife/StealthKnife.h"
 #include "features/progress/SkinChoice.h"
 #include "features/revive/Revive.h"
+#include "features/cerberus/Cerberus.h"
 #include "entities/session/Flow.h"
 #include "pages/connect-menu/ConnectMenu.h"
 #include "shared/api/net-session/Session.h"
@@ -73,7 +74,6 @@ using game::script::Cmd;
 
 constexpr int PED_TYPE_MISSION1 = 24;
 constexpr int kBossSlot = 10, kBossModel = 290 + kBossSlot - 1;  // the special characters' models: 290-299
-constexpr int kKnifeSlot = 9, kKnifeSpecial = 290 + kKnifeSlot - 1;  // the police's and SWAT's knifeman (Cerberus)
 int g_knifeModel = -1;  // that special character, when the game has it
 std::mt19937 g_rng{(uint32_t)GetTickCount() ^ 0xA2E7u};
 int RandInt(int a, int b) { return a + (int)(g_rng() % (uint32_t)(b - a + 1)); }
@@ -352,30 +352,10 @@ void ShutDoors(bool shut) {
 void LoadKnifeModel() {
     g_knifeModel = -1;
     if (kFactions[g_arena.faction].models[0] != 280 && kFactions[g_arena.faction].models[0] != 285) return;  // the police, SWAT
-    // Not LOAD_SPECIAL_CHARACTER: its name is 8 bytes with no room for the end of the string, and "cerberus" is 8
-    // letters long; the game read on past it and crashed. CStreaming::RequestSpecialModel with the name as it is,
-    // once the archive's list of extra models has it.
-    void* dir = Ref<void*>(0x8E48D0);  // CStreaming::ms_pExtraObjectsDir
-    if (!dir || !CallMethod<0x532450, void*>(dir, "cerberus")) {  // CDirectory::FindItem
-        LOGW("Arena: cerberus.dff is not among the game's extra models");
-        return;
-    }
-    Call<0x409D10>(kKnifeSpecial, "cerberus", 2);  // CStreaming::RequestSpecialModel (STREAMING_GAME_REQUIRED)
-    LoadAllRequestedModels(false);
-    if (!IsModelLoaded(kKnifeSpecial)) {
-        LOGW("Arena: Cerberus did not load");
-        return;
-    }
-    // a model that is no character (no skin's bones: a conversion gone wrong) crashed the game as the ped was made
-    void* info = Ref<void*>(0xA9B0C8 + (uintptr_t)kKnifeSpecial * 4);  // CModelInfo::ms_modelInfoPtrs
-    void* clump = info ? Field<void*>(info, 0x1C) : nullptr;     // CBaseModelInfo::m_pRwObject
-    if (!clump || !Call<0x734A40, void*>(clump)) {                // GetAnimHierarchyFromSkinClump
-        LOGW("Arena: cerberus.dff has no character's skeleton: not used");
-        Cmd(0x0296).I(kKnifeSlot).Run();  // UNLOAD_SPECIAL_CHARACTER
-        return;
-    }
-    g_knifeModel = kKnifeSpecial;
-    LOGI("Arena: the knifemen are Cerberus");
+    cerberus::Ensure();
+    g_knifeModel = cerberus::Model();  // the mod's own Cerberus (coop\cerberus.img), or one in the game's archives
+    if (g_knifeModel >= 0) LOGI("Arena: the knifemen are Cerberus");
+    else LOGW("Arena: no Cerberus: the knifemen are men of the force");
 }
 
 // into the place, a little apart from the others
@@ -2147,6 +2127,7 @@ std::vector<Vest> g_vests;
 std::vector<uint16_t> g_vestIds;  // a partner's: the flamethrower men whose copies are not here yet
 uint64_t g_vestIdsUntil = 0;
 void AddVest(CPed* p) {
+    return;  // no vest to see any more (its armour is still there)
     for (const Vest& v : g_vests)
         if (v.ped == p) return;
     if (!IsObjectModel(1242) || !LoadModelNow(1242) || !HasRoom(ObjectPool(), kKeepObjects, "object")) return;
@@ -3655,7 +3636,6 @@ void Clear() {
     ResetCod();
     SetMarks({});
     if (g_arena.boss >= 0) UnloadBoss();
-    if (g_knifeModel >= 0) Cmd(0x0296).I(kKnifeSlot).Run();  // UNLOAD_SPECIAL_CHARACTER
     g_knifeModel = -1;
     g_paths.clear();
     for (int k = 0; k < 16; ++k) radar::RemoveIcon(9700 + k);

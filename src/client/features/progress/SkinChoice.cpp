@@ -5,6 +5,7 @@
 
 #include "common/lib/log/Log.h"
 #include "common/lib/util/Util.h"
+#include "features/cerberus/Cerberus.h"
 #include "shared/config/Config.h"
 #include "shared/game/Game.h"
 #include "shared/game/Script.h"
@@ -28,6 +29,7 @@ Choice kChoices[] = {
     {280, TRP("Полицейский", "Police officer"), 0xFF2A3A6A, 0xFF1A2040, 0xFF1A2040, TOP_LONG, HEAD_CAP, 0xFF101010, {280, 281, 282}, 3},
     {285, TRP("Спецназ / ФБР", "SWAT / FBI"), 0xFF202428, 0xFF202428, 0xFF202428, TOP_LONG, HEAD_CAP, 0xFF101010, {285, 286}, 2},
     {287, TRP("Солдат", "Soldier"), 0xFF4A5A30, 0xFF4A5A30, 0xFF3A4A28, TOP_LONG, HEAD_CAP, 0xFF2A2018},
+    {297, TRP("Оперативник Cerberus", "Cerberus operative"), 0xFF15181C, 0xFF101214, 0xFF15181C, TOP_LONG, HEAD_CAP, 0xFF0A0A0A},
 };
 bool g_profileKnown = false, g_newcomer = false, g_picked = false;
 int g_choice = 0;
@@ -134,6 +136,16 @@ void ApplyChoice() {
 void Wear(uint16_t model) {
     CPlayerPed* me = FindPlayerPed(0);
     if (!me || me->InVehicle() || me->ModelIndex() == model) return;
+    if (model == 297) {  // Cerberus: the special character the mod keeps in slot 8
+        cerberus::Ensure();
+        if (cerberus::Model() != 297) {
+            ui::TheChat().AddError(TR("Модели Cerberus нет (coop\\cerberus.img).", "No Cerberus model (coop\\cerberus.img)."));
+            return;
+        }
+        Cmd(0x09C7).I(0).I(model).Run();  // SET_PLAYER_MODEL (the slot stays his: not marked unneeded)
+        LOGI("Player model %d (Cerberus)", model);
+        return;
+    }
     if (model && !LoadModelNow(model)) return;
     Cmd(0x09C7).I(0).I(model).Run();        // SET_PLAYER_MODEL
     if (!model) Call<0x5A82C0>(me, false);  // CClothes::RebuildPlayer: CJ in his own clothes again
