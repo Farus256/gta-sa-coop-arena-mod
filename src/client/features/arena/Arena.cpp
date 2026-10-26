@@ -121,6 +121,7 @@ const Boss kBosses[] = {
     {"TORENO", TRP("Майк Торено", "Mike Toreno"), 31},     // 8
 };
 constexpr int kBossCount = (int)(sizeof(kBosses) / sizeof(kBosses[0]));
+constexpr int kTBone = 6;  // T-Bone Mendez: the AK-47 with a grenade launcher under it
 
 struct Place {
     const char* keys[2][2];  // in Russian, in English (the second Russian word with the same English one)
@@ -185,7 +186,7 @@ enum ArenaOp : uint8_t {
     A_START = 1, A_WAVE, A_LEFT, A_BOSS, A_END, A_ITEMS, A_PREP, A_MARK, A_SKIP,
     A_SCORE, A_BARS, A_BOARD, A_REPAIR, A_BOX, A_BOXUSE, A_BOXROLL, A_PERKS, A_PSPAWN, A_GRAB, A_POWER, A_TWINS,
     A_WALLS, A_DROP, A_TAKE, A_TAKEN, A_BUILD, A_LOBBY, A_FLAMER, A_STAGE, A_VOTE, A_VOTES, A_GIVE, A_MAPVOTE, A_MOVE,
-    A_HEALGAS, A_BOSSNAME, A_HIT
+    A_HEALGAS, A_BOSSNAME, A_HIT, A_SHELL
 };
 struct Arena {
     bool on = false, host = false;
@@ -208,7 +209,10 @@ CPed* g_officerPed = nullptr;                // the host's: the Officer
 CPed* g_tagCopies[2] = {nullptr, nullptr};
 uint16_t g_tagIds[2] = {0, 0};
 uint64_t g_tagIdsUntil = 0;
-bool g_fireWave = false;                     // the 10% event: this wave is four flamethrower men and nothing else
+bool g_fireWave = false;
+// this player has T-Bone's AK with the grenade launcher: loaded, or loading till then
+bool g_hasUgl = false, g_uglLoaded = false;
+uint64_t g_uglReadyMs = 0;                     // the 10% event: this wave is four flamethrower men and nothing else
 bool g_lobby = false, g_modeLost = false;  // the arena's game mode: in its lobby now; the last one lost (GameMode)
 void OpenLobby(bool open);
 std::vector<std::pair<int, uint8_t>> g_hiddenSaves;  // the save disks hidden meanwhile (HideSaves): the pickup, its type
@@ -639,6 +643,10 @@ struct Enemy {
     float lastHealth = 0;
     bool retreating = false;
     CVector home;
+    // T-Bone's grenade launcher under his AK: 0 fighting, 1 running back to reload it, 2 reloading (4 s)
+    bool uglLoaded = true;
+    int uglStage = 0;
+    uint64_t uglUntil = 0, nextUglMs = 0;
 };
 struct Squad {
     float angle = 0;  // where round the player it goes (degrees, 180 = behind)
@@ -1735,6 +1743,7 @@ enum DropType : uint8_t { D_AMMO, D_HEALTH, D_SMALL, D_GUN };
 struct Drop {
     uint8_t id = 0, type = 0;
     uint8_t weapon = 0, owner = 0xFF;  // D_GUN: what it is, who put it down (not its to take back for 2 s)
+    uint8_t special = 0;               // D_GUN: 1 T-Bone's AK-47 with the grenade launcher under it
     uint16_t ammo = 0;
     CVector pos;
     int handle = -1;
@@ -1750,7 +1759,9 @@ std::string DropName(const Drop& d) {
         case D_AMMO: return TR("Пополнение патронов", "Ammo refill");
         case D_HEALTH: return TR("Пополнение здоровья", "Health refill");
         case D_SMALL: return TR("Патроны", "Ammo");
-        default: return Format("%s · %d", WeaponName(d.weapon), (int)d.ammo);
+        default:
+            if (d.special == 1) return Format(TR("АК-47 с подствольником · %d", "AK-47 with a grenade launcher · %d"), (int)d.ammo);
+            return Format("%s · %d", WeaponName(d.weapon), (int)d.ammo);
     }
 }
 void ShowDrop(Drop& d) {
@@ -1774,9 +1785,11 @@ void WriteDrop(Writer& w, const Drop& d) {
     w.U8(d.weapon);
     w.U16(d.ammo);
     w.U8(d.owner);
+    w.U8(d.special);
 }
-void SpawnDrop(uint8_t type, const CVector& at, uint8_t weapon = 0, uint16_t ammo = 0, uint8_t owner = 0xFF) {  // host
+void SpawnDrop(uint8_t type, const CVector& at, uint8_t weapon = 0, uint16_t ammo = 0, uint8_t owner = 0xFF, uint8_t special = 0) {  // host
     Drop d;
+    d.special = special;
     d.id = g_nextDrop++;
     if (!g_nextDrop) g_nextDrop = 1;
     d.type = type, d.pos = at, d.weapon = weapon, d.ammo = ammo, d.owner = owner;
@@ -1816,6 +1829,12 @@ void ApplyDrop(const Drop& d, uint8_t by) {
         int w = GunFor(d.weapon);
         if (w) Cmd(0x01B2).I(h).I(w).I(std::max<int>(1, d.ammo)).Run(), Cmd(0x01B9).I(h).I(w).Run();
         ui::TheChat().AddSystem(Format(TR("Вы подобрали: %s.", "You picked up: %s."), DropName(d).c_str()));
+        if (d.special == 1) {
+            g_hasUgl = true;
+            g_uglLoaded = true;
+            ui::TheChat().AddSystem(TR("N — выстрел из подствольного гранатомёта (АК-47 в руках). Перезарядка: N, нужна граната.",
+                                       "N fires the grenade launcher (the AK-47 in hand). Reload: N, a grenade is needed."));
+        }
     }
 }
 void TakeDrop(uint8_t id, uint8_t by) {  // host
@@ -1872,12 +1891,15 @@ void PutDownGun() {
     f.z = 0;
     float l = std::max(0.01f, f.Length());
     CVector at = me->GetPosition() + f * (1.2f / l) - CVector{0, 0, 0.6f};
+    uint8_t special = weapon == 30 && g_hasUgl ? 1 : 0;
+    if (special) g_hasUgl = false;  // the launcher goes with the AK
     Cmd(0x0555).I(GetPedRef(me)).I(weapon).Run();  // REMOVE_WEAPON_FROM_CHAR
-    if (g_arena.host) SpawnDrop(D_GUN, at, weapon, ammo, Net().MyId());
+    if (g_arena.host) SpawnDrop(D_GUN, at, weapon, ammo, Net().MyId(), special);
     else Send(A_GIVE, [&](Writer& wr) {
         wr.Vec({at.x, at.y, at.z});
         wr.U8(weapon);
         wr.U16(ammo);
+        wr.U8(special);
     });
     ui::TheChat().AddSystem(Format(TR("Вы положили %s — подберёт напарник.", "You put down %s for a team mate."), WeaponName(weapon)));
 }
@@ -3203,6 +3225,188 @@ void ClearGas() {
     g_gas.clear();
 }
 
+// ---- the grenade launcher's shells (T-Bone's, and a player's with his AK): fast and flat (30 m/s, half the
+// grenade's fall), farther than a thrown grenade, and they go off the moment they hit anything (a wall, the floor, an
+// object, a person). The game that fired one sets it off (CExplosion::AddExplosion in the shooter's name: Fire sends the
+// blast to the others); the other games fly a copy to show it.
+constexpr float kShellSpeed = 30.0f, kShellGravity = 9.8f;
+struct Shell {
+    CVector pos, vel;
+    int obj = -1;
+    CEntity* creator = nullptr;  // the shooter: set only in its own game (the blast is set off there)
+    bool real = false;
+    uint64_t until = 0;
+};
+std::vector<Shell> g_shells;
+void AddShell(const CVector& from, const CVector& vel, CEntity* creator, bool real) {
+    Shell sh;
+    sh.pos = from, sh.vel = vel, sh.creator = creator, sh.real = real;
+    sh.until = NowMs() + 5000;
+    if (IsObjectModel(342) && LoadModelNow(342)) sh.obj = MakeFloating(342, from, 0.0f);
+    g_shells.push_back(sh);
+}
+void FireShell(const CVector& from, const CVector& vel, CEntity* creator) {
+    Send(A_SHELL, [&](Writer& w) {
+        w.Vec({from.x, from.y, from.z});
+        w.Vec({vel.x, vel.y, vel.z});
+    });
+    AddShell(from, vel, creator, true);
+    CallMethod<0x506EA0>((void*)0xB6BC90, 42 /* AE_FRONTEND_FIRE_FAIL_ROCKET: a dull thump */, 0.0f, 0.7f);
+}
+// the velocity that brings a shell from `from` to `to` at about kShellSpeed
+CVector ShellVel(const CVector& from, const CVector& to) {
+    CVector d = to - from;
+    float t = std::max(0.15f, d.Length() / kShellSpeed);
+    return {d.x / t, d.y / t, (d.z + 0.5f * kShellGravity * t * t) / t};
+}
+void UpdateShells(uint64_t now) {
+    float dt = std::min(0.1f, TimeStep() / 50.0f);
+    for (auto it = g_shells.begin(); it != g_shells.end();) {
+        Shell& sh = *it;
+        CVector next = sh.pos + sh.vel * dt, hit, n;
+        sh.vel.z -= kShellGravity * dt;
+        bool boom = SawRay(sh.pos, next, hit, n);
+        if (!boom) hit = next;
+        // a person on the way (not the shooter)
+        if (!boom && sh.real)
+            if (CPoolHeader* pool = PedPool())
+                for (int i = 0; i < pool->size && !boom; ++i) {
+                    if (pool->byteMap[i] < 0) continue;
+                    auto* q = (CPed*)(pool->objects + (size_t)i * kPedPoolElemSize);
+                    if ((CEntity*)q == sh.creator || q->Health() <= 0.0f) continue;
+                    if ((q->GetPosition() - next).Length() < 0.9f) boom = true, hit = next;
+                }
+        if (boom || now > sh.until) {
+            DelObj(sh.obj);
+            if (sh.real && boom)
+                Call<0x736A50>((CEntity*)nullptr, sh.creator, 0 /* EXPLOSION_GRENADE */, hit, (uint32_t)0, (uint8_t)1, -1.0f, (uint8_t)0);  // AddExplosion
+            it = g_shells.erase(it);
+            continue;
+        }
+        sh.pos = next;
+        if (sh.obj >= 0 && GetObject(sh.obj)) Cmd(0x01BC).I(sh.obj).F(sh.pos.x).F(sh.pos.y).F(sh.pos.z).Run();
+        ++it;
+    }
+}
+void ClearShells() {
+    for (Shell& sh : g_shells) DelObj(sh.obj);
+    g_shells.clear();
+}
+
+// T-Bone: fights with his AK; a player in sight 7-40 m off and the launcher loaded: a shell at him, then he runs to the
+// back (the farthest spot from the players within 30 m), reloads it there for 4 s and comes back into the fight
+bool TBone(CPed* p, Enemy& e, CPed* t, float d, bool sees, uint64_t now) {
+    int h = GetPedRef(p);
+    if (e.uglStage == 1) {
+        if ((p->GetPosition() - CVector{0, 0, 1.0f} - e.routeTo).Length2D() < 1.3f || now > e.uglUntil) {
+            e.uglStage = 2;
+            e.uglUntil = now + 4000;
+            e.routing = false;
+            Cmd(0x0687).I(h).Run();
+            if (EnsureBlock("RIFLE")) Cmd(0x0605).I(h).S("RIFLE_load").S("RIFLE").F(4.0f).I(1).I(0).I(0).I(0).I(4000).Run();  // reloading
+        }
+        return true;
+    }
+    if (e.uglStage == 2) {
+        if (now >= e.uglUntil) {
+            e.uglStage = 0;
+            e.uglLoaded = true;
+            e.nextUglMs = now + 3000;
+            Cmd(0x0687).I(h).Run();
+            SetOn(p, e, t);
+        }
+        return true;
+    }
+    if (!e.uglLoaded || !sees || d < 7.0f || d > 40.0f || now < e.nextUglMs) return false;
+    CVector to = t->GetPosition() - p->GetPosition();
+    Cmd(0x0173).I(h).F(std::atan2(-to.x, to.y) * 57.29578f).Run();  // at him
+    float l = std::max(0.1f, to.Length2D());
+    CVector from = p->GetPosition() + CVector{to.x / l, to.y / l, 0.0f} * 0.7f + CVector{0, 0, 0.45f};
+    FireShell(from, ShellVel(from, t->GetPosition() - CVector{0, 0, 0.5f}), p);
+    e.uglLoaded = false;
+    // to the back
+    std::vector<CVector> players = PlayerSpots();
+    CVector back = p->GetPosition() - CVector{0, 0, 1.0f};
+    float best = -1;
+    if (GridUsable())
+        for (int k : StandCells()) {
+            CVector c = g_cells[(size_t)k].p;
+            if ((c - p->GetPosition()).Length() > 30.0f) continue;
+            float dp = DistToPlayers(c + CVector{0, 0, 1.0f}, players);
+            if (dp > best) best = dp, back = c;
+        }
+    e.uglStage = 1;
+    e.uglUntil = now + 9000;
+    e.routing = false;
+    GoTo(p, e, back, 7);
+    return true;
+}
+
+// a player's launcher (N): a shell where the camera looks; empty, N loads a grenade into it (1.5 s)
+int GrenadesHeld(CPlayerPed* me) {
+    for (int k = 0; k < NUM_WEAPON_SLOTS; ++k)
+        if (me->Weapons()[k].type == WEAPON_GRENADE) return me->Weapons()[k].ammoTotal;
+    return 0;
+}
+void PlayerUgl() {
+    CPlayerPed* me = FindPlayerPed(0);
+    if (!me || me->Health() <= 0.0f || me->InVehicle()) return;
+    uint64_t now = NowMs();
+    if (g_uglReadyMs && now >= g_uglReadyMs) g_uglReadyMs = 0, g_uglLoaded = true;
+    if (g_uglReadyMs) return;  // loading
+    if (me->ActiveWeapon().type != 30) {
+        ui::TheChat().AddError(TR("Возьмите АК-47 в руки.", "Take the AK-47 in hand."));
+        return;
+    }
+    if (g_uglLoaded) {
+        CVector f = cam::Front();
+        float l = std::max(0.01f, f.Length());
+        f = f * (1.0f / l);
+        CVector from = me->GetPosition() + f * 0.8f + CVector{0, 0, 0.5f};
+        FireShell(from, f * kShellSpeed + CVector{0, 0, 1.5f}, me);
+        g_uglLoaded = false;
+        return;
+    }
+    for (int k = 0; k < NUM_WEAPON_SLOTS; ++k) {
+        CWeapon& w = me->Weapons()[k];
+        if (w.type != WEAPON_GRENADE || w.ammoTotal <= 0) continue;
+        --w.ammoTotal;
+        w.ammoInClip = std::min(w.ammoInClip, w.ammoTotal);
+        if (w.ammoTotal <= 0) Cmd(0x0555).I(GetPedRef(me)).I(WEAPON_GRENADE).Run();  // the last one went in
+        g_uglReadyMs = now + 1500;
+        Cmd(0x01B9).I(GetPedRef(me)).I(30).Run();
+        if (EnsureBlock("RIFLE")) Cmd(0x0A1A).I(GetPedRef(me)).S("RIFLE_load").S("RIFLE").F(4.0f).I(0).I(0).I(0).I(0).I(1500).Run();
+        return;
+    }
+    ui::TheChat().AddError(TR("Для перезарядки подствольника нужна граната.", "A grenade is needed to reload the launcher."));
+}
+
+// /arena тибон (the host, an arena on): T-Bone comes now, some 12 m in front of the host, to try him out
+void SpawnTBone() {
+    CPlayerPed* me = FindPlayerPed(0);
+    if (!me) return;
+    int b = kTBone;
+    Send(A_BOSS, [b](Writer& wr) { wr.U8((uint8_t)b); });
+    LoadBoss(b);
+    g_arena.boss = b;
+    int model = IsModelLoaded(kBossModel) ? kBossModel : kFactions[g_arena.faction].models[0];
+    CVector f = cam::Front();
+    f.z = 0;
+    float l = std::max(0.01f, f.Length());
+    CVector want = me->GetPosition() + f * (12.0f / l), at = want;
+    if (GridUsable()) {
+        float best = 1e9f;
+        for (int k : StandCells()) {
+            float dd = (g_cells[(size_t)k].p + CVector{0, 0, 1.0f} - want).Length();
+            if (dd < best) best = dd, at = g_cells[(size_t)k].p + CVector{0, 0, 1.0f};
+        }
+    }
+    g_squads.push_back(Squad{});
+    int h = MakeEnemy(model, 30, 100, 100, 85, at, (int)g_squads.size() - 1, R_BOSS, false);
+    if (CPed* p = h >= 0 ? GetPed(h) : nullptr) g_bossPed = p;
+    ui::TheChat().AddSystem(TR("Ти-Бон Мендез вызван (тест).", "T-Bone Mendez is here (a test)."));
+}
+
 void Tactics() {
     uint64_t now = NowMs();
     // a squad's push: all of it at the players together
@@ -3235,7 +3439,8 @@ void Tactics() {
         bool sees = Clear(eye, at);
         // stuck: no step on in 4 s, the player out of its sight and not next to it
         bool still = e.mode == M_COVER_HOLD || (e.role == R_SNIPER && e.mode != M_RELOCATE) || (e.role == R_KNIFE && e.waitSince) ||
-                     (e.mode == M_BREACH && e.tearing) || e.cprUntil || e.role == R_OFFICER || (e.role == R_SAW && e.sawStage != 0);
+                     (e.mode == M_BREACH && e.tearing) || e.cprUntil || e.role == R_OFFICER || (e.role == R_SAW && e.sawStage != 0) ||
+                     e.uglStage == 2;
         if ((p->GetPosition() - e.lastPos).Length() > 0.7f || still || sees || d < 4.0f) {
             e.lastPos = p->GetPosition();
             e.lastMoveMs = now;
@@ -3261,6 +3466,7 @@ void Tactics() {
             Saw(p, e, t, d, sees, now);
             continue;
         }
+        if (e.role == R_BOSS && g_arena.boss == kTBone && TBone(p, e, t, d, sees, now)) continue;
         if (e.role == R_OFFICER) {
             Officer(p, e, t, d, sees, now);
             continue;
@@ -3444,6 +3650,9 @@ void Clear() {
     g_toRaise.clear();
     ClearVests();
     ClearGas();
+    ClearShells();
+    g_hasUgl = g_uglLoaded = false;
+    g_uglReadyMs = 0;
     g_sawPed = g_officerPed = nullptr;
     g_tagCopies[0] = g_tagCopies[1] = nullptr;
     g_tagIds[0] = g_tagIds[1] = 0;
@@ -3608,6 +3817,11 @@ void Handle(uint8_t from, Reader& r) {
         if (r.Ok() && g_arena.on) g_scores[from] = pts;
         return;
     }
+    if (r.Ok() && op == A_SHELL && from != Net().HostId()) {  // a partner's own launcher
+        Vec3 f = r.Vec(), v = r.Vec();
+        if (r.Ok() && g_arena.on) AddShell({f.x, f.y, f.z}, {v.x, v.y, v.z}, nullptr, false);
+        return;
+    }
     if (r.Ok() && op == A_VOTE) {
         if (g_arena.on && g_arena.host) Vote(from);
         return;
@@ -3620,7 +3834,8 @@ void Handle(uint8_t from, Reader& r) {
         Vec3 v = r.Vec();
         uint8_t weapon = r.U8();
         uint16_t ammo = r.U16();
-        if (r.Ok() && g_arena.on && g_arena.host && weapon > 0 && weapon <= 38) SpawnDrop(D_GUN, {v.x, v.y, v.z}, weapon, ammo, from);
+        uint8_t special = r.U8();
+        if (r.Ok() && g_arena.on && g_arena.host && weapon > 0 && weapon <= 38) SpawnDrop(D_GUN, {v.x, v.y, v.z}, weapon, ammo, from, special == 1 ? 1 : 0);
         return;
     }
     if (r.Ok() && op == A_TAKE) {
@@ -3722,6 +3937,9 @@ void Handle(uint8_t from, Reader& r) {
         if (r.Ok()) g_voteCount = c, g_voteNeed = std::max<int>(1, n), g_mapVoteCount = m;
     } else if (op == A_HIT) {
         KnockDown();  // the Butcher's charge ran into this player
+    } else if (op == A_SHELL) {
+        Vec3 f = r.Vec(), v = r.Vec();
+        if (r.Ok()) AddShell({f.x, f.y, f.z}, {v.x, v.y, v.z}, nullptr, false);  // a copy to see: the blast comes from its game
     } else if (op == A_HEALGAS) {
         Vec3 f = r.Vec(), v = r.Vec();
         if (r.Ok()) AddGas({f.x, f.y, f.z}, {v.x, v.y, v.z});
@@ -3765,6 +3983,7 @@ void Handle(uint8_t from, Reader& r) {
         d.weapon = r.U8();
         d.ammo = r.U16();
         d.owner = r.U8();
+        d.special = r.U8();
         if (r.Ok() && d.type <= D_GUN && d.weapon <= 46) AddDrop(d);
     } else if (op == A_TAKEN) {
         uint8_t id = r.U8(), by = r.U8();
@@ -3903,6 +4122,8 @@ void Update() {
     SpinBox(now);
     UpdateDrops(now);
     UpdateGas(now);
+    UpdateShells(now);
+    if (g_uglReadyMs && now >= g_uglReadyMs) g_uglReadyMs = 0, g_uglLoaded = true;
     TagCopies();
     if (g_arena.host) {
         SawFrame(now);
@@ -3919,6 +4140,8 @@ void Update() {
         if (g_dead && g_arena.wave > g_deadWave) Rejoin();  // a new wave since its death: back in
         if (me->Health() <= 0.0f && !g_dead) {
             g_dead = true;
+            g_hasUgl = g_uglLoaded = false;  // the AK goes with the death
+            g_uglReadyMs = 0;
             g_deadWave = g_arena.wave;
             AddPoints(-g_points / 10);
             if (Net().Online())
@@ -3950,6 +4173,7 @@ void Update() {
             if (RandInt(0, 99) < 12) SpawnDrop(D_SMALL, at);  // a common enemy: now and then a few clips, never its gun
             continue;
         }
+        if (qe.role == R_BOSS && g_arena.boss == kTBone) SpawnDrop(D_GUN, at + CVector{0, 0.7f, 0}, 30, 300, 0xFF, 1);  // his AK
         if (qe.role == R_BOSS) {
             SpawnDrop(D_AMMO, at + CVector{0.6f, 0, 0});
             SpawnDrop(D_HEALTH, at - CVector{0.6f, 0, 0});
@@ -4085,6 +4309,15 @@ void DrawCod() {
         g.Text(ui::FONT_NORMAL, x - 130 * s, y - t * 40 * s, p.text, ui::WithAlpha(p.color, 1.0f - t), ui::TEXT_RIGHT | ui::TEXT_OUTLINE);
     }
     y += g.LineHeight(ui::FONT_BIG);
+    if (g_hasUgl) {
+        CPlayerPed* me = FindPlayerPed(0);
+        std::string t = g_uglReadyMs ? std::string(TR("Подствольник: заряжается...", "Launcher: loading..."))
+                        : g_uglLoaded ? std::string(TR("Подствольник: заряжен · N — огонь", "Launcher: loaded · N fires"))
+                                      : Format(TR("Подствольник: пуст · N — зарядить (гранат: %d)", "Launcher: empty · N loads (grenades: %d)"),
+                                               me ? GrenadesHeld(me) : 0);
+        g.Text(ui::FONT_SMALL, x, y, t, g_uglLoaded ? 0xFF80FF80 : 0xFFFFB060, ui::TEXT_RIGHT | ui::TEXT_OUTLINE);
+        y += g.LineHeight(ui::FONT_SMALL) + 4 * s;
+    }
     for (auto& [id, pts] : g_scores) {
         if (!Net().Online()) break;
         g.Text(ui::FONT_SMALL, x, y, Format("%s  %d", Net().PeerName(id).c_str(), pts), 0xD0FFFFFF, ui::TEXT_RIGHT | ui::TEXT_OUTLINE);
@@ -4244,6 +4477,8 @@ public:
         g_vests.clear();
         g_vestIds.clear();
         g_gas.clear();
+        g_shells.clear();
+        g_hasUgl = g_uglLoaded = false;
         g_sawPed = g_officerPed = nullptr;
         g_tagCopies[0] = g_tagCopies[1] = nullptr;
         g_spinHandle = -1;
@@ -4330,6 +4565,11 @@ public:
                 End(true);
                 ui::TheChat().AddSystem(TR("Арена остановлена.", "The arena is stopped."));
             }
+            return true;
+        }
+        if (a0 == "тибон" || a0 == "тибоун" || a0 == "tbone") {  // a test: T-Bone now
+            if (!g_arena.on || !g_arena.taken) ui::TheChat().AddError(TR("Сначала начните арену.", "Start an arena first."));
+            else SpawnTBone();
             return true;
         }
         // the host's own spots for this place: where it stands now
@@ -4459,6 +4699,11 @@ bool KeyDown(int vk, bool repeat) {
     if (!On() || !ReviveText(hint).empty()) return false;
     if (vk == 'H') return !repeat && TryBuild();
     if (vk == 'J') return !repeat && (PutDownGun(), true);
+    if (vk == 'N') {  // T-Bone's launcher; without it N goes on (a side activity's "no")
+        if (!g_hasUgl) return false;
+        if (!repeat) PlayerUgl();
+        return true;
+    }
     if (vk == 'M') {  // the vote for another place, between the waves
         if (!g_break || repeat) return g_break;
         if (!g_iMapVoted) {

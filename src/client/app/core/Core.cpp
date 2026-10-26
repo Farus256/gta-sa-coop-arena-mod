@@ -451,7 +451,7 @@ bool OnKeyDown(int vk, bool repeat) {
     }
     if (ui::TheChat().IsOpen()) return true;
     // the arena's E (a barricade, the mystery box, a perk): held, it goes on repairing; its repeats do not reach the game
-    if ((vk == cfg.reviveKey || vk == 'H' || vk == 'Y' || vk == 'M' || vk == 'J') && !game::MenuActive() && IsPlayerReady() && arena::KeyDown(vk, repeat)) return true;
+    if ((vk == cfg.reviveKey || vk == 'H' || vk == 'Y' || vk == 'M' || vk == 'J' || vk == 'N') && !game::MenuActive() && IsPlayerReady() && arena::KeyDown(vk, repeat)) return true;
     if (repeat) return false;
     if (vk == VK_ESCAPE && CutsceneSkipDecline()) return true;  // "watch on", not the pause menu
     if ((vk == 'Y' || vk == 'N') && !game::MenuActive() && SideCallKey(vk == 'Y')) return true;  // a side activity's call
