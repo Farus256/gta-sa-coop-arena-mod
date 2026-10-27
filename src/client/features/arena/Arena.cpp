@@ -197,7 +197,7 @@ enum ArenaOp : uint8_t {
     A_START = 1, A_WAVE, A_LEFT, A_BOSS, A_END, A_ITEMS, A_PREP, A_MARK, A_SKIP,
     A_SCORE, A_BARS, A_BOARD, A_REPAIR, A_BOX, A_BOXUSE, A_BOXROLL, A_PERKS, A_PSPAWN, A_GRAB, A_POWER, A_TWINS,
     A_WALLS, A_DROP, A_TAKE, A_TAKEN, A_BUILD, A_LOBBY, A_FLAMER, A_STAGE, A_VOTE, A_VOTES, A_GIVE, A_MAPVOTE, A_MOVE,
-    A_HEALGAS, A_BOSSNAME, A_HIT, A_SHELL, A_SPEC, A_BOXTAKEN, A_SPOT, A_DRONEHIT, A_ALERT /* not used any more */, A_GUARDNAME, A_GUARDREQ, A_ZONE, A_EBAR, A_SAWHIT, A_HALVE
+    A_HEALGAS, A_BOSSNAME, A_HIT, A_SHELL, A_SPEC, A_BOXTAKEN, A_SPOT, A_DRONEHIT, A_ALERT /* not used any more */, A_GUARDNAME, A_GUARDREQ, A_ZONE, A_EBAR, A_SAWHIT, A_HALVE, A_PROPS
 };
 struct Arena {
     bool on = false, host = false;
@@ -849,13 +849,16 @@ bool NearBase(const CVector& p) {
     return (p - kPlaces[g_arena.place].pos).Length2D() < 20.0f;
 }
 CVector MemberSpot(const CVector& anchor, int k);
+void AutoZones();
 CVector SpawnSpot(float angle, float halfSector, float minApart) {
     const Place& pl = kPlaces[g_arena.place];
     std::vector<CVector> players = PlayerSpots();
-    if (!g_enemyPts.empty()) {  // the host's own points: one of them far from the players, beside it
-        CVector best = g_enemyPts[0];
+    if (g_enemyPts.empty() && CrackPlace() && g_arena.host) AutoZones();  // the crack palace: they come in at its zones
+    const std::vector<CVector>& pts = !g_enemyPts.empty() ? g_enemyPts : CrackPlace() ? g_zones : g_enemyPts;
+    if (!pts.empty()) {  // the host's own points (or the zones): one of them far from the players, beside it
+        CVector best = pts[0];
         float score = -1e9f;
-        for (const CVector& q : g_enemyPts) {
+        for (const CVector& q : pts) {
             float sc = DistToPlayers(q, players) + Rand(0.0f, 8.0f);
             if (sc > score) score = sc, best = q;
         }
@@ -2115,16 +2118,21 @@ void Anchor(int h) {
 // player alone) and a drinks machine (E: $10, full health)
 struct Prop {
     CVector pos;
+    float heading = 0;
     int handle = -1;
 };
-Prop g_radio, g_soda;
+std::vector<Prop> g_radios, g_sodas;
+// the host's own spots for them (/arena радио, /arena газировка, up to 4 each; every game hears them, A_PROPS): with
+// none, one of each by the box
+std::vector<Prop> g_radioSpots, g_sodaSpots;
 int g_station = -1;  // this player's radio: -1 off, 0..10 the game's stations (their audio zones 52..62)
 const char* const kStations[11] = {"Playback FM", "K-Rose", "K-DST", "Bounce FM", "SF-UR", "Radio Los Santos", "Radio X",
                                    "CSR 103.9", "K-Jah West", "Master Sounds 98.3", "WCTR"};
 constexpr int kSodaCost = 10;
 void DelProps() {
-    DelObj(g_radio.handle);
-    DelObj(g_soda.handle);
+    for (Prop& p : g_radios) DelObj(p.handle);
+    for (Prop& p : g_sodas) DelObj(p.handle);
+    g_radios.clear(), g_sodas.clear();
 }
 bool BesideBox(float side, CVector& at) {  // on the floor beside the box: side metres to its right (left: below 0)
     float r = g_box.heading / 57.29578f;
@@ -2137,21 +2145,37 @@ bool BesideBox(float side, CVector& at) {  // on the floor beside the box: side 
 }
 void ShowProps() {
     DelProps();
-    if (!g_box.placed) return;
     float lift = 0, height = 0;
     int radio = PickModel({2226, 2103, 2102});  // a boombox, a hi-fi
     int soda = PickModel({955, 1775, 956});      // a Sprunk machine
+    auto make = [&](std::vector<Prop>& out, int model, const CVector& at, float heading) {
+        Prop p;
+        p.pos = at, p.heading = heading;
+        p.handle = MakeObj(model, at, heading, lift, height);
+        Anchor(p.handle);
+        out.push_back(p);
+    };
     CVector at;
-    if (radio >= 0 && (BesideBox(-2.4f, at) || BesideBox(4.6f, at))) {
-        g_radio.pos = at;
-        g_radio.handle = MakeObj(radio, at, g_box.heading, lift, height);
-        Anchor(g_radio.handle);
+    if (radio >= 0) {
+        for (const Prop& sp : g_radioSpots) make(g_radios, radio, sp.pos, sp.heading);
+        if (g_radioSpots.empty() && g_box.placed && (BesideBox(-2.4f, at) || BesideBox(4.6f, at))) make(g_radios, radio, at, g_box.heading);
     }
-    if (soda >= 0 && (BesideBox(-4.4f, at) || BesideBox(6.6f, at) || BesideBox(-2.4f, at))) {
-        g_soda.pos = at;
-        g_soda.handle = MakeObj(soda, at, g_box.heading, lift, height);
-        Anchor(g_soda.handle);
+    if (soda >= 0) {
+        for (const Prop& sp : g_sodaSpots) make(g_sodas, soda, sp.pos, sp.heading);
+        if (g_sodaSpots.empty() && g_box.placed && (BesideBox(-4.4f, at) || BesideBox(6.6f, at) || BesideBox(-2.4f, at)))
+            make(g_sodas, soda, at, g_box.heading);
     }
+}
+void SendProps() {  // host
+    Send(A_PROPS, [](Writer& w) {
+        for (auto* list : {&g_radioSpots, &g_sodaSpots}) {
+            w.U8((uint8_t)std::min<size_t>(list->size(), 4));
+            for (size_t i = 0; i < list->size() && i < 4; ++i) {
+                w.Vec({(*list)[i].pos.x, (*list)[i].pos.y, (*list)[i].pos.z});
+                w.F32((*list)[i].heading);
+            }
+        }
+    });
 }
 void ShowWardrobe() {  // every game: by the box, to its right, on the floor
     ShowProps();
@@ -2865,6 +2889,7 @@ void LoadOwnPoints() {
     g_hasOwnSpawn = false;
     g_enemyPts.clear();
     g_zones.clear();
+    g_radioSpots.clear(), g_sodaSpots.clear();
     Ini ini;
     if (!ini.Load(SpotsPath())) return;
     std::string sec = PlaceSection();
@@ -2875,6 +2900,11 @@ void LoadOwnPoints() {
         if (ReadVec(ini.Get(sec, Format("enemy%d", k)), p, h)) g_enemyPts.push_back(p);
     for (int k = 1; k <= 4; ++k)
         if (ReadVec(ini.Get(sec, Format("zone%d", k)), p, h)) g_zones.push_back(p);
+    for (int k = 1; k <= 4; ++k) {
+        Prop pr;
+        if (ReadVec(ini.Get(sec, Format("radio%d", k)), p, h)) pr.pos = p, pr.heading = h, g_radioSpots.push_back(pr);
+        if (ReadVec(ini.Get(sec, Format("soda%d", k)), p, h)) pr.pos = p, pr.heading = h, g_sodaSpots.push_back(pr);
+    }
     if (g_hasOwnSpawn || !g_enemyPts.empty() || !g_zones.empty())
         LOGI("Arena: own points here: spawn %d, %d enemy points, %d zones", g_hasOwnSpawn ? 1 : 0, (int)g_enemyPts.size(), (int)g_zones.size());
 }
@@ -2955,6 +2985,23 @@ void SaveSpot(const std::string& what) {
         ini.Set(sec, Format("bar%d", k), line);
         ui::TheChat().AddSystem(Format(TR("Баррикада %d сохранена: враги придут из-за вашей спины. Появится со следующей арены.",
                                           "Barricade %d kept: the enemies come from behind your back. It is there from the next arena on."), k));
+    } else if (what == "radio" || what == "soda") {
+        bool radio = what == "radio";
+        std::vector<Prop>& list = radio ? g_radioSpots : g_sodaSpots;
+        int k = 1;
+        while (k <= 4 && !ini.Get(sec, Format("%s%d", what.c_str(), k)).empty()) ++k;
+        if (k > 4) {
+            ui::TheChat().AddError(TR("Уже 4 для этого места.", "4 for this place already."));
+            return;
+        }
+        ini.Set(sec, Format("%s%d", what.c_str(), k), line);
+        Prop pr;
+        pr.pos = p, pr.heading = h;
+        list.push_back(pr);
+        ShowProps();
+        if (g_arena.host) SendProps();
+        ui::TheChat().AddSystem(Format(radio ? TR("Радио %d поставлено здесь (сохранено для этого места).", "Radio %d put here (kept for this place).")
+                                             : TR("Автомат %d поставлен здесь (сохранено для этого места).", "Machine %d put here (kept for this place)."), k));
     } else if (what == "spawn") {
         ini.Set(sec, "spawn", line);
         ui::TheChat().AddSystem(TR("Точка появления игроков сохранена (со следующей арены).", "The players' spot to come in at is kept (from the next arena on)."));
@@ -2975,7 +3022,11 @@ void SaveSpot(const std::string& what) {
     } else if (what == "reset") {
         for (const char* key : {"box", "spawn"}) ini.Set(sec, key, "");
         for (int k = 1; k <= 8; ++k) ini.Set(sec, Format("enemy%d", k), "");
-        for (int k = 1; k <= 4; ++k) ini.Set(sec, Format("zone%d", k), "");
+        for (int k = 1; k <= 4; ++k) {
+            ini.Set(sec, Format("zone%d", k), "");
+            ini.Set(sec, Format("radio%d", k), "");
+            ini.Set(sec, Format("soda%d", k), "");
+        }
         for (int k = 1; k <= kMaxBars; ++k) ini.Set(sec, Format("bar%d", k), "");
         for (int k = 1; k <= 8; ++k) ini.Set(sec, Format("wall%d", k), "");
         ui::TheChat().AddSystem(TR("Свои места для этого места забыты: мод снова расставит всё сам.",
@@ -3012,13 +3063,13 @@ void FindNear() {
         CVector d = g_ward.pos - at;
         if (d.Length2D() < 2.2f && std::fabs(d.z) < 2.0f && d.Length2D() < best) best = d.Length2D(), g_nearKind = N_WARD, g_nearIdx = 0;
     }
-    if (g_radio.handle >= 0) {
-        CVector d = g_radio.pos - at;
-        if (d.Length2D() < 1.8f && std::fabs(d.z) < 2.0f && d.Length2D() < best) best = d.Length2D(), g_nearKind = N_RADIO, g_nearIdx = 0;
+    for (const Prop& pr : g_radios) {
+        CVector d = pr.pos - at;
+        if (pr.handle >= 0 && d.Length2D() < 1.8f && std::fabs(d.z) < 2.0f && d.Length2D() < best) best = d.Length2D(), g_nearKind = N_RADIO, g_nearIdx = 0;
     }
-    if (g_soda.handle >= 0) {
-        CVector d = g_soda.pos - at;
-        if (d.Length2D() < 1.8f && std::fabs(d.z) < 2.0f && d.Length2D() < best) best = d.Length2D(), g_nearKind = N_SODA, g_nearIdx = 0;
+    for (const Prop& pr : g_sodas) {
+        CVector d = pr.pos - at;
+        if (pr.handle >= 0 && d.Length2D() < 1.8f && std::fabs(d.z) < 2.0f && d.Length2D() < best) best = d.Length2D(), g_nearKind = N_SODA, g_nearIdx = 0;
     }
     for (size_t i = 0; i < g_drops.size(); ++i) {  // a team mate's weapon that would take the place of one this player holds
         const Drop& dr = g_drops[i];
@@ -3382,6 +3433,7 @@ void SpawnWave() {
     OutfitWaveStart();
     SendBars();
     if (g_hasSpot) SendSpot();  // for whoever came in late
+    SendProps();
     int w = g_arena.wave;
     g_operator = nullptr;
     g_dronesLeft = 0;
@@ -5302,6 +5354,7 @@ void Relocate(int place) {
     g_box = BoxState{};
     ShutDoors(false);
     ForgetSpot();
+    g_radioSpots.clear(), g_sodaSpots.clear();
     ClearEBars();
     g_zoneNow = -1;
     g_arena.place = place;
@@ -5406,6 +5459,7 @@ void Start(int faction, int place, int waves) {
     ForgetSpot();
     g_station = -1;
     g_bossUgl = g_bossKatana = false;
+    g_radioSpots.clear(), g_sodaSpots.clear();
     // every arena from the same money: what was left of the last one is gone (out of the mode the save's own money
     // waits aside and comes back when the arena is over)
     if (!g_modeOn) g_moneyBefore = Cash(), g_moneyKept = true;
@@ -5648,6 +5702,21 @@ void Handle(uint8_t from, Reader& r) {
         if (r.Ok()) {
             SetBreak(true, NowMs() + (uint64_t)secs * 1000);
         }
+    } else if (op == A_PROPS) {
+        std::vector<Prop> lists[2];
+        for (auto& list : lists) {
+            uint8_t n = r.U8();
+            for (int k = 0; k < n && k < 4; ++k) {
+                Prop pr;
+                Vec3 v = r.Vec();
+                pr.pos = {v.x, v.y, v.z};
+                pr.heading = r.F32();
+                list.push_back(pr);
+            }
+        }
+        if (!r.Ok()) return;
+        g_radioSpots = lists[0], g_sodaSpots = lists[1];
+        ShowProps();
     } else if (op == A_ZONE) {
         int8_t idx = r.I8();
         Vec3 v = r.Vec();
@@ -5972,6 +6041,8 @@ void Update() {
         ClearBars();  // no barricades of the mod's own: the players build them (H), the host keeps its own (/arena баррикада)
         PlaceBox();
         bool own = LoadSpots();  // the host's own spots for this place (/arena ящик, баррикада)
+        ShowProps();
+        SendProps();
         ClearWalls();  // no weapons on the walls any more
         if (own) LOGI("Arena: the host's own spots used");
     }
@@ -6285,20 +6356,20 @@ void DrawDash() {
     if (WorldToScreen(to, x, y, depth) && depth > 0.2f) g.Ellipse(x, y, 7 * s, 4 * s, c);
 }
 
-// The barricade's hologram (H): a see-through fence in front of this player that only it sees; the left button starts
-// building it there (1.5 s, the player on its knees), H again or the right button puts it away
-bool g_holo = false, g_holoBuild = false, g_holoOk = false;
+// The barricade's hologram (H held): a see-through fence in front of this player that only it sees, following its
+// look; held 1.5 s where it can go (the bar fills), it is built there; let go earlier, nothing
+bool g_holo = false, g_holoOk = false;
 int g_holoObj = -1;
 CVector g_holoAt;
 float g_holoHeading = 0;
-uint64_t g_holoEnd = 0;
+uint64_t g_holoHeld = 0, g_holoLastMs = 0;  // ms held where it can go
+constexpr uint64_t kHoloMs = 1500;
 void HoloOff() {
     DelObj(g_holoObj);
-    if (g_holoBuild) Cmd(0x01B4).I(0).I(1).Run();  // SET_PLAYER_CONTROL: back
-    g_holo = g_holoBuild = false;
+    g_holo = false;
+    g_holoHeld = 0;
 }
-bool HoloKey() {  // H
-    if (g_holo && !g_holoBuild) return HoloOff(), true;
+bool HoloKey() {  // H pressed
     if (g_holo) return true;
     CPlayerPed* me = FindPlayerPed(0);
     if (!me || me->Health() <= 0.0f || me->InVehicle() || me->AreaCode() != kPlaces[g_arena.place].area || g_arena.endAt) return false;
@@ -6317,34 +6388,19 @@ bool HoloKey() {  // H
     if (g_holoObj < 0) return true;
     Cmd(0x0382).I(g_holoObj).I(0).Run();  // SET_OBJECT_COLLISION: none
     g_holo = true;
-    ui::TheChat().AddSystem(TR("[ЛКМ] Строить здесь  [H] Убрать", "[LMB] Build here  [H] Put away"));
+    g_holoHeld = 0;
+    g_holoLastMs = NowMs();
     return true;
 }
 void HoloFrame(uint64_t now) {
     if (!g_holo) return;
     CPlayerPed* me = FindPlayerPed(0);
     CObject* o = g_holoObj >= 0 ? GetObject(g_holoObj) : nullptr;
-    if (!me || !o || me->Health() <= 0.0f || g_spectating || g_arena.endAt) return HoloOff(), HoldFire(false);
+    bool held = IsForeground() && (GetAsyncKeyState('H') & 0x8000) && !ui::TheChat().IsOpen() && !MenuActive();
+    if (!me || !o || !held || me->Health() <= 0.0f || g_spectating || g_arena.endAt) return HoloOff();
     float lift = 0, height = 0;
     ColOf(o->ModelIndex(), lift, height);
-    if (g_holoBuild) {
-        if (now >= g_holoEnd) {  // built: the real one (the host's)
-            HoloOff();
-            Cmd(0x0687).I(GetPedRef(me)).Run();
-            if (Cash() >= kBuildCost && (int)g_bars.size() < kMaxBars) {
-                AddPoints(-kBuildCost);
-                if (g_arena.host) BuildBar(g_holoAt, g_holoHeading, Net().MyId());
-                else Send(A_BUILD, [&](Writer& w) {
-                    w.Vec({g_holoAt.x, g_holoAt.y, g_holoAt.z});
-                    w.F32(g_holoHeading);
-                });
-            }
-            HoldFire(false);
-        }
-        return;
-    }
-    HoldFire(true);
-    // the ghost out of the way of its own tests (its fence stood where the floor was looked for: never "it can go here")
+    // the ghost out of the way of its own tests (its fence stood where the floor was looked for)
     o->SetPositionRaw(me->GetPosition() - CVector{0, 0, 60.0f});
     CVector f = cam::Front();
     f.z = 0;
@@ -6359,25 +6415,30 @@ void HoloFrame(uint64_t now) {
     Cmd(0x01BC).I(g_holoObj).F(g_holoAt.x).F(g_holoAt.y).F(g_holoAt.z + lift).Run();  // SET_OBJECT_COORDINATES
     Cmd(0x0177).I(g_holoObj).F(g_holoHeading).Run();
     CallMethod<0x5332C0>((void*)o, g_holoOk ? 110 : 45);  // CEntity::SetRwObjectAlpha: see-through (fainter where it cannot go)
-    bool rmb = IsForeground() && (GetAsyncKeyState(VK_RBUTTON) & 0x8000);
-    bool lmb = IsForeground() && (GetAsyncKeyState(VK_LBUTTON) & 0x8000) && !ui::TheChat().IsOpen() && !MenuActive();
-    if (rmb) return HoloOff(), HoldFire(false);
-    if (lmb && g_holoOk) {
-        g_holoBuild = true;
-        g_holoEnd = now + 1500;
-        int h = GetPedRef(me);
-        Cmd(0x01B4).I(0).I(0).Run();  // SET_PLAYER_CONTROL: off while it builds
-        if (EnsureBlock("BOMBER")) Cmd(0x0605).I(h).S("BOM_Plant_Loop").S("BOMBER").F(4.0f).I(1).I(0).I(0).I(0).I(-1).Run();
-    }
+    uint64_t dt = std::min<uint64_t>(now - g_holoLastMs, 100);
+    g_holoLastMs = now;
+    g_holoHeld = g_holoOk ? g_holoHeld + dt : 0;
+    if (g_holoHeld < kHoloMs) return;
+    CVector at = g_holoAt;  // built
+    float heading = g_holoHeading;
+    HoloOff();
+    if (Cash() < kBuildCost || (int)g_bars.size() >= kMaxBars) return;
+    AddPoints(-kBuildCost);
+    if (g_arena.host) BuildBar(at, heading, Net().MyId());
+    else Send(A_BUILD, [&](Writer& w) {
+        w.Vec({at.x, at.y, at.z});
+        w.F32(heading);
+    });
 }
 void DrawHolo(uint64_t now) {
-    if (!g_holo || !g_holoBuild) return;
+    if (!g_holo) return;
     auto& g = ui::Gfx();
     float s = g.Scale(), w = 260 * s, h = 14 * s, x = (g.Width() - w) * 0.5f, y = g.Height() * 0.62f;
-    float k = std::clamp(1.0f - (float)(g_holoEnd > now ? g_holoEnd - now : 0) / 1500.0f, 0.0f, 1.0f);
+    float k = std::clamp((float)g_holoHeld / (float)kHoloMs, 0.0f, 1.0f);
     g.Rect(x, y, w, h, 0xA0000000);
-    g.Rect(x, y, w * k, h, 0xE060D060);
-    g.Text(ui::FONT_SMALL, g.Width() * 0.5f, y - g.LineHeight(ui::FONT_SMALL), TR("Стройка баррикады", "Building a barricade"), 0xFFFFFFFF,
+    g.Rect(x, y, w * k, h, g_holoOk ? 0xE060D060 : 0xE0D06060);
+    g.Text(ui::FONT_SMALL, g.Width() * 0.5f, y - g.LineHeight(ui::FONT_SMALL),
+           g_holoOk ? TR("Держите H: стройка баррикады", "Hold H: building a barricade") : TR("Здесь не поставить", "It cannot go here"), 0xFFFFFFFF,
            ui::TEXT_CENTER | ui::TEXT_OUTLINE);
 }
 
@@ -6809,6 +6870,8 @@ public:
                            : a0 == "спавн" || a0 == "spawn"         ? "spawn"
                            : a0 == "враги" || a0 == "enemy"         ? "enemy"
                            : a0 == "зона" || a0 == "zone"           ? "zone"
+                           : a0 == "радио" || a0 == "radio"         ? "radio"
+                           : a0 == "газировка" || a0 == "автомат" || a0 == "soda" ? "soda"
                            : a0 == "баррикада" || a0 == "barricade" ? "bar"
                            : a0 == "стена" || a0 == "wall"          ? "wall"
                            : a0 == "сброс" || a0 == "reset"         ? "reset"
@@ -6971,7 +7034,7 @@ std::string PlaceTitle(int i) { return i >= 0 && i < kPlaceCount ? PlaceName(i) 
 bool KeyDown(int vk, bool repeat) {
     std::string hint;
     if (!On() || !ReviveText(hint).empty()) return false;
-    if (vk == 'H') return !repeat && HoloKey();
+    if (vk == 'H') return repeat ? g_holo : HoloKey();  // held: the hologram (HoloFrame)
     if (vk == 'J') return !repeat && (PutDownGun(), true);
     if (vk == 'N') {  // T-Bone's launcher; without it N goes on (a side activity's "no")
         if (!g_hasUgl) return false;
