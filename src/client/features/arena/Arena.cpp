@@ -2363,7 +2363,10 @@ void BuyOutfit() {
         RequestRebuild();  // BUILD_PLAYER_MODEL's work, at a safe moment
     }
     CallMethod<0x506EA0>((void*)0xB6BC90, 40 /* AE_FRONTEND_PURCHASE_WEAPON */, 0.0f, 1.0f);
-    ui::TheChat().AddSystem(Format("%s: %s", ClothTitle(k), kPerkText[PerkOf(k)][Lang()]));
+    // its rarity, only a colour for its name: blue (60%), pink (30%), red (10%); the rest of the line as the system's
+    int roll = RandInt(0, 99);
+    const char* tint = roll < 10 ? "{FF3B3B}" : roll < 40 ? "{FF6EC7}" : "{4DA6FF}";
+    ui::TheChat().AddSystem(Format("%s%s{FFC864}: %s", tint, ClothTitle(k), kPerkText[PerkOf(k)][Lang()]));
 }
 void TakeOffOutfit() {  // the arena is over: the perks go, CJ's clothes from before it come back
     OutfitPerks(false);
