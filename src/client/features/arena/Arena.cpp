@@ -2512,8 +2512,6 @@ void WearOffer(const WardOffer& o) {  // the piece chosen: on him, its perk
         RequestRebuild();  // BUILD_PLAYER_MODEL's work, at a safe moment
     }
     CallMethod<0x506EA0>((void*)0xB6BC90, 6 /* AE_FRONTEND_PICKUP_WEAPON */, 0.0f, 1.0f);
-    const char* tint = o.rare == 2 ? "{FF3B3B}" : o.rare == 1 ? "{FF6EC7}" : "{4DA6FF}";
-    ui::TheChat().AddSystem(Format("%s%s{FFC864}: %s", tint, ClothTitle(k), kPerkText[PerkOf(k)][Lang()]));
     // over the subtitles, as the skills box's word
     ShowHelp(Format(TR("Одежда (%s): %s — %s", "Clothes (%s): %s - %s"), RareName(o.rare), ClothTitle(k), kPerkText[PerkOf(k)][Lang()]), 6000);
     g_popups.push_back({ClothTitle(k), NowMs(), RareColour(o.rare)});
@@ -2532,7 +2530,6 @@ void DrawWardrobe() {
     for (int vk : st.keyDowns) {
         if (vk == 'E' && now - g_wardOpenedMs < 500) continue;  // the E that opened it
         if (vk == VK_ESCAPE || vk == VK_BACK || vk == 'E') {
-            ui::TheChat().AddSystem(TR("Вы отказались от одежды.", "You took no clothes."));
             return SetWardOpen(false);
         }
         if (vk == 'A' || vk == 'W' || vk == VK_LEFT || vk == VK_UP) g_wardSel = std::max(0, g_wardSel - 1);
