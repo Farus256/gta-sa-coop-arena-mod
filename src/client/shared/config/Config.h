@@ -16,6 +16,7 @@ struct ClientConfig {
     std::string password;
     bool wantsHost = false;   // started from "Create server" in the launcher
     int loadSlot = 0;         // host: save slot (1..8) to load automatically, -1 a new game, 0 = choose in the menu
+    bool tips = true;           // the arena's hints (the help boxes, the keys on the right): F9, /подсказки
     bool friendlyFire = false;  // host: the players can hurt each other
     bool noCheats = false;      // host: no cheat codes in its game (for everyone, itself too)
     int maxPlayers = 4;         // host: places on its server, itself included (2..16)

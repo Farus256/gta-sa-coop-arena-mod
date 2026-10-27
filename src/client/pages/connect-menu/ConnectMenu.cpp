@@ -687,9 +687,15 @@ void RenderConnectMenu() {
         enter |= w::TextBox("port", cx, cy, 150 * s, rowH, g_port, 5, false, true);
         enter |= w::TextBox("pass", cx + 170 * s, cy, cw - 170 * s, rowH, g_password, 32, true, false, TR("необязательно", "optional"));
         cy += rowH + 22 * s;
+        if (g_tab == 0) {  // this player's own: the arena's hints (help boxes, the keys on the right)
+            w::Checkbox("tips", cx, cy, TR("Подсказки на арене", "Arena hints"), Cfg().tips);
+            cy += lh * 0.8f + 22 * s;
+        }
         if (g_tab == 1) {  // the host decides for the whole game; saved with the other settings when the server starts
             w::Checkbox("ff", cx, cy, TR("Урон по напарнику", "Friendly fire"), Cfg().friendlyFire);
             w::Checkbox("nocheat", cx + 270 * s, cy, TR("Без читов", "No cheats"), Cfg().noCheats);  // for all, the host too
+            cy += lh * 0.8f + 14 * s;
+            w::Checkbox("tips", cx, cy, TR("Подсказки на арене", "Arena hints"), Cfg().tips);  // this player's own
             // the places on the server, the host's own among them
             int& places = Cfg().maxPlayers;
             float sw = 250 * s;

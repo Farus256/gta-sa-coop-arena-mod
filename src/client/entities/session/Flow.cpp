@@ -344,6 +344,7 @@ void SaveConnectSettings() {
     ini.Load(cfg.iniPath);
     ini.Set("player", "name", cfg.nickname);
     ini.Set("player", "language", cfg.english ? "en" : "ru");
+    ini.SetInt("player", "tips", cfg.tips);
     ini.Set("connect", "mode", cfg.wantsHost ? "host" : "join");  // the menu opens on the same tab next time
     ini.Set("connect", "host", cfg.host);
     ini.SetInt("connect", "port", cfg.port);
