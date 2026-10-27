@@ -3592,7 +3592,9 @@ void SpawnWave() {
     const Faction& fac = kFactions[g_arena.faction];
     g_sawPed = g_officerPed = nullptr;
     // the 10% event (from the 2nd wave, not with a boss or a mini-boss): four flamethrower men, nobody else
-    g_fireWave = w >= 2 && !BossWave(w) && !MiniBoss(w) && RandInt(0, 99) < 10;
+    // the fire event (4 flamethrower men): not at the motel nor the meat factory
+    std::string placeKey = kPlaces[g_arena.place].keys[0][1];
+    g_fireWave = w >= 2 && !BossWave(w) && !MiniBoss(w) && placeKey != "motel" && placeKey != "meat" && RandInt(0, 99) < 10;
     if (g_fireWave) {
         for (int k = 0; k < 4; ++k) MakeFlamer(w);
         g_arena.waveMs = NowMs();
