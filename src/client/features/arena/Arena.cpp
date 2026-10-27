@@ -197,7 +197,7 @@ enum ArenaOp : uint8_t {
     A_START = 1, A_WAVE, A_LEFT, A_BOSS, A_END, A_ITEMS, A_PREP, A_MARK, A_SKIP,
     A_SCORE, A_BARS, A_BOARD, A_REPAIR, A_BOX, A_BOXUSE, A_BOXROLL, A_PERKS, A_PSPAWN, A_GRAB, A_POWER, A_TWINS,
     A_WALLS, A_DROP, A_TAKE, A_TAKEN, A_BUILD, A_LOBBY, A_FLAMER, A_STAGE, A_VOTE, A_VOTES, A_GIVE, A_MAPVOTE, A_MOVE,
-    A_HEALGAS, A_BOSSNAME, A_HIT, A_SHELL, A_SPEC, A_BOXTAKEN, A_SPOT, A_DRONEHIT, A_ALERT /* not used any more */, A_GUARDNAME, A_GUARDREQ, A_ZONE, A_EBAR, A_SAWHIT, A_HALVE, A_PROPS, A_EBARHIT, A_EBARGONE, A_OPERATOR, A_MVP, A_MAGNET
+    A_HEALGAS, A_BOSSNAME, A_HIT, A_SHELL, A_SPEC, A_BOXTAKEN, A_SPOT, A_DRONEHIT, A_ALERT /* not used any more */, A_GUARDNAME, A_GUARDREQ, A_ZONE, A_EBAR, A_SAWHIT, A_HALVE, A_PROPS, A_EBARHIT, A_EBARGONE, A_OPERATOR, A_MVP, A_MAGNET, A_EVENT
 };
 struct Arena {
     bool on = false, host = false;
@@ -806,6 +806,7 @@ struct Enemy {
     CPed* revivedBy = nullptr;  // a dead one: the medic at it now
     bool counted = false;       // a dead one: its death seen (the power-ups)
     bool silent = false;
+    bool rusher = false;  // the motel's bat event: a bat, a mad run at the players and the barricades
     int vest = -1;  // the flamethrower man's body armour (an object on it)
     bool healGas = false;  // a medic's one healing gas grenade, thrown
     uint64_t gasAt = 0;    // it leaves the hand then
@@ -3463,6 +3464,13 @@ void MakeMedic(int wave) {
               (int)g_squads.size() - 1, R_MEDIC, false);
 }
 // The flamethrower man (Bikers, Vagos): 250 health and 50 armour, slow, comes unannounced, a flamethrower close by and molotovs from afar
+constexpr int WEAPON_BAT_ARENA = 5;
+CVector MemberSpot(const CVector& anchor, int k);
+void ShowEvent(uint8_t kind) {  // every game
+    if (kind == 1)
+        ui::TheChat().AddSystem(TR("СОБЫТИЕ: бейсбольная ярость! Все враги с битами бегут с обеих сторон.",
+                                   "EVENT: baseball fury! Every enemy with a bat, running in from both sides."));
+}
 void MakeFlamer(int wave) {
     const Faction& f = kFactions[g_arena.faction];
     g_squads.push_back(Squad{});
@@ -3604,6 +3612,47 @@ void SpawnWave() {
             wr.U8((uint8_t)n);
         });
         LOGI("Arena: wave %d, the fire event: %d flamethrower men", wave, n);
+        return;
+    }
+    // the motel's 15% event (from the 2nd wave, no boss nor mini-boss): everyone comes in at its two points at once,
+    // a baseball bat each, and runs mad at the players and the barricades
+    if (placeKey == "motel" && w >= 2 && !BossWave(w) && !MiniBoss(w) && RandInt(0, 99) < 15) {
+        int count = std::min(14, 3 + w * 2 + PlayersIn());
+        CVector pts[2];
+        int have = 0;
+        if (g_enemyPts.size() >= 2) {  // the host's own points: the two farthest apart
+            float most = -1;
+            for (size_t i = 0; i < g_enemyPts.size(); ++i)
+                for (size_t j = i + 1; j < g_enemyPts.size(); ++j)
+                    if (float dd = (g_enemyPts[i] - g_enemyPts[j]).Length(); dd > most) most = dd, pts[0] = g_enemyPts[i], pts[1] = g_enemyPts[j];
+            pts[0] = pts[0] + CVector{0, 0, 1.0f}, pts[1] = pts[1] + CVector{0, 0, 1.0f};
+            have = 2;
+        } else {
+            for (const Bar& b : g_bars)
+                if (!b.built && have < 2) pts[have++] = b.spawn + CVector{0, 0, 1.0f};
+        }
+        float base = Rand(0.0f, 6.2831853f);
+        for (int k = have; k < 2; ++k) pts[k] = SpawnSpot(base + 3.14159f * (float)k, 0.8f, 6.0f);
+        const Faction& ff = kFactions[g_arena.faction];
+        for (int k = 0; k < count; ++k) {
+            g_squads.push_back(Squad{});
+            CVector at = GridUsable() ? MemberSpot(pts[k % 2], k / 2 % 4) : pts[k % 2];
+            int h = MakeEnemy(ff.models[(size_t)RandInt(0, 3)], WEAPON_BAT_ARENA, 90 + 12 * w, 0, 60, at, (int)g_squads.size() - 1, R_GUN, k % 3 != 0);
+            if (CPed* p = h >= 0 ? GetPed(h) : nullptr) {
+                Enemy& e = g_info[p];
+                e.rusher = true, e.mode = M_PUSH, e.modeUntil = ~0ull;
+                Cmd(0x0946).I(h).I(1).Run();  // no stagger: nothing stops the run
+            }
+        }
+        g_arena.waveMs = NowMs();
+        int n = (int)g_enemies.size(), wave = g_arena.wave;
+        Send(A_WAVE, [&](Writer& wr) {
+            wr.U8((uint8_t)wave);
+            wr.U8((uint8_t)n);
+        });
+        Send(A_EVENT, [](Writer& wr) { wr.U8(1); });
+        ShowEvent(1);
+        LOGI("Arena: wave %d, the motel's bat event: %d men", wave, n);
         return;
     }
     int count = std::min(14, 2 + w * 2 + PlayersIn());
@@ -4163,12 +4212,14 @@ bool InView(CPed* t, const CVector& view, const CVector& body) {
 // costs as much as eight out of it), to a cell 1.2-4 m behind it; from there the last steps (TASK_GOTO_CHAR_OFFSET
 // behind it) and the knife (StealthKnife). Out of sight with the next step in sight it waits for the player to look
 // away (up to 6 s). Seen close by, it goes for the player at once.
+bool Waypoint(CPed* p, CPed* t, CVector& out);
 void Sneak(CPed* p, Enemy& e, CPed* t, float d, uint64_t now) {
     int h = GetPedRef(p);
     CVector view = ViewOf(t), body = p->GetPosition(), rel = body - t->GetPosition();
     bool seen = InView(t, view, body);
     bool behind = rel.x * view.x + rel.y * view.y < -0.2f * std::max(0.1f, rel.Length2D());
-    if (d < 4.5f && (!seen || d < 2.5f)) {  // the last steps
+    bool sameFloor = std::fabs(rel.z) < 1.6f;
+    if (sameFloor && d < 4.5f && (!seen || d < 2.5f)) {  // the last steps
         e.waitSince = 0;
         if (e.routing || now - e.setOnMs > 900) {  // the player turns: its back again, often
             e.routing = false;
@@ -4178,7 +4229,7 @@ void Sneak(CPed* p, Enemy& e, CPed* t, float d, uint64_t now) {
         }
         return;
     }
-    if (seen && d < 6.0f) {  // seen close by: at it
+    if (seen && d < 6.0f && sameFloor) {  // seen close by: at it
         if (e.routing || now - e.setOnMs > 3000) {
             e.routing = false;
             e.setOnMs = now;
@@ -4223,7 +4274,12 @@ void Sneak(CPed* p, Enemy& e, CPed* t, float d, uint64_t now) {
             if (nc < cost[(size_t)m]) cost[(size_t)m] = nc, from[(size_t)m] = k, q.push({nc, m});
         }
     }
-    if (goal < 0) {  // no way behind it now: round to its back the game's way
+    if (goal < 0) {  // no way behind it now: round to its back the game's way (another floor: up the stairs first)
+        CVector wp;
+        if (!sameFloor && Waypoint(p, t, wp)) {
+            GoTo(p, e, wp, 6);
+            return;
+        }
         if (!e.routing || now - e.routeMs > 4000) {
             Cmd(0x06A8).I(h).I(GetPedRef(t)).I(5000).F(1.0f).F(180.0f).Run();
             e.routing = true, e.routeMs = now, e.routeTo = tp;
@@ -5162,7 +5218,7 @@ void Officer(CPed* p, Enemy& e, CPed* t, float d, bool sees, uint64_t now) {
 void KnifeFrame() {
     float dt = std::min(0.1f, TimeStep() / 50.0f);
     for (auto& [p, e] : g_info) {
-        if (e.role != R_KNIFE || !IsPedValid(p) || p->Health() <= 0.0f || p->InVehicle() || p->MoveState() < 6) continue;  // running, sprinting
+        if ((e.role != R_KNIFE && !e.rusher) || !IsPedValid(p) || p->Health() <= 0.0f || p->InVehicle() || p->MoveState() < 6) continue;  // running, sprinting
         float hd = p->GetHeading();
         CVector f{-std::sin(hd), std::cos(hd), 0.0f};
         CVector pos = p->GetPosition();
@@ -5522,6 +5578,46 @@ void Tactics() {
             if (e.mode == M_COVER_GO || e.mode == M_COVER_HOLD) e.mode = M_FIGHT;
             if (e.role != R_KNIFE) SetOn(p, e, t);
             continue;
+        }
+        if (e.rusher && !e.grenadeUntil && !e.cprUntil) {  // the bat event: a barricade in the way torn down, else at the player
+            if (e.mode != M_BREACH)
+                for (size_t i = 0; i < g_bars.size(); ++i) {
+                    CVector bd = g_bars[i].pos - (p->GetPosition() - CVector{0, 0, 1.0f});
+                    if (g_bars[i].boards > 0 && bd.Length2D() < 2.2f && std::fabs(bd.z) < 2.0f) {
+                        e.mode = M_BREACH, e.barricade = (int)i, e.breachSince = now, e.tearing = false;
+                        break;
+                    }
+                }
+            if (e.mode == M_BREACH) {
+                Breach(p, e, t, now);
+                if (e.mode != M_BREACH) e.mode = M_PUSH;
+                continue;
+            }
+            CVector wp;
+            if ((!sees || std::fabs(t->GetPosition().z - p->GetPosition().z) > 2.0f) && d > 3.0f && Waypoint(p, t, wp)) {
+                e.after = t;
+                GoTo(p, e, wp, 7);  // sprinting
+                continue;
+            }
+            if (t != e.after || e.routing || now - e.setOnMs > 4000) SetOn(p, e, t);
+            continue;
+        }
+        // the player on another floor (up on the first floor, they below it): to it along the floor's cells, up the
+        // stairs, not standing under it; the melee ones even when they see it, the guns when they do not
+        float upDown = t->GetPosition().z - p->GetPosition().z;
+        bool otherFloor = std::fabs(upDown) > 2.0f && GridUsable() && !p->InVehicle();
+        bool melee = e.role == R_SAW || (e.role == R_BOSS && g_bossKatana) || e.role == R_FLAMER;
+        bool busy = e.grenadeUntil || e.cprUntil || e.mode == M_BREACH || (e.role == R_SAW && e.sawStage != 0) ||
+                    (e.role == R_BOSS && g_bossKatana && e.kStage != 0);
+        if (otherFloor && !busy && e.role != R_SNIPER && e.role != R_KNIFE && (melee || !sees || d < 7.0f)) {
+            CVector wp;
+            if (Waypoint(p, t, wp)) {
+                e.after = t;
+                GoTo(p, e, wp, d > 12.0f ? 7 : 6);
+                static uint64_t logMs = 0;
+                if (now - logMs > 10000) logMs = now, LOGI("Arena: an enemy goes up or down to a player %.1f m %s it", std::fabs(upDown), upDown > 0 ? "over" : "under");
+                continue;
+            }
         }
         if (e.role == R_KNIFE) {
             e.after = t;
@@ -6157,6 +6253,9 @@ void Handle(uint8_t from, Reader& r) {
         int8_t idx = r.I8();
         Vec3 v = r.Vec();
         if (r.Ok()) ShowZone(idx, {v.x, v.y, v.z});
+    } else if (op == A_EVENT) {
+        uint8_t kind = r.U8();
+        if (r.Ok()) ShowEvent(kind);
     } else if (op == A_MVP) {
         uint8_t id = r.U8();
         uint16_t kills = r.U16();
