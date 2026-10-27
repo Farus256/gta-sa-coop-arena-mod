@@ -80,6 +80,9 @@ public:
     void Image(int id, float x, float y, float w, float h, uint32_t tint = 0xFFFFFFFF);
     // its size in pixels
     bool ImageSize(int id, int& w, int& h) const;
+    // a texture of the game's own (a RwRaster's Direct3D texture: a weapon's icon), drawn stretched, tinted; nothing
+    // when the pointer is not a texture of this device
+    void GameTexture(void* d3dTexture, float x, float y, float w, float h, uint32_t tint = 0xFFFFFFFF);
 
     void Invalidate();  // destroy textures (device reset / shutdown)
     // Tests: the frame drawn so far (the game's back buffer, never other windows) as a 24-bit BMP, scaled down.

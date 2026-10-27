@@ -348,12 +348,12 @@ bool MerchantWave(int w) { return w > 0 && w % 5 == 0; }  // after every 5th wav
 // gadget (0 none, 1 the cop's visor, 2 the rage dose, 3 the Shahed's remote), the mods
 int g_armourKind = 0, g_gadget = 0;
 bool g_modUgl = false, g_modBayonet = false, g_modSpark = false;
-int g_modGun[3] = {0, 0, 0};  // the gun each mod is on (the launcher, the bayonet, the twin mags), chosen at the buying
+std::set<int> g_modGuns[3];  // the guns each mod is on (the launcher, the bayonet, the twin mags): one bought a gun
 bool ModOn(int mod, int weapon) {  // 0 the launcher, 1 the bayonet, 2 the twin mags: on the gun in hand
-    bool has = mod == 0 ? g_modUgl : mod == 1 ? g_modBayonet : g_modSpark;
-    return has && weapon > 0 && weapon == g_modGun[mod];
+    return weapon > 0 && g_modGuns[mod].count(weapon) != 0;
 }
-int g_modPick = -1;  // the merchant's screen: the mod (its kShop index) whose gun is being chosen, -1: none
+int g_modPick = -1;
+int g_modLastGun = 0;  // the merchant's screen: the mod (its kShop index) whose gun is being chosen, -1: none
 float g_visorCharge = 100.0f;
 bool g_visorOn = false;
 int g_rageReadyWave = 0;  // the rage dose: once in 2 waves
@@ -382,6 +382,7 @@ const ShopItem kShop[] = {
 };
 constexpr int kShopCount = (int)(sizeof(kShop) / sizeof(kShop[0]));
 bool Owned(const ShopItem& it) {
+    if (it.kind == 2) return false;  // a mod: again on another gun
     return it.kind == 0 ? g_armourKind == it.which : it.kind == 1 ? g_gadget == it.which
            : it.which == 1 ? g_modUgl : it.which == 2 ? g_modBayonet : g_modSpark;
 }
@@ -389,7 +390,7 @@ void SetWardOpen(bool on);
 void ResetShop() {  // a new arena: nothing bought
     g_armourKind = g_gadget = 0;
     g_modUgl = g_modBayonet = g_modSpark = false;
-    g_modGun[0] = g_modGun[1] = g_modGun[2] = 0;
+    for (auto& g : g_modGuns) g.clear();
     g_modPick = -1;
     g_visorCharge = 100.0f, g_visorOn = false;
     g_rageReadyWave = 0, g_rageStunUntil = g_rageUntil = g_rageTextUntil = 0;
@@ -5906,7 +5907,7 @@ void PlayerUgl() {
     int gun = me->ActiveWeapon().type;
     bool fits = (gun == 30 && g_hasUgl) || ModOn(0, gun);  // the bought one: on the gun it was put on
     if (!fits) {
-        ui::TheChat().AddError(g_modUgl ? Format(TR("Возьмите в руки: %s.", "Take in hand: %s."), WeaponName(g_modGun[0])) : std::string(TR("Возьмите АК-47 в руки.", "Take the AK-47 in hand.")));
+        ui::TheChat().AddError(g_modUgl ? Format(TR("Возьмите в руки: %s.", "Take in hand: %s."), WeaponName(*g_modGuns[0].begin())) : std::string(TR("Возьмите АК-47 в руки.", "Take the AK-47 in hand.")));
         return;
     }
     if (g_uglLoaded) {
@@ -6538,12 +6539,12 @@ void TwinCopies() {
 
 void ShowHelp(const std::string& text, uint64_t ms);
 const char* WeaponName(int w);
-std::vector<int> ModGuns() {  // the guns this player carries that a mod goes on (pistols to the rifles)
+std::vector<int> ModGuns(int mod) {  // the guns this player carries that the mod goes on (pistols to the rifles; not on yet)
     std::vector<int> guns;
     if (CPlayerPed* me = FindPlayerPed(0))
         for (int slot = 0; slot < NUM_WEAPON_SLOTS; ++slot) {
             int t = me->Weapons()[slot].type;
-            if (t >= 22 && t <= 34 && std::find(guns.begin(), guns.end(), t) == guns.end()) guns.push_back(t);
+            if (t >= 22 && t <= 34 && !ModOn(mod, t) && std::find(guns.begin(), guns.end(), t) == guns.end()) guns.push_back(t);
         }
     return guns;
 }
@@ -6556,8 +6557,9 @@ void Buy(int i) {
             ui::TheChat().AddError(Format(TR("Нужно $%d.", "You need $%d."), ShopPrice(it.price)));
             return;
         }
-        if (ModGuns().empty()) {
-            ui::TheChat().AddError(TR("Нет оружия для модификации.", "No gun to put it on."));
+        if (ModGuns(it.which - 1).empty()) {
+            ui::TheChat().AddError(g_modGuns[it.which - 1].empty() ? TR("Нет оружия для модификации.", "No gun to put it on.")
+                                                                   : TR("Она уже стоит на всём вашем оружии.", "It is on every gun you carry already."));
             return;
         }
         g_modPick = i;
@@ -6581,7 +6583,7 @@ void Buy(int i) {
     }
     LOGI("Arena: bought %s", it.name[1]);
     if (it.kind == 2)
-        ShowHelp(Format("%s (%s): %s", kShop[i].name[Lang()], WeaponName(g_modGun[it.which - 1]), kShop[i].what[Lang()]), 6000);
+        ShowHelp(Format("%s (%s): %s", kShop[i].name[Lang()], WeaponName(g_modLastGun), kShop[i].what[Lang()]), 6000);
     else
         ShowHelp(Format("%s: %s", kShop[i].name[Lang()], kShop[i].what[Lang()]), 6000);
 }
@@ -6713,12 +6715,30 @@ void SetShopOpen(bool on) {
 // the mod bought: which of the guns carried it goes on (a card a gun); Esc back to the merchant's cards
 int g_modPickSel = 0;
 uint64_t g_modPickMs = 0;
+// a weapon's HUD icon ("<model>ICON" in its model's dictionary, as the HUD finds it) as a Direct3D texture
+void* WeaponIconTexture(int weapon) {
+    void* info = Call<0x743C60, void*>(weapon, (uint8_t)1);  // CWeaponInfo::GetWeaponInfo
+    int model = info ? Field<int32_t>(info, 0x0C) : -1;     // m_nModelId1
+    if (model <= 0) return nullptr;
+    void* mi = Ref<void*>(0xA9B0C8 + (uintptr_t)model * 4);  // CModelInfo::ms_modelInfoPtrs
+    auto* txds = Ref<CPoolHeader*>(0xC8800C);                 // CTxdStore::ms_pTxdPool
+    int slot = mi ? Field<int16_t>(mi, 0x0A) : -1;            // m_nTxdIndex
+    if (!txds || slot < 0 || slot >= txds->size || txds->byteMap[slot] < 0) return nullptr;
+    void* dict = Ref<void*>((uintptr_t)txds->objects + (uintptr_t)slot * 0xC);  // TxdDef::m_pRwDictionary
+    if (!dict) return nullptr;
+    uint32_t key = Call<0x53CF70, uint32_t>(Field<uint32_t>(mi, 0x04), "ICON");  // CKeyGen::AppendStringToKey
+    void* tex = Call<0x734E50, void*>(dict, key);                                 // RwTexDictionaryFindHashNamedTexture
+    void* raster = tex ? Ref<void*>((uintptr_t)tex) : nullptr;                    // RwTexture::raster
+    int ext = Ref<int32_t>(0xB4E9E0);                                             // the D3D9 raster's plugin offset
+    if (!raster || ext < 0x20 || ext > 0x100) return nullptr;
+    return Ref<void*>((uintptr_t)raster + (uintptr_t)ext);  // RwD3D9Raster::texture
+}
 void DrawModPick() {
     auto& g = ui::Gfx();
     float s = g.Scale();
     auto& st = ui::In().State();
     const ShopItem& it = kShop[g_modPick];
-    std::vector<int> guns = ModGuns();
+    std::vector<int> guns = ModGuns(it.which - 1);
     if (guns.empty()) {
         g_modPick = -1;
         return;
@@ -6736,7 +6756,7 @@ void DrawModPick() {
         if (vk >= '1' && vk <= '9' && vk - '1' < n) g_modPickSel = vk - '1', take = true;
     }
     g_modPickSel = std::clamp(g_modPickSel, 0, n - 1);
-    float W = 1000 * s, H = 420 * s;
+    float W = 1000 * s, H = 480 * s;
     float x = (g.Width() - W) * 0.5f, y = (g.Height() - H) * 0.5f;
     g.Rect(0, 0, g.Width(), g.Height(), 0x70000000);
     g.Rect(x, y, W, H, 0xF0000000);
@@ -6745,7 +6765,7 @@ void DrawModPick() {
     g.GameText(ui::GAME_FONT_PRICEDOWN, x + W - 40 * s, y + 24 * s, Format("$%d", ShopPrice(it.price)), 40 * s, 0xFF36682C, ui::TEXT_RIGHT);
     g.Text(ui::FONT_MENU, x + 40 * s, y + 90 * s, Format(TR("%s: на какое оружие?", "%s: on which gun?"), it.name[Lang()]), 0xFFFFFFFF, ui::TEXT_SHADOW);
     auto hover = [&](float hx, float hy, float hw, float hh) { return st.mouseX >= hx && st.mouseX < hx + hw && st.mouseY >= hy && st.mouseY < hy + hh; };
-    float gap = 14 * s, cy = y + 140 * s, chh = 150 * s;
+    float gap = 14 * s, cy = y + 140 * s, chh = 220 * s;
     float cw = (W - 80 * s - gap * (float)(n - 1)) / (float)n;
     static float mx = -1, my = -1;
     for (int k = 0; k < n; ++k) {
@@ -6756,7 +6776,9 @@ void DrawModPick() {
         g.Rect(cx, cy, cw, chh, sel ? 0xE0182230 : 0xC0101418);
         g.RectOutline(cx, cy, cw, chh, sel ? 0xFFACCBF1 : 0xFF26303B, std::max(1.0f, s) * (sel ? 2.5f : 1.0f));
         g.Text(ui::FONT_SMALL, cx + 12 * s, cy + 10 * s, Format("%d", k + 1), 0xFF8D9CAD, ui::TEXT_SHADOW);
-        float py = cy + chh * 0.5f - g.LineHeight(ui::FONT_MENU);
+        float icon = std::min(cw - 30 * s, 96 * s);  // the game's own picture of it (the HUD's weapon icon)
+        g.GameTexture(WeaponIconTexture(guns[(size_t)k]), cx + (cw - icon) * 0.5f, cy + 14 * s, icon, icon);
+        float py = cy + 14 * s + icon + 6 * s;
         for (auto& line : g.Wrap(ui::FONT_MENU, ui::Widen(WeaponName(guns[(size_t)k])), cw - 20 * s)) {
             g.TextW(ui::FONT_MENU, cx + cw * 0.5f, py, line, sel ? 0xFFACCBF1 : 0xFFFFFFFF, ui::TEXT_CENTER | ui::TEXT_SHADOW);
             py += g.LineHeight(ui::FONT_MENU);
@@ -6771,7 +6793,8 @@ void DrawModPick() {
     ui::w::DrawCursor();
     if (take) {
         int i = g_modPick;
-        g_modGun[kShop[i].which - 1] = guns[(size_t)g_modPickSel];
+        g_modLastGun = guns[(size_t)g_modPickSel];
+        if (Cash() >= ShopPrice(kShop[i].price)) g_modGuns[kShop[i].which - 1].insert(g_modLastGun);  // paid in Buy: on it
         Buy(i);
         g_modPick = -1;
     }
@@ -6848,11 +6871,18 @@ void DrawShop() {
             py += g.LineHeight(ui::FONT_MENU);
         }
         py += 10 * s;
-        if (own && it.kind == 2)  // a mod: the gun it is on
-            g.Text(ui::FONT_MENU, cx + cw * 0.5f, py, Format(TR("НА: %s", "ON: %s"), WeaponName(g_modGun[it.which - 1])), 0xFF5FA04E, ui::TEXT_CENTER | ui::TEXT_SHADOW);
-        else if (own) g.Text(ui::FONT_MENU, cx + cw * 0.5f, py, it.kind == 0 ? TR("НАДЕТО", "WORN") : TR("КУПЛЕНО", "BOUGHT"), 0xFF5FA04E, ui::TEXT_CENTER | ui::TEXT_SHADOW);
+        if (own) g.Text(ui::FONT_MENU, cx + cw * 0.5f, py, it.kind == 0 ? TR("НАДЕТО", "WORN") : TR("КУПЛЕНО", "BOUGHT"), 0xFF5FA04E, ui::TEXT_CENTER | ui::TEXT_SHADOW);
         else g.GameText(ui::GAME_FONT_PRICEDOWN, cx + cw * 0.5f, py, Format("$%d", ShopPrice(it.price)), 34 * s, can ? 0xFF36682C : 0xFFB4191D, ui::TEXT_CENTER);
         py += 46 * s;
+        if (it.kind == 2 && !g_modGuns[it.which - 1].empty()) {  // a mod: the guns it is on already
+            std::string on;
+            for (int gun : g_modGuns[it.which - 1]) on += (on.empty() ? "" : ", ") + std::string(WeaponName(gun));
+            for (auto& line : g.Wrap(ui::FONT_SMALL, ui::Widen(Format(TR("Уже на: %s", "On: %s"), on.c_str())), cw - 32 * s)) {
+                g.TextW(ui::FONT_SMALL, cx + cw * 0.5f, py, line, 0xFF5FA04E, ui::TEXT_CENTER | ui::TEXT_SHADOW);
+                py += g.LineHeight(ui::FONT_SMALL);
+            }
+            py += 6 * s;
+        }
         for (auto& line : g.Wrap(ui::FONT_SMALL, ui::Widen(it.what[Lang()]), cw - 32 * s)) {
             g.TextW(ui::FONT_SMALL, cx + 16 * s, py, line, 0xFFC8C8C8, ui::TEXT_SHADOW);
             py += g.LineHeight(ui::FONT_SMALL);
@@ -6992,6 +7022,11 @@ void UseGadget() {
         CVector top;
         float up = Ray(base, base + CVector{0, 0, 10.0f}, top) ? std::max(2.5f, top.z - base.z - 2.0f) : 8.0f;
         CVector at = base + CVector{0, 0, std::min(8.0f, up)};  // a little lower than it was (15 m)
+        if (RcPlace()) {  // the RC field: over CJ's head (it flies at once: no standing on it)
+            CVector head = me->GetPosition(), roof;
+            float room = Ray(head, head + CVector{0, 0, 6.0f}, roof) ? roof.z - head.z - 1.0f : 3.5f;
+            at = head + CVector{0, 0, std::clamp(room, 1.8f, 3.5f)};
+        }
         Cmd(0x04D7).I(h).I(1).Run();  // FREEZE_CHAR_POSITION: CJ stays on the floor while he steers
         LoadModelNow(501);  // the RC Goblin
         Cmd(0x046E).I(0).F(at.x).F(at.y).F(at.z).F(me->CurrentRotation() * 57.29578f).I(501).Run();  // GIVE_REMOTE_CONTROLLED_MODEL_TO_PLAYER

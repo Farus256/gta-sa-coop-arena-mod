@@ -241,6 +241,14 @@ void Renderer::Image(int id, float x, float y, float w, float h, uint32_t tint) 
     Quad(x, y, w, h, 0.0f, 0.0f, (float)p.w / (float)p.texW, (float)p.h / (float)p.texH, tint);
 }
 
+void Renderer::GameTexture(void* d3dTexture, float x, float y, float w, float h, uint32_t tint) {
+    if (!m_inFrame || !d3dTexture || !m_fonts[FONT_NORMAL].tex) return;
+    // a Direct3D texture has the same table of methods as ours (the fonts' atlas): anything else is not drawn
+    if (IsBadReadPtr(d3dTexture, sizeof(void*)) || *(void**)d3dTexture != *(void**)m_fonts[FONT_NORMAL].tex) return;
+    SetTexture((IDirect3DTexture9*)d3dTexture);
+    Quad(x, y, w, h, 0.0f, 0.0f, 1.0f, 1.0f, tint);
+}
+
 void Renderer::Invalidate() {
     for (auto& p : m_pictures) {
         if (p.tex) p.tex->Release();
