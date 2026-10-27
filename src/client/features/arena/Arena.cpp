@@ -1527,7 +1527,8 @@ void DrawMvp(uint64_t now) {
     float k = std::min(in, out);
     k = 1.0f - (1.0f - k) * (1.0f - k);
     float w = 380 * s, h = 132 * s;
-    float x = g.Width() - (w + 24 * s) * k, y = g.Height() * 0.30f;
+    // under the break's line on the right ("Пауза ... [Y] пропустить"), not over it
+    float x = g.Width() - (w + 24 * s) * k, y = g.Height() * 0.36f + g.LineHeight(ui::FONT_NORMAL) + 30 * s;
     uint32_t accent = 0xFFFFC23A;
     g.Rect(x, y, w, h, 0xC8101418);
     g.Rect(x, y, 6 * s, h, accent);
