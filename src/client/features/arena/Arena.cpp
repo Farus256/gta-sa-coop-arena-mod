@@ -197,7 +197,7 @@ enum ArenaOp : uint8_t {
     A_START = 1, A_WAVE, A_LEFT, A_BOSS, A_END, A_ITEMS, A_PREP, A_MARK, A_SKIP,
     A_SCORE, A_BARS, A_BOARD, A_REPAIR, A_BOX, A_BOXUSE, A_BOXROLL, A_PERKS, A_PSPAWN, A_GRAB, A_POWER, A_TWINS,
     A_WALLS, A_DROP, A_TAKE, A_TAKEN, A_BUILD, A_LOBBY, A_FLAMER, A_STAGE, A_VOTE, A_VOTES, A_GIVE, A_MAPVOTE, A_MOVE,
-    A_HEALGAS, A_BOSSNAME, A_HIT, A_SHELL, A_SPEC, A_BOXTAKEN, A_SPOT, A_DRONEHIT, A_ALERT /* not used any more */, A_GUARDNAME, A_GUARDREQ, A_ZONE, A_EBAR, A_SAWHIT, A_HALVE, A_PROPS
+    A_HEALGAS, A_BOSSNAME, A_HIT, A_SHELL, A_SPEC, A_BOXTAKEN, A_SPOT, A_DRONEHIT, A_ALERT /* not used any more */, A_GUARDNAME, A_GUARDREQ, A_ZONE, A_EBAR, A_SAWHIT, A_HALVE, A_PROPS, A_EBARHIT, A_EBARGONE
 };
 struct Arena {
     bool on = false, host = false;
@@ -325,6 +325,12 @@ game::CVector g_ownSpawn;
 std::vector<game::CVector> g_enemyPts;
 // the crack palace's zones: each wave the enemies go for the next one (every game knows the wave's, A_ZONE)
 std::vector<game::CVector> g_zones;  // host
+struct BuildSpot {  // the host's own spots for the builders' barricades (/arena стройка): the fence there, so turned
+    game::CVector pos;
+    float heading = 0;
+};
+std::vector<BuildSpot> g_buildSpots;  // host
+constexpr int kMaxBuildSpots = 16;
 int g_zoneNow = -1;                  // every game: the wave's zone (its number from 0), -1: none
 game::CVector g_zoneAt;
 game::CPed* g_operator = nullptr;  // host: the RC helicopters' man
@@ -748,6 +754,7 @@ struct Enemy {
     CVector zoneSpot;
     CVector buildSpot;       // a builder's: where it puts the next barricade up
     bool hasBuildSpot = false;
+    int buildIdx = -1;       // the host's own builder spot it goes to (/arena стройка), -1: one of its own
     uint64_t buildAt = 0;
     int builds = 0;
     uint64_t getUpUntil = 0;  // raised by a medic: getting up off the floor till then
@@ -2892,6 +2899,7 @@ void LoadOwnPoints() {
     g_enemyPts.clear();
     g_zones.clear();
     g_radioSpots.clear(), g_sodaSpots.clear();
+    g_buildSpots.clear();
     Ini ini;
     if (!ini.Load(SpotsPath())) return;
     std::string sec = PlaceSection();
@@ -2902,13 +2910,16 @@ void LoadOwnPoints() {
         if (ReadVec(ini.Get(sec, Format("enemy%d", k)), p, h)) g_enemyPts.push_back(p);
     for (int k = 1; k <= 4; ++k)
         if (ReadVec(ini.Get(sec, Format("zone%d", k)), p, h)) g_zones.push_back(p);
+    for (int k = 1; k <= kMaxBuildSpots; ++k)
+        if (ReadVec(ini.Get(sec, Format("build%d", k)), p, h)) g_buildSpots.push_back({p, h});
     for (int k = 1; k <= 4; ++k) {
         Prop pr;
         if (ReadVec(ini.Get(sec, Format("radio%d", k)), p, h)) pr.pos = p, pr.heading = h, g_radioSpots.push_back(pr);
         if (ReadVec(ini.Get(sec, Format("soda%d", k)), p, h)) pr.pos = p, pr.heading = h, g_sodaSpots.push_back(pr);
     }
-    if (g_hasOwnSpawn || !g_enemyPts.empty() || !g_zones.empty())
-        LOGI("Arena: own points here: spawn %d, %d enemy points, %d zones", g_hasOwnSpawn ? 1 : 0, (int)g_enemyPts.size(), (int)g_zones.size());
+    if (g_hasOwnSpawn || !g_enemyPts.empty() || !g_zones.empty() || !g_buildSpots.empty())
+        LOGI("Arena: own points here: spawn %d, %d enemy points, %d zones, %d builder spots", g_hasOwnSpawn ? 1 : 0, (int)g_enemyPts.size(),
+             (int)g_zones.size(), (int)g_buildSpots.size());
 }
 // host: the saved spots instead of the mod's own; true when there were some
 bool LoadSpots() {
@@ -3018,6 +3029,17 @@ void SaveSpot(const std::string& what) {
         ini.Set(sec, Format("%s%d", key, k), line);
         ui::TheChat().AddSystem(Format(what == "enemy" ? TR("Точка врагов %d сохранена (со следующей арены).", "Enemy point %d kept (from the next arena on).")
                                                        : TR("Зона %d сохранена (со следующей арены).", "Zone %d kept (from the next arena on)."), k));
+    } else if (what == "build") {
+        int k = 1;
+        while (k <= kMaxBuildSpots && !ini.Get(sec, Format("build%d", k)).empty()) ++k;
+        if (k > kMaxBuildSpots) {
+            ui::TheChat().AddError(Format(TR("Уже %d мест строителя для этого места.", "%d builder spots for this place already."), kMaxBuildSpots));
+            return;
+        }
+        ini.Set(sec, Format("build%d", k), line);
+        g_buildSpots.push_back({p, h});
+        ui::TheChat().AddSystem(Format(TR("Место баррикады строителя %d сохранено: забор встанет здесь поперёк вашего взгляда.",
+                                          "Builder spot %d kept: the fence goes up here, across where you look."), k));
     } else if (what == "wall") {
         ui::TheChat().AddError(TR("Оружия на стенах больше нет.", "There are no wall guns any more."));
         return;
@@ -3030,6 +3052,8 @@ void SaveSpot(const std::string& what) {
             ini.Set(sec, Format("soda%d", k), "");
         }
         for (int k = 1; k <= kMaxBars; ++k) ini.Set(sec, Format("bar%d", k), "");
+        for (int k = 1; k <= kMaxBuildSpots; ++k) ini.Set(sec, Format("build%d", k), "");
+        g_buildSpots.clear();
         for (int k = 1; k <= 8; ++k) ini.Set(sec, Format("wall%d", k), "");
         ui::TheChat().AddSystem(TR("Свои места для этого места забыты: мод снова расставит всё сам.",
                                    "The spots of this place are forgotten: the mod sets everything out itself again."));
@@ -4309,14 +4333,24 @@ void RaiseFallen() {
 // ---- the crack palace's zones and builders (host). Each wave the enemies go for one zone (zone 1, then 2, ...; the
 // host's own /arena зона points, or 3 the mod picks itself spread over the floor): they run there first, then fight;
 // builders (no weapon, $150 on them) put barricades up round the zone (cover for their own, fences for everyone).
+// The builders' barricades break: shots, blows, blasts and the chainsaw's dash take their health off (each game
+// tells the host of its own player's, A_EBARHIT; the host's word they are down, A_EBARGONE)
+constexpr int kEBarHp = 300;
 struct EBar {
     CVector pos;
     float heading = 0;
     int handle = -1;
+    int hp = kEBarHp;  // the host's count
+    bool gone = false;
 };
-std::vector<EBar> g_ebars;  // every game's own fences of the enemies' barricades
+std::vector<EBar> g_ebars;  // every game's own fences of the enemies' barricades (the same order everywhere)
+int EBarsUp() {
+    int n = 0;
+    for (const EBar& b : g_ebars) n += b.gone ? 0 : 1;
+    return n;
+}
 void AddEBar(const CVector& at, float heading) {
-    if (g_ebars.size() >= 10) return;
+    if (g_ebars.size() >= 40) return;
     EBar b;
     b.pos = at, b.heading = heading;
     int model = PickModel({1418, 1408, 1424});
@@ -4327,6 +4361,123 @@ void AddEBar(const CVector& at, float heading) {
 void ClearEBars() {
     for (EBar& b : g_ebars) DelObj(b.handle);
     g_ebars.clear();
+}
+void EBarDown(int i) {  // every game: that barricade broke
+    if (i < 0 || i >= (int)g_ebars.size() || g_ebars[(size_t)i].gone) return;
+    EBar& b = g_ebars[(size_t)i];
+    b.gone = true;
+    DelObj(b.handle);
+    LOGI("Arena: a builder's barricade %d broke", i);
+}
+void HitEBar(int i, int dmg) {  // this game's player hit it
+    if (i < 0 || i >= (int)g_ebars.size() || g_ebars[(size_t)i].gone || dmg <= 0) return;
+    if (!g_arena.host) {
+        Send(A_EBARHIT, [&](Writer& w) {
+            w.U8((uint8_t)i);
+            w.U16((uint16_t)std::min(dmg, 60000));
+        });
+        return;
+    }
+    EBar& b = g_ebars[(size_t)i];
+    b.hp -= dmg;
+    if (b.hp > 0) return;
+    Send(A_EBARGONE, [&](Writer& w) { w.U8((uint8_t)i); });
+    EBarDown(i);
+}
+// how far a spot is from that fence (along its length, about 2 m each way of its middle)
+float EBarDist(const EBar& b, const CVector& at, float& dz) {
+    float hr = b.heading / 57.29578f;
+    CVector ax{std::cos(hr), std::sin(hr), 0.0f};
+    CVector d = at - b.pos;
+    dz = d.z;
+    float along = std::clamp(d.x * ax.x + d.y * ax.y, -2.0f, 2.0f);
+    CVector off{d.x - ax.x * along, d.y - ax.y * along, 0.0f};
+    return off.Length2D();
+}
+int EBarOf(CEntity* e) {
+    if (!e) return -1;
+    for (size_t i = 0; i < g_ebars.size(); ++i)
+        if (!g_ebars[i].gone && g_ebars[i].handle >= 0 && (CEntity*)GetObject(g_ebars[i].handle) == e) return (int)i;
+    return -1;
+}
+int ShotDamage(int w) {
+    switch (w) {
+        case 22: case 23: return 25;           // pistols
+        case 24: return 70;                    // the Desert Eagle
+        case 25: case 26: case 27: return 90;  // shotguns
+        case 28: case 29: case 32: return 20;  // SMGs
+        case 30: case 31: return 30;           // AK, M4
+        case 33: case 34: return 80;           // rifles
+        case 38: return 40;                    // minigun
+        default: return 0;
+    }
+}
+// every frame: this player's shots and blows at the builders' barricades
+void EBarFrame(uint64_t now) {
+    static int lastType = -1, lastClip = 0;
+    static uint64_t meleeMs = 0;
+    CPlayerPed* me = FindPlayerPed(0);
+    if (g_ebars.empty() || !me || me->Health() <= 0.0f || me->InVehicle() || g_spectating) {
+        lastType = -1;
+        return;
+    }
+    const CWeapon& wpn = me->ActiveWeapon();
+    int type = wpn.type, clip = wpn.ammoInClip;
+    bool shot = type == lastType && clip < lastClip && ShotDamage(type) > 0;
+    lastType = type, lastClip = clip;
+    if (shot) {  // where it went: along the aim
+        CVector a = cam::Source(), b = a + cam::Front() * 120.0f;
+        ColPoint cp{};
+        CEntity* hit = nullptr;
+        if (Call<0x56BA00, bool>(&a, &b, &cp, &hit, true, true, false, true, false, false, true, false)) {  // ProcessLineOfSight
+            int i = EBarOf(hit);
+            if (i >= 0) HitEBar(i, ShotDamage(type));
+        }
+    }
+    // blows: fists and melee weapons, the fire button, a barricade just in front
+    bool melee = type <= 15;
+    bool fire = IsForeground() && !ui::TheChat().IsOpen() && !MenuActive() && (GetAsyncKeyState(VK_LBUTTON) & 0x8000);
+    uint64_t every = type == 9 ? 200 : 450;
+    if (melee && fire && now >= meleeMs) {
+        CVector pos = me->GetPosition();
+        float hd = me->CurrentRotation();
+        CVector f{-std::sin(hd), std::cos(hd), 0.0f};
+        for (size_t i = 0; i < g_ebars.size(); ++i) {
+            const EBar& b = g_ebars[i];
+            if (b.gone) continue;
+            float dz = 0;
+            float l = EBarDist(b, pos - CVector{0, 0, 1.0f}, dz);
+            CVector ahead = pos - CVector{0, 0, 1.0f} + f * 0.8f;
+            float dz2 = 0;
+            if (std::fabs(dz) > 1.5f || l > 1.6f || EBarDist(b, ahead, dz2) > l + 0.05f) continue;  // near, and facing it
+            int dmg = type == 9 ? 25 : type == 0 ? 8 : type == 8 ? 45 : 20;  // the katana cuts
+            HitEBar((int)i, dmg);
+            meleeMs = now + every;
+            break;
+        }
+    }
+}
+// a blast of this game's (grenades, molotovs' fire not): the barricades near it
+void EBarBlast(const CVector& at) {
+    for (size_t i = 0; i < g_ebars.size(); ++i) {
+        if (g_ebars[i].gone) continue;
+        float dz = 0;
+        float d = EBarDist(g_ebars[i], at, dz);
+        d = std::sqrt(d * d + dz * dz);
+        if (d < 6.0f) HitEBar((int)i, (int)(400.0f * (1.0f - d / 6.0f)) + 60);
+    }
+}
+// the chainsaw's dash: through every barricade on its way
+void EBarDash(const CVector& at) {
+    for (size_t i = 0; i < g_ebars.size(); ++i) {
+        if (g_ebars[i].gone) continue;
+        float dz = 0;
+        float d = EBarDist(g_ebars[i], at - CVector{0, 0, 1.0f}, dz);
+        if (d < 1.2f && std::fabs(dz) < 1.6f) {
+            HitEBar((int)i, 10000);
+            if (!g_arena.host) EBarDown((int)i);  // out of the way at once (the host's word follows)
+        }
+    }
 }
 void AutoZones() {  // 3 spots of the floor far from each other and from the players' middle
     if (!g_zones.empty() || !GridUsable()) return;
@@ -4381,6 +4532,39 @@ void ZoneWave(int wave) {  // host, as a wave of the crack palace begins
 void Builder(CPed* p, Enemy& e, uint64_t now) {  // host, every round of tactics
     if (g_zoneNow < 0) return;
     int h = GetPedRef(p);
+    if (!e.hasBuildSpot && !g_buildSpots.empty()) {  // the host's own spots: a free one nearest the zone
+        int best = -1;
+        float bestD = 1e9f;
+        for (size_t k = 0; k < g_buildSpots.size(); ++k) {
+            const BuildSpot& bs = g_buildSpots[k];
+            bool taken = false;
+            for (const EBar& b : g_ebars)
+                if (!b.gone && (b.pos - bs.pos).Length() < 1.0f) taken = true;
+            for (auto& [q, qe] : g_info)
+                if (&qe != &e && qe.role == R_BUILDER && qe.buildIdx == (int)k && q->Health() > 0.0f) taken = true;
+            float d = (bs.pos - g_zoneAt).Length();
+            if (!taken && d < bestD) bestD = d, best = (int)k;
+        }
+        if (best < 0) {  // all up: it stays where it is
+            e.builds = 3;
+            return;
+        }
+        const BuildSpot& bs = g_buildSpots[(size_t)best];
+        e.buildIdx = best;
+        // it works from the side away from the players
+        float hr = bs.heading / 57.29578f;
+        CVector nrm{-std::sin(hr), std::cos(hr), 0.0f};
+        CVector mid{};
+        std::vector<CVector> pls = PlayerSpots();
+        for (const CVector& q : pls) mid = mid + q;
+        if (!pls.empty()) mid = mid * (1.0f / (float)pls.size());
+        CVector to = mid - bs.pos;
+        float side = to.x * nrm.x + to.y * nrm.y > 0 ? -1.0f : 1.0f;
+        CVector st = bs.pos + nrm * (1.3f * side);
+        float z = 0;
+        e.buildSpot = FloorBelow(st.x, st.y, bs.pos.z + 1.0f, z) && std::fabs(z - bs.pos.z) < 1.0f ? CVector{st.x, st.y, z} : bs.pos;
+        e.hasBuildSpot = true;
+    }
     if (!e.hasBuildSpot) {
         float a = Rand(0.0f, 6.2831853f), r = Rand(1.0f, 4.0f), z = 0;
         CVector sp = g_zoneAt + CVector{std::cos(a) * r, std::sin(a) * r, 0.0f};
@@ -4407,6 +4591,16 @@ void Builder(CPed* p, Enemy& e, uint64_t now) {  // host, every round of tactics
     ++e.builds;
     e.hasBuildSpot = false;
     Cmd(0x0687).I(h).Run();  // CLEAR_CHAR_TASKS
+    if (e.buildIdx >= 0 && e.buildIdx < (int)g_buildSpots.size()) {  // the host's own spot: the fence just as it was kept
+        BuildSpot bs = g_buildSpots[(size_t)e.buildIdx];
+        e.buildIdx = -1;
+        Send(A_EBAR, [&](Writer& w) {
+            w.Vec({bs.pos.x, bs.pos.y, bs.pos.z});
+            w.F32(bs.heading);
+        });
+        AddEBar(bs.pos, bs.heading);
+        return;
+    }
     CPed* t = NearestPlayer(p->GetPosition());
     CVector to = t ? t->GetPosition() - p->GetPosition() : CVector{0, 1, 0};
     to.z = 0;
@@ -5581,6 +5775,12 @@ void Handle(uint8_t from, Reader& r) {
         if (owner == Net().MyId()) ui::TheChat().AddSystem(Format(TR("Кент %s с вами.", "%s, a homie, is with you."), kGuardNames[name][Lang()]));
         return;
     }
+    if (r.Ok() && op == A_EBARHIT) {  // host: a partner hit a builder's barricade
+        uint8_t i = r.U8();
+        uint16_t dmg = r.U16();
+        if (r.Ok() && g_arena.host) HitEBar(i, dmg);
+        return;
+    }
     if (r.Ok() && op == A_SAWHIT) {  // host: a partner's chainsaw dash got to one of the arena's people
         uint16_t id = r.U16();
         if (!r.Ok() || !g_arena.host) return;
@@ -5730,6 +5930,9 @@ void Handle(uint8_t from, Reader& r) {
         int8_t idx = r.I8();
         Vec3 v = r.Vec();
         if (r.Ok()) ShowZone(idx, {v.x, v.y, v.z});
+    } else if (op == A_EBARGONE) {
+        uint8_t i = r.U8();
+        if (r.Ok()) EBarDown(i);
     } else if (op == A_EBAR) {
         Vec3 v = r.Vec();
         float hd = r.F32();
@@ -5984,6 +6187,7 @@ void Update() {
     GuardCopies();
     DashFrame(now);
     HoloFrame(now);
+    EBarFrame(now);
     if (!g_break && g_arena.left > 0 && g_arena.left <= 3) {
         if (!g_fewSince) g_fewSince = now;
     } else {
@@ -6290,6 +6494,7 @@ void DashFrame(uint64_t now) {
     float dt = std::min(0.1f, TimeStep() / 50.0f);
     if (g_dashing && me) {
         CVector pos = me->GetPosition(), next = pos + g_dashDir * std::min(g_dashLeft, 17.0f * dt), hit, n;
+        EBarDash(pos + g_dashDir * 0.9f);  // the builders' barricades: through them
         float z = 0;
         bool stop = g_dashLeft <= 0.05f || SawRay(pos + CVector{0, 0, 0.2f}, next + g_dashDir * 0.3f + CVector{0, 0, 0.2f}, hit, n) ||
                     !FloorBelow(next.x, next.y, next.z + 0.3f, z) || std::fabs(z + 1.0f - pos.z) > 1.2f;
@@ -6369,9 +6574,11 @@ void DrawDash() {
     if (WorldToScreen(to, x, y, depth) && depth > 0.2f) g.Ellipse(x, y, 7 * s, 4 * s, c);
 }
 
-// The barricade's hologram (H held): a see-through fence in front of this player that only it sees, following its
-// look; held 1.5 s where it can go (the bar fills), it is built there; let go earlier, nothing
+// The barricade's hologram: H pressed, a see-through fence in front of this player that only it sees, following its
+// look; H pressed again (a tap), it is gone; H held 1.5 s where it can go (the bar fills), it is built there
 bool g_holo = false, g_holoOk = false;
+bool g_holoArmed = false;    // H let go since the hologram came up: the next press is a tap or a hold
+uint64_t g_holoPress = 0;    // ms the current press lasts
 int g_holoObj = -1;
 CVector g_holoAt;
 float g_holoHeading = 0;
@@ -6402,6 +6609,8 @@ bool HoloKey() {  // H pressed
     Cmd(0x0382).I(g_holoObj).I(0).Run();  // SET_OBJECT_COLLISION: none
     g_holo = true;
     g_holoHeld = 0;
+    g_holoArmed = false;
+    g_holoPress = 0;
     g_holoLastMs = NowMs();
     return true;
 }
@@ -6410,7 +6619,15 @@ void HoloFrame(uint64_t now) {
     CPlayerPed* me = FindPlayerPed(0);
     CObject* o = g_holoObj >= 0 ? GetObject(g_holoObj) : nullptr;
     bool held = IsForeground() && (GetAsyncKeyState('H') & 0x8000) && !ui::TheChat().IsOpen() && !MenuActive();
-    if (!me || !o || !held || me->Health() <= 0.0f || g_spectating || g_arena.endAt) return HoloOff();
+    if (!me || !o || me->Health() <= 0.0f || me->InVehicle() || g_spectating || g_arena.endAt ||
+        me->AreaCode() != kPlaces[g_arena.place].area)
+        return HoloOff();
+    if (!held) {
+        if (g_holoArmed && g_holoPress > 0 && g_holoPress < 300) return HoloOff();  // a tap: put away
+        g_holoArmed = true;
+        g_holoPress = 0;
+        g_holoHeld = 0;
+    }
     float lift = 0, height = 0;
     ColOf(o->ModelIndex(), lift, height);
     // the ghost out of the way of its own tests (its fence stood where the floor was looked for)
@@ -6430,7 +6647,9 @@ void HoloFrame(uint64_t now) {
     CallMethod<0x5332C0>((void*)o, g_holoOk ? 110 : 45);  // CEntity::SetRwObjectAlpha: see-through (fainter where it cannot go)
     uint64_t dt = std::min<uint64_t>(now - g_holoLastMs, 100);
     g_holoLastMs = now;
-    g_holoHeld = g_holoOk ? g_holoHeld + dt : 0;
+    bool building = held && g_holoArmed;
+    if (building) g_holoPress += dt;
+    g_holoHeld = building && g_holoOk ? g_holoHeld + dt : 0;
     if (g_holoHeld < kHoloMs) return;
     CVector at = g_holoAt;  // built
     float heading = g_holoHeading;
@@ -6451,7 +6670,9 @@ void DrawHolo(uint64_t now) {
     g.Rect(x, y, w, h, 0xA0000000);
     g.Rect(x, y, w * k, h, g_holoOk ? 0xE060D060 : 0xE0D06060);
     g.Text(ui::FONT_SMALL, g.Width() * 0.5f, y - g.LineHeight(ui::FONT_SMALL),
-           g_holoOk ? TR("Держите H: стройка баррикады", "Hold H: building a barricade") : TR("Здесь не поставить", "It cannot go here"), 0xFFFFFFFF,
+           !g_holoOk ? TR("Здесь не поставить", "It cannot go here")
+           : g_holoHeld ? TR("Стройка баррикады...", "Building a barricade...")
+                        : TR("Держите H: построить, нажмите H: убрать", "Hold H: build, press H: put away"), 0xFFFFFFFF,
            ui::TEXT_CENTER | ui::TEXT_OUTLINE);
 }
 
@@ -6886,6 +7107,7 @@ public:
                            : a0 == "радио" || a0 == "radio"         ? "radio"
                            : a0 == "газировка" || a0 == "автомат" || a0 == "soda" ? "soda"
                            : a0 == "баррикада" || a0 == "barricade" ? "bar"
+                           : a0 == "стройка" || a0 == "строитель" || a0 == "build" ? "build"
                            : a0 == "стена" || a0 == "wall"          ? "wall"
                            : a0 == "сброс" || a0 == "reset"         ? "reset"
                                                                     : nullptr;
@@ -6943,6 +7165,9 @@ struct Reg {
 
 namespace arena {
 
+void BarricadeBlast(const CVector& at) {
+    if (g_arena.on && g_arena.taken && !g_ebars.empty()) EBarBlast(at);
+}
 bool On() {
     CPlayerPed* me = core::IsPlayerReady() ? FindPlayerPed(0) : nullptr;
     return g_arena.on && g_arena.taken && me && me->AreaCode() == kPlaces[g_arena.place].area;

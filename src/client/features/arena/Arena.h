@@ -6,6 +6,7 @@
 namespace game {
 struct CPed;
 struct CEntity;
+struct CVector;
 }
 
 namespace coop::arena {
@@ -32,7 +33,8 @@ bool KeyDown(int vk, bool repeat);
 bool InLobby();
 void LobbyStart();  // host
 bool Running();     // an arena is on now
-bool IsArenaEnemy(game::CPed* p);  // one of the arena's enemies (the host's, or a copy)
+bool IsArenaEnemy(game::CPed* p);
+void BarricadeBlast(const game::CVector& at);  // a blast of this game's: the builders' barricades near it break  // one of the arena's enemies (the host's, or a copy)
 void StartNow();    // host: the next arena now (F9)
 int FactionCount();
 std::string FactionTitle(int i);
