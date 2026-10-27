@@ -331,7 +331,12 @@ struct MerchantState {
     CPed* ped = nullptr;   // host: the man; partners: their copy
     uint64_t textUntil = 0, walkUntil = 0;
     int wave = 0;          // host: the wave he came after
+    game::CVector from;    // where he came in (every game: the cut-scene looks there)
+    uint64_t cutFrom = 0, cutUntil = 0;  // the cut-scene: after the words, 5 s of him walking in
+    bool cut = false;
 } g_merchant;
+bool g_hasMerchantTo = false;  // host: where he walks to at this place (/торговец цель), else beside the box
+game::CVector g_merchantTo;
 bool g_hasMerchantSpot = false;  // host: where he comes in at this place (/торговец), else an enemies' spot
 game::CVector g_merchantSpot;
 bool MerchantWave(int w) { return w == 5 || (w > 5 && (w - 5) % 10 == 0); }
@@ -3171,9 +3176,11 @@ void LoadOwnPoints() {
     float h = 0;
     for (const std::string& v : SpotLines(file, sec, "spawn", 0))
         if (ReadVec(v, p, h)) g_hasOwnSpawn = true, g_ownSpawn = p;
-    g_hasMerchantSpot = false;
+    g_hasMerchantSpot = g_hasMerchantTo = false;
     for (const std::string& v : SpotLines(file, sec, "merchant", 0))
         if (ReadVec(v, p, h)) g_hasMerchantSpot = true, g_merchantSpot = p;
+    for (const std::string& v : SpotLines(file, sec, "merchantto", 0))
+        if (ReadVec(v, p, h)) g_hasMerchantTo = true, g_merchantTo = p;
     for (const std::string& v : SpotLines(file, sec, "enemy", 8))
         if (ReadVec(v, p, h)) g_enemyPts.push_back(p);
     for (const std::string& v : SpotLines(file, sec, "zone", 4))
@@ -3290,7 +3297,7 @@ void SaveSpot(const std::string& what) {
                                              : TR("Автомат %d поставлен здесь (сохранено для этого места).", "Machine %d put here (kept for this place)."), k));
     } else if (what.size() > 5 && what.compare(what.size() - 5, 5, "reset") == 0) {  // one kind forgotten: /arena <kind> сброс
         std::string kind = what.substr(0, what.size() - 5);
-        int most = kind == "merchant" ? 0 : kind == "enemy" ? 8 : kind == "zone" || kind == "radio" || kind == "soda" ? 4 : kind == "bar" ? kMaxBars
+        int most = kind == "merchant" || kind == "merchantto" ? 0 : kind == "enemy" ? 8 : kind == "zone" || kind == "radio" || kind == "soda" ? 4 : kind == "bar" ? kMaxBars
                  : kind == "build" ? kMaxBuildSpots : 0;
         if (most == 0) ini.Set(sec, kind, "");  // box, spawn: one each
         for (int k = 1; k <= most; ++k) ini.Set(sec, Format("%s%d", kind.c_str(), k), "");
@@ -3326,7 +3333,12 @@ void SaveSpot(const std::string& what) {
     } else if (what == "merchant") {
         ini.Set(sec, "merchant", line);
         g_hasMerchantSpot = true, g_merchantSpot = p;
-        ui::TheChat().AddSystem(TR("Торговец будет приходить отсюда (сохранено для этого места).", "The merchant comes in from here (kept for this place)."));
+        ui::TheChat().AddSystem(TR("Торговец будет приходить отсюда (сохранено для этого места). Куда идти: /торговец цель",
+                                   "The merchant comes in from here (kept for this place). Where to: /merchant to"));
+    } else if (what == "merchantto") {
+        ini.Set(sec, "merchantto", line);
+        g_hasMerchantTo = true, g_merchantTo = p;
+        ui::TheChat().AddSystem(TR("Торговец будет идти сюда и торговать здесь (сохранено для этого места).", "The merchant walks here and trades here (kept for this place)."));
     } else if (what == "spawn") {
         ini.Set(sec, "spawn", line);
         ui::TheChat().AddSystem(TR("Точка появления игроков сохранена (со следующей арены).", "The players' spot to come in at is kept (from the next arena on)."));
@@ -6201,6 +6213,7 @@ void End(bool tell) {
     if (Ref<CVehicle*>((uintptr_t)&PlayerInfos()[0] + 0xB0)) Call<0x45AE80>(false);  // a Shahed in the air: gone
     if (CPlayerPed* me = FindPlayerPed(0)) Cmd(0x04D7).I(GetPedRef(me)).I(0).Run();
     if (g_arena.host && g_merchant.ped && IsPedValid(g_merchant.ped)) Cmd(0x009B).I(GetPedRef(g_merchant.ped)).Run();
+    if (g_merchant.cut) Cmd(0x02A3).I(0).Run(), Cmd(0x015A).Run(), Cmd(0x01B4).I(0).I(1).Run();  // the cut-scene cut short
     g_merchant = MerchantState{};
     ResetShop();
     g_station = -1;
@@ -6346,14 +6359,24 @@ void Buy(int i) {
 }
 
 // ---- the merchant comes (host) and goes; every game shows the words and knows him
+void SendMerchant(bool on, uint16_t id) {  // host: him (his id once known), and where he came in (the cut-scene's place)
+    CVector at = g_merchant.from;
+    Send(A_MERCHANT, [&](Writer& w) {
+        w.U8(on ? 1 : 0);
+        w.U16(id);
+        w.Vec({at.x, at.y, at.z});
+    });
+}
 void ShowMerchant(bool on, uint16_t id) {  // every game
+    bool coming = on && !g_merchant.on;  // the first word of him (the next ones only bring his id)
     g_merchant.on = on, g_merchant.id = id;
-    if (on) g_merchant.textUntil = NowMs() + 4500;
+    if (coming) g_merchant.textUntil = NowMs() + 4500, g_merchant.cutFrom = g_merchant.textUntil - 400, g_merchant.cutUntil = g_merchant.textUntil + 5500;
     else SetShopOpen(false), g_merchant.ped = nullptr;
 }
 void StartMerchant() {  // host
     if (!LoadModelNow(MODEL_MERCHANT)) return;
     CVector at = g_hasMerchantSpot ? g_merchantSpot + CVector{0, 0, 1.0f} : SpawnSpot(Rand(0.0f, 6.2831853f), 3.2f, 6.0f);
+    g_merchant.from = at;
     int h = -1;
     Cmd(0x009A).I(4 /* PED_TYPE_CIVMALE */).I(MODEL_MERCHANT).F(at.x).F(at.y).F(at.z - 1.0f).Out(&h).Run();  // CREATE_CHAR
     CPed* p = h >= 0 ? GetPed(h) : nullptr;
@@ -6371,22 +6394,47 @@ void StartMerchant() {  // host
         float r = g_box.heading / 57.29578f;
         to = to + CVector{-std::sin(r), std::cos(r), 0.0f} * 1.8f;
     }
+    if (g_hasMerchantTo) to = g_merchantTo;  // the host's own spot for him (/торговец цель)
     Cmd(0x05D3).I(h).F(to.x).F(to.y).F(to.z + 1.0f).I(4).I(20000).Run();  // TASK_GO_STRAIGHT_TO_COORD, walking
     g_merchant.walkUntil = NowMs() + 20000;
-    g_merchant.textUntil = NowMs() + 4500;
     g_merchant.on = true;
+    g_merchant.textUntil = NowMs() + 4500;
+    g_merchant.cutFrom = g_merchant.textUntil - 400, g_merchant.cutUntil = g_merchant.textUntil + 5500;
     LOGI("Arena: the merchant comes after wave %d", g_arena.wave);
 }
 void EndMerchant() {  // host
     if (g_merchant.ped && IsPedValid(g_merchant.ped)) Cmd(0x009B).I(GetPedRef(g_merchant.ped)).Run();  // DELETE_CHAR
     g_merchant.ped = nullptr;
-    Send(A_MERCHANT, [](Writer& w) {
-        w.U8(0);
-        w.U16(0);
-    });
+    SendMerchant(false, 0);
     ShowMerchant(false, 0);
 }
+// every game: the merchant's coming in, a short cut-scene once the words are gone: the bars, a fixed camera beside where
+// he came in following him, the player held still; then everything as it was
+void MerchantCut(uint64_t now) {
+    CPlayerPed* me = FindPlayerPed(0);
+    bool want = g_merchant.on && now >= g_merchant.cutFrom && now < g_merchant.cutUntil && me && me->Health() > 0.0f && !g_spectating &&
+                !Players::Instance().LocalDowned() && arena::On();
+    if (want && !g_merchant.cut) {
+        g_merchant.cut = true;
+        Cmd(0x01B4).I(0).I(0).Run();  // SET_PLAYER_CONTROL off
+        Cmd(0x02A3).I(1).Run();       // SWITCH_WIDESCREEN on
+    }
+    if (want) {
+        CVector look = g_merchant.ped && IsPedValid(g_merchant.ped) ? g_merchant.ped->GetPosition() : g_merchant.from;
+        CVector cam = g_merchant.from + CVector{2.6f, -2.6f, 1.4f};
+        CVector hit;
+        if (Ray(look + CVector{0, 0, 0.4f}, cam, hit)) cam = hit + (look - hit) * (0.3f / std::max(0.3f, (look - hit).Length()));  // not in a wall
+        Cmd(0x015F).F(cam.x).F(cam.y).F(cam.z).F(0.0f).F(0.0f).F(0.0f).Run();  // SET_FIXED_CAMERA_POSITION
+        Cmd(0x0160).F(look.x).F(look.y).F(look.z + 0.3f).I(2).Run();            // POINT_CAMERA_AT_POINT
+    } else if (g_merchant.cut) {
+        g_merchant.cut = false;
+        Cmd(0x02A3).I(0).Run();       // SWITCH_WIDESCREEN off
+        Cmd(0x015A).Run();            // RESTORE_CAMERA_JUMPCUT
+        Cmd(0x01B4).I(0).I(1).Run();  // SET_PLAYER_CONTROL on
+    }
+}
 void MerchantFrame(uint64_t now) {  // every game
+    MerchantCut(now);
     if (!g_merchant.on) return;
     if (g_arena.host) {
         CPed* p = g_merchant.ped;
@@ -6395,14 +6443,11 @@ void MerchantFrame(uint64_t now) {  // every game
             if (NetPed* np = Peds::Instance().Find(p)) id = np->netId;
             if (id != g_merchant.id) {  // its id at last: the partners told
                 g_merchant.id = id;
-                Send(A_MERCHANT, [id](Writer& w) {
-                    w.U8(1);
-                    w.U16(id);
-                });
+                SendMerchant(true, id);
             }
             if (g_merchant.walkUntil && now > g_merchant.walkUntil && g_box.placed) {  // stuck on the way: there
                 g_merchant.walkUntil = 0;
-                SetEntityPosition(p, g_box.pos + CVector{1.8f, 0, 1.0f});
+                SetEntityPosition(p, (g_hasMerchantTo ? g_merchantTo : g_box.pos + CVector{1.8f, 0, 0}) + CVector{0, 0, 1.0f});
             }
         }
     } else if (!g_merchant.ped || !IsPedValid(g_merchant.ped)) {
@@ -6994,8 +7039,9 @@ void Handle(uint8_t from, Reader& r) {
     } else if (op == A_MERCHANT) {  // the merchant comes (his id once it is known) or goes
         uint8_t on = r.U8();
         uint16_t id = r.U16();
+        Vec3 at = r.Vec();
         if (!r.Ok()) return;
-        if (on && !g_merchant.on) g_iVoted = false;
+        if (on && !g_merchant.on) g_iVoted = false, g_merchant.from = {at.x, at.y, at.z};
         ShowMerchant(on != 0, id);
     } else if (op == A_SAWWIND) {  // the Butcher winds up (his copy here roars too)
         uint16_t id = r.U16();
@@ -7703,10 +7749,7 @@ void Update() {
                     g_votes.clear(), g_voteCount = 0, g_iVoted = false;
                     SendVotes();
                     Send(A_PREP, [](Writer& w) { w.U8(60); });
-                    Send(A_MERCHANT, [](Writer& w) {
-                        w.U8(1);
-                        w.U16(0);
-                    });
+                    SendMerchant(true, 0);
                     return;
                 }
             }
@@ -8455,9 +8498,13 @@ public:
     }
     bool OnCommand(const std::string& cmd, const std::vector<std::string>& args) override {
         std::string c = LowerRu(cmd);
-        if (c == "торговец" || c == "setmerchant") {  // /торговец: where the merchant comes in at this place
+        if (c == "торговец" || c == "setmerchant" || c == "merchant") {  // /торговец: where he comes in; /торговец цель: where he goes
+            std::string a1 = args.empty() ? "" : LowerRu(args[0]);
+            bool to = a1 == "цель" || a1 == "куда" || a1 == "to";
+            bool reset = a1 == "сброс" || a1 == "reset";
             if (!g_arena.on || !g_arena.taken) ui::TheChat().AddError(TR("Сначала начните арену в этом месте.", "Start an arena at that place first."));
-            else SaveSpot("merchant");
+            else if (reset) SaveSpot("merchantreset"), SaveSpot("merchanttoreset");
+            else SaveSpot(to ? "merchantto" : "merchant");
             return true;
         }
         if (c == "spawnmerchant" || c == "вызватьторговца") {  // the merchant now (a test; the host)
@@ -8465,10 +8512,7 @@ public:
             else if (!g_merchant.on) {
                 StartMerchant();
                 if (g_merchant.on && g_break && g_arena.nextWaveMs) g_arena.nextWaveMs = std::max(g_arena.nextWaveMs, NowMs() + 60000), Send(A_PREP, [](Writer& w) { w.U8(60); });
-                Send(A_MERCHANT, [](Writer& w) {
-                    w.U8(1);
-                    w.U16(0);
-                });
+                SendMerchant(true, 0);
             }
             return true;
         }
