@@ -348,6 +348,12 @@ bool MerchantWave(int w) { return w > 0 && w % 5 == 0; }  // after every 5th wav
 // gadget (0 none, 1 the cop's visor, 2 the rage dose, 3 the Shahed's remote), the mods
 int g_armourKind = 0, g_gadget = 0;
 bool g_modUgl = false, g_modBayonet = false, g_modSpark = false;
+int g_modGun[3] = {0, 0, 0};  // the gun each mod is on (the launcher, the bayonet, the twin mags), chosen at the buying
+bool ModOn(int mod, int weapon) {  // 0 the launcher, 1 the bayonet, 2 the twin mags: on the gun in hand
+    bool has = mod == 0 ? g_modUgl : mod == 1 ? g_modBayonet : g_modSpark;
+    return has && weapon > 0 && weapon == g_modGun[mod];
+}
+int g_modPick = -1;  // the merchant's screen: the mod (its kShop index) whose gun is being chosen, -1: none
 float g_visorCharge = 100.0f;
 bool g_visorOn = false;
 int g_rageReadyWave = 0;  // the rage dose: once in 2 waves
@@ -382,6 +388,8 @@ void SetWardOpen(bool on);
 void ResetShop() {  // a new arena: nothing bought
     g_armourKind = g_gadget = 0;
     g_modUgl = g_modBayonet = g_modSpark = false;
+    g_modGun[0] = g_modGun[1] = g_modGun[2] = 0;
+    g_modPick = -1;
     g_visorCharge = 100.0f, g_visorOn = false;
     g_rageReadyWave = 0, g_rageStunUntil = g_rageUntil = g_rageTextUntil = 0;
     g_shahedCharges = g_scrap = 0, g_shahedSince = 0;
@@ -5895,9 +5903,9 @@ void PlayerUgl() {
     if (g_uglReadyMs && now >= g_uglReadyMs) g_uglReadyMs = 0, g_uglLoaded = true;
     if (g_uglReadyMs) return;  // loading
     int gun = me->ActiveWeapon().type;
-    bool fits = gun == 30 ? (g_hasUgl || g_modUgl) : g_modUgl && gun >= 22 && gun <= 34;  // the bought one: on any gun
+    bool fits = (gun == 30 && g_hasUgl) || ModOn(0, gun);  // the bought one: on the gun it was put on
     if (!fits) {
-        ui::TheChat().AddError(g_modUgl ? TR("Возьмите оружие в руки.", "Take a gun in hand.") : TR("Возьмите АК-47 в руки.", "Take the AK-47 in hand."));
+        ui::TheChat().AddError(g_modUgl ? Format(TR("Возьмите в руки: %s.", "Take in hand: %s."), WeaponName(g_modGun[0])) : std::string(TR("Возьмите АК-47 в руки.", "Take the AK-47 in hand.")));
         return;
     }
     if (g_uglLoaded) {
@@ -6528,10 +6536,32 @@ void TwinCopies() {
 }
 
 void ShowHelp(const std::string& text, uint64_t ms);
+const char* WeaponName(int w);
+std::vector<int> ModGuns() {  // the guns this player carries that a mod goes on (pistols to the rifles)
+    std::vector<int> guns;
+    if (CPlayerPed* me = FindPlayerPed(0))
+        for (int slot = 0; slot < NUM_WEAPON_SLOTS; ++slot) {
+            int t = me->Weapons()[slot].type;
+            if (t >= 22 && t <= 34 && std::find(guns.begin(), guns.end(), t) == guns.end()) guns.push_back(t);
+        }
+    return guns;
+}
 void Buy(int i) {
     if (i < 0 || i >= kShopCount) return;
     const ShopItem& it = kShop[i];
     if (Owned(it)) return;
+    if (it.kind == 2 && g_modPick != i) {  // a mod: first the gun it goes on
+        if (Cash() < ShopPrice(it.price)) {
+            ui::TheChat().AddError(Format(TR("Нужно $%d.", "You need $%d."), ShopPrice(it.price)));
+            return;
+        }
+        if (ModGuns().empty()) {
+            ui::TheChat().AddError(TR("Нет оружия для модификации.", "No gun to put it on."));
+            return;
+        }
+        g_modPick = i;
+        return;
+    }
     int price = ShopPrice(it.price);  // the rare clothes' discount
     if (Cash() < price) {
         ui::TheChat().AddError(Format(TR("Нужно $%d.", "You need $%d."), price));
@@ -6541,6 +6571,7 @@ void Buy(int i) {
     if (it.kind == 0) g_armourKind = it.which;
     else if (it.kind == 1) g_gadget = it.which, g_shahedCharges = it.which == 3 ? 1 : g_shahedCharges;
     else (it.which == 1 ? g_modUgl : it.which == 2 ? g_modBayonet : g_modSpark) = true;
+    g_modPick = -1;
     if (it.kind == 2 && it.which == 1) g_uglLoaded = true;
     CallMethod<0x506EA0>((void*)0xB6BC90, 40 /* AE_FRONTEND_PURCHASE_WEAPON: the till */, 0.0f, 1.0f);
     if (CPlayerPed* me = FindPlayerPed(0)) {
@@ -6548,7 +6579,10 @@ void Buy(int i) {
         Cmd(0x018C).F(at.x).F(at.y).F(at.z).I(1054).Run();  // ADD_ONE_OFF_SOUND: SOUND_BUY
     }
     LOGI("Arena: bought %s", it.name[1]);
-    ShowHelp(Format("%s: %s", kShop[i].name[Lang()], kShop[i].what[Lang()]), 6000);
+    if (it.kind == 2)
+        ShowHelp(Format("%s (%s): %s", kShop[i].name[Lang()], WeaponName(g_modGun[it.which - 1]), kShop[i].what[Lang()]), 6000);
+    else
+        ShowHelp(Format("%s: %s", kShop[i].name[Lang()], kShop[i].what[Lang()]), 6000);
 }
 
 // ---- the merchant comes (host) and goes; every game shows the words and knows him
@@ -6670,9 +6704,76 @@ float g_shopMouseX = -1, g_shopMouseY = -1;
 void SetShopOpen(bool on) {
     if (on == g_shopOpen) return;
     g_shopOpen = on;
+    g_modPick = -1;
     ui::In().SetKeyboardCapture(on);
     ui::In().SetMouseCapture(on);
     if (on) g_shopSel = 0, g_shopOpenedMs = NowMs();
+}
+// the mod bought: which of the guns carried it goes on (a card a gun); Esc back to the merchant's cards
+int g_modPickSel = 0;
+uint64_t g_modPickMs = 0;
+void DrawModPick() {
+    auto& g = ui::Gfx();
+    float s = g.Scale();
+    auto& st = ui::In().State();
+    const ShopItem& it = kShop[g_modPick];
+    std::vector<int> guns = ModGuns();
+    if (guns.empty()) {
+        g_modPick = -1;
+        return;
+    }
+    int n = (int)guns.size();
+    bool take = false;
+    for (int vk : st.keyDowns) {
+        if (vk == VK_ESCAPE || vk == VK_BACK || vk == 'E') {
+            g_modPick = -1;
+            return;
+        }
+        if (vk == 'A' || vk == 'W' || vk == VK_LEFT || vk == VK_UP) g_modPickSel = std::max(0, g_modPickSel - 1);
+        if (vk == 'D' || vk == 'S' || vk == VK_RIGHT || vk == VK_DOWN) g_modPickSel = std::min(n - 1, g_modPickSel + 1);
+        if (vk == VK_RETURN || vk == VK_SPACE) take = true;
+        if (vk >= '1' && vk <= '9' && vk - '1' < n) g_modPickSel = vk - '1', take = true;
+    }
+    g_modPickSel = std::clamp(g_modPickSel, 0, n - 1);
+    float W = 1000 * s, H = 420 * s;
+    float x = (g.Width() - W) * 0.5f, y = (g.Height() - H) * 0.5f;
+    g.Rect(0, 0, g.Width(), g.Height(), 0x70000000);
+    g.Rect(x, y, W, H, 0xF0000000);
+    g.RectOutline(x, y, W, H, 0xFF26303B, std::max(1.0f, s));
+    g.GameText(ui::GAME_FONT_GOTHIC, x + 40 * s, y + 14 * s, "Merchant", 56 * s, 0xFFACCBF1);
+    g.GameText(ui::GAME_FONT_PRICEDOWN, x + W - 40 * s, y + 24 * s, Format("$%d", ShopPrice(it.price)), 40 * s, 0xFF36682C, ui::TEXT_RIGHT);
+    g.Text(ui::FONT_MENU, x + 40 * s, y + 90 * s, Format(TR("%s: на какое оружие?", "%s: on which gun?"), it.name[Lang()]), 0xFFFFFFFF, ui::TEXT_SHADOW);
+    auto hover = [&](float hx, float hy, float hw, float hh) { return st.mouseX >= hx && st.mouseX < hx + hw && st.mouseY >= hy && st.mouseY < hy + hh; };
+    float gap = 14 * s, cy = y + 140 * s, chh = 150 * s;
+    float cw = (W - 80 * s - gap * (float)(n - 1)) / (float)n;
+    static float mx = -1, my = -1;
+    for (int k = 0; k < n; ++k) {
+        float cx = x + 40 * s + (cw + gap) * (float)k;
+        bool hv = hover(cx, cy, cw, chh);
+        if (hv && (st.mouseX != mx || st.mouseY != my)) g_modPickSel = k;
+        bool sel = g_modPickSel == k;
+        g.Rect(cx, cy, cw, chh, sel ? 0xE0182230 : 0xC0101418);
+        g.RectOutline(cx, cy, cw, chh, sel ? 0xFFACCBF1 : 0xFF26303B, std::max(1.0f, s) * (sel ? 2.5f : 1.0f));
+        g.Text(ui::FONT_SMALL, cx + 12 * s, cy + 10 * s, Format("%d", k + 1), 0xFF8D9CAD, ui::TEXT_SHADOW);
+        float py = cy + chh * 0.5f - g.LineHeight(ui::FONT_MENU);
+        for (auto& line : g.Wrap(ui::FONT_MENU, ui::Widen(WeaponName(guns[(size_t)k])), cw - 20 * s)) {
+            g.TextW(ui::FONT_MENU, cx + cw * 0.5f, py, line, sel ? 0xFFACCBF1 : 0xFFFFFFFF, ui::TEXT_CENTER | ui::TEXT_SHADOW);
+            py += g.LineHeight(ui::FONT_MENU);
+        }
+        if (hv && st.lmbPressed) take = true, g_modPickSel = k, st.lmbPressed = false;
+    }
+    mx = st.mouseX, my = st.mouseY;
+    g.Text(ui::FONT_SMALL, x + W * 0.5f, y + H - 34 * s,
+           TR("A/D, стрелки — выбор    Enter, Пробел, ЛКМ, цифра — поставить    Esc, E — назад",
+              "A/D, arrows: pick    Enter, Space, click, a digit: put on    Esc, E: back"),
+           0xFF8D9CAD, ui::TEXT_CENTER | ui::TEXT_SHADOW);
+    ui::w::DrawCursor();
+    if (take) {
+        int i = g_modPick;
+        g_modGun[kShop[i].which - 1] = guns[(size_t)g_modPickSel];
+        Buy(i);
+        g_modPick = -1;
+    }
 }
 void DrawShop() {
     auto& g = ui::Gfx();
@@ -6687,6 +6788,7 @@ void DrawShop() {
     if (g_merchant.on && g_merchant.ped && IsPedValid(g_merchant.ped))
         Label(g_merchant.ped->GetPosition() + CVector{0, 0, 1.2f}, TR("Торговец  [E]", "Merchant  [E]"), 0xFFE1C35A, 40.0f, true);
     if (!g_shopOpen) return;
+    if (g_modPick >= 0) return DrawModPick();
     // this tab's items
     std::vector<int> items;
     for (int i = 0; i < kShopCount; ++i)
@@ -6745,7 +6847,9 @@ void DrawShop() {
             py += g.LineHeight(ui::FONT_MENU);
         }
         py += 10 * s;
-        if (own) g.Text(ui::FONT_MENU, cx + cw * 0.5f, py, it.kind == 0 ? TR("НАДЕТО", "WORN") : TR("КУПЛЕНО", "BOUGHT"), 0xFF5FA04E, ui::TEXT_CENTER | ui::TEXT_SHADOW);
+        if (own && it.kind == 2)  // a mod: the gun it is on
+            g.Text(ui::FONT_MENU, cx + cw * 0.5f, py, Format(TR("НА: %s", "ON: %s"), WeaponName(g_modGun[it.which - 1])), 0xFF5FA04E, ui::TEXT_CENTER | ui::TEXT_SHADOW);
+        else if (own) g.Text(ui::FONT_MENU, cx + cw * 0.5f, py, it.kind == 0 ? TR("НАДЕТО", "WORN") : TR("КУПЛЕНО", "BOUGHT"), 0xFF5FA04E, ui::TEXT_CENTER | ui::TEXT_SHADOW);
         else g.GameText(ui::GAME_FONT_PRICEDOWN, cx + cw * 0.5f, py, Format("$%d", ShopPrice(it.price)), 34 * s, can ? 0xFF36682C : 0xFFB4191D, ui::TEXT_CENTER);
         py += 46 * s;
         for (auto& line : g.Wrap(ui::FONT_SMALL, ui::Widen(it.what[Lang()]), cw - 32 * s)) {
@@ -6976,14 +7080,15 @@ void GadgetFrame(uint64_t now) {
     static int reloads = 0;
     CWeapon& w = me->ActiveWeapon();
     bool now2 = w.state == 2;  // WEAPONSTATE_RELOADING
-    if (g_modSpark && now2 && !reloading) {
+    bool spark = ModOn(2, w.type);  // the twin mags: on that gun only
+    if (spark && now2 && !reloading) {
         ++reloads;
         if (reloads % 2 == 1) {
             uint32_t t = TimeMs();
             if (w.timeForNextShot > t) w.timeForNextShot = t + (w.timeForNextShot - t) / 2;
         }
     }
-    if (g_modSpark && now2 && reloads % 2 == 1)
+    if (spark && now2 && reloads % 2 == 1)
         if (void* clump = me->RwObject())
             for (int anim : {226, 227})
                 if (void* assoc = Call<0x4D68B0, void*>(clump, (uint32_t)anim)) Ref<float>((uintptr_t)assoc + 0x24) = 2.0f;
@@ -7023,7 +7128,7 @@ bool Bayonet() {
     CPlayerPed* me = FindPlayerPed(0);
     if (!me || !g_modBayonet) return false;
     int w = me->ActiveWeapon().type;
-    if (w < 22 || w > 34) return false;
+    if (!ModOn(1, w)) return false;  // on the gun it was put on
     float hd = me->CurrentRotation();
     CVector f{-std::sin(hd), std::cos(hd), 0.0f};
     CPed* best = nullptr;
@@ -7575,10 +7680,12 @@ void DrawKeys() {
                            {"Y", TR("Пропустить паузу", "Skip the break")}, {"Tab", TR("Счёт", "Score")},
                            {"J", TR("Положить оружие", "Put the gun down")}, {"R", TR("Перезарядка", "Reload")}};
     if (me && me->ActiveWeapon().type == 9) keys.push_back({"N", TR("Рывок бензопилой", "Chainsaw dash")});
-    else if (me && ((me->ActiveWeapon().type == 30 && g_hasUgl) || g_modUgl || g_modBayonet))
-        keys.push_back({"N", g_modBayonet && !g_modUgl && !g_hasUgl ? TR("Штык-нож", "Bayonet")
-                             : g_modBayonet                         ? TR("Подствольник / штык", "Launcher / bayonet")
-                                                                    : TR("Подствольник", "Launcher")});
+    else if (me) {
+        int aw = me->ActiveWeapon().type;
+        bool ugl = (aw == 30 && g_hasUgl) || ModOn(0, aw), bay = ModOn(1, aw);
+        if (ugl || bay)
+            keys.push_back({"N", bay && !ugl ? TR("Штык-нож", "Bayonet") : bay ? TR("Подствольник / штык", "Launcher / bayonet") : TR("Подствольник", "Launcher")});
+    }
     if (g_gadget) keys.push_back({"X", g_gadget == 1 ? TR("Визор", "Visor") : g_gadget == 2 ? TR("Рейдж-доза", "Rage dose") : TR("Shahed", "Shahed")});
     auto& g = ui::Gfx();
     float s = g.Scale();
@@ -8448,7 +8555,7 @@ void DrawCod() {
             g.Text(ui::FONT_NORMAL, x, y + t * 30 * s, p.text, ui::WithAlpha(p.color, 1.0f - t), ui::TEXT_RIGHT | ui::TEXT_OUTLINE);
     }
     y = g.Height() * 0.62f;
-    if (CPlayerPed* me = FindPlayerPed(0); g_hasUgl && me && me->ActiveWeapon().type == 30) {  // only with the AK in hand
+    if (CPlayerPed* me = FindPlayerPed(0); me && ((g_hasUgl && me->ActiveWeapon().type == 30) || ModOn(0, me->ActiveWeapon().type))) {  // only with its gun in hand
         std::string t = g_uglReadyMs  ? std::string(TR("Подствольник: заряжается", "Launcher: loading"))
                         : g_uglLoaded ? std::string(TR("Подствольник [N]", "Launcher [N]"))
                                       : Format(TR("Подствольник пуст [N] гранат %d", "Launcher empty [N] grenades %d"), GrenadesHeld(me));
