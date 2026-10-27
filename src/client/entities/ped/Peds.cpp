@@ -614,6 +614,18 @@ void Peds::ScanOwned() {
     for (auto it = m_localOnly.begin(); it != m_localOnly.end();)
         it = GetPed(*it) ? std::next(it) : m_localOnly.erase(it);
     for (auto it = m_shared.begin(); it != m_shared.end();) it = GetPed(*it) ? std::next(it) : m_shared.erase(it);
+    // a copy its owner stopped telling of (its owner sends a state every 66-300 ms while it is in range, and its removal
+    // when it goes): one that heard nothing for 6 s stood there as a ghost (shots went through it); gone
+    {
+        std::vector<uint16_t> stale;
+        for (auto& [id, np] : m_byId)
+            if (np.owner != myId && np.hasState && IsAlive(np) && !IsPedDead(np.ped) && !np.ped->InVehicle() && now - np.recvMs > 6000)
+                stale.push_back(id);
+        for (uint16_t id : stale) {
+            LOGI("Ped %04X: nothing from its owner for 6 s: its copy removed", id);
+            Forget(id, true);
+        }
+    }
 
     // owned peds that vanished or went out of the partner's range (or an interior's that came out as this game's own).
     // A mission's ped stays announced when its mission lets it stay on in the world (DONT_REMOVE_CHAR keeps it a script
@@ -1434,7 +1446,7 @@ void Peds::ApplyMirror(NetPed& np) {
 
     // guns. Running (faster than a walk) it runs here too, the gun down: aiming, the copy slid along at a run while
     // its gun task stepped backwards or sideways at a walk (a moonwalk)
-    if ((st.flags & PedSyncState::F_AIMING) && st.weapon != 0 && st.vel.Length2D() < 2.6f) {
+    if ((st.flags & PedSyncState::F_AIMING) && st.weapon != 0 && st.vel.Length2D() < 1.6f) {  // (2.6 still ran backwards)
         CVector aimAt = st.pos + st.aim;
         uint8_t mode = (st.flags & PedSyncState::F_FIRING) ? 2 : 1;
         int targetHandle = aimHandle();

@@ -143,13 +143,13 @@ const Place kPlaces[] = {
     {{TRP("притон", "crack"), TRP("смоук", "crack")}, TRP("Крэк-дворец Биг Смоука", "Big Smoke's crack palace"), 2, {2543.46f, -1308.38f, 1026.73f}, 14.0f, false, false, {2564.73f, -1297.03f, 1030.42f}, 91.0f},
     {{TRP("особняк", "mansion"), TRP("мэддогг", "mansion")}, TRP("Особняк Мэдд Догга", "Madd Dogg's mansion"), 5, {1267.66f, -781.32f, 1091.91f}, 18.0f, true, false, {1270.81f, -838.83f, 1084.63f}, 0.8f},
     {{TRP("мясокомбинат", "meat"), TRP("бойня", "meat")}, TRP("Мясокомбинат", "The meat factory"), 1, {963.42f, 2108.29f, 1011.03f}, 48.0f, true, false, {932.65f, 2143.48f, 1010.02f}, -90.7f},
-    {{TRP("мотель", "motel"), TRP("джефферсон", "motel")}, TRP("Мотель «Джефферсон»", "The Jefferson motel"), 15, {2215.45f, -1147.48f, 1025.80f}, 20.0f, true, true, {2239.92f, -1183.31f, 1028.80f}, -89.7f},
+    {{TRP("мотель", "motel"), TRP("джефферсон", "motel")}, TRP("Мотель «Джефферсон»", "The Jefferson motel"), 15, {2215.45f, -1147.48f, 1025.80f}, 20.0f, true, true, {2238.94f, -1184.78f, 1032.80f}, -89.4f},
     {{TRP("либерти", "liberty"), TRP("бистро", "liberty")}, TRP("Либерти-Сити (бистро Марко)", "Liberty City (Marco's bistro)"), 1, {-794.81f, 497.74f, 1376.20f}, 14.0f, false, false, {-786.55f, 500.08f, 1370.74f}, 1.3f},
     {{TRP("полиция", "police"), TRP("участок", "police")}, TRP("Полицейский участок", "The police station"), 6, {246.78f, 63.90f, 1003.64f}, 14.0f, false, true, {227.23f, 79.96f, 1004.04f}, -90.0f},
     {{TRP("дамба", "dam"), TRP("шерман", "dam")}, TRP("Дамба Шерман", "The Sherman dam"), 17, {-959.56f, 1848.58f, 9.00f}, 30.0f, true, false, {-960.25f, 1882.85f, 8.00f}, -90.5f},
     {{TRP("кикстарт", "kickstart"), TRP("кикстарт", "kickstart")}, TRP("Стадион «Кикстарт»", "The Kickstart stadium"), 14, {-1465.27f, 1557.87f, 1052.53f}, 35.0f, true, true, {-1422.02f, 1569.40f, 1051.53f}, -0.7f},
     // the big ones added later (at the end: the places' numbers in coop.ini stay as they were)
-    {{TRP("полигон", "rc"), TRP("зеро", "zero")}, TRP("RC-полигон Зеро", "Zero's RC battlefield"), 10, {-975.58f, 1061.13f, 1346.2f}, 32.0f, true, false, {-979.85f, 1069.77f, 1343.96f}, -89.4f},
+    {{TRP("полигон", "rc"), TRP("зеро", "zero")}, TRP("RC-полигон Зеро", "Zero's RC battlefield"), 10, {-975.58f, 1061.13f, 1346.2f}, 32.0f, true, false, {-968.28f, 1071.33f, 1344.03f}, 89.1f},
     {{TRP("бладбоул", "bloodbowl"), TRP("боул", "bowl")}, TRP("Стадион «Блад Боул»", "The Blood Bowl stadium"), 15, {-1394.20f, 987.62f, 1024.4f}, 40.0f, true, false},
     {{TRP("мэрия", "planning"), TRP("планирование", "townhall")}, TRP("Департамент планирования", "The planning department"), 3, {374.67f, 173.81f, 1008.8f}, 26.0f, true, false, {354.44f, 169.33f, 1013.19f}, 1.4f},
     {{TRP("аэропорт", "airport"), TRP("фрэнсис", "francis")}, TRP("Аэропорт Сан-Фиерро", "The San Fierro airport"), 14, {-1860.82f, 59.74f, 1062.3f}, 34.0f, true, false},
@@ -253,7 +253,9 @@ float Progress(int w) {
     if (Endless()) return std::min(1.0f, (float)(w - 1) / 9.0f);
     return g_arena.waves > 1 ? (float)(w - 1) / (float)(g_arena.waves - 1) : 1.0f;
 }
-bool BossWave(int w) { return Endless() ? w % 5 == 0 : w == g_arena.waves; }
+bool BossWave(int w) { return Endless() ? w % 10 == 0 : w == g_arena.waves; }  // every 10th (endless)
+// the hard one in the middle of the ten: more of them, harder to kill (the 5th, 15th...; in a set number of waves its middle)
+bool HardWave(int w) { return Endless() ? w % 10 == 5 : g_arena.waves >= 6 && w == g_arena.waves / 2; }
 int MiniBoss(int w);
 bool TwinsWave(int w) { return MiniBoss(w) == 1; }
 // the mini-bosses: 1 the Twins, 2 the Butcher, 3 the Officer, 0 none (never in the boss's wave)
@@ -2526,6 +2528,29 @@ void SpawnBodyguard(uint8_t owner) {
     SendGuardName(GetPed(h), name, owner);
     if (mine) ui::TheChat().AddSystem(Format(TR("Кент %s с вами.", "%s, a homie, is with you."), kGuardNames[name][Lang()]));
 }
+// this game's homies: at the nearest enemy they see (on a partner's game the enemies are copies, the game's own hate
+// does not reach them: set on them by hand); with nobody there they follow their player
+void GuardsFrame(uint64_t now) {
+    static uint64_t lastMs = 0;
+    if (now - lastMs < 1500 || g_guards.empty()) return;
+    lastMs = now;
+    for (int h : g_guards) {
+        CPed* gp = GetPed(h);
+        if (!gp || gp->Health() <= 0.0f) continue;
+        CPed* best = nullptr;
+        float bestD = 35.0f;
+        CPoolHeader* pool = PedPool();
+        for (int i = 0; pool && i < pool->size; ++i) {
+            if (pool->byteMap[i] < 0) continue;
+            auto* q = (CPed*)(pool->objects + (size_t)i * kPedPoolElemSize);
+            if (q == gp || q->IsPlayer() || q->Health() <= 0.0f || !arena::IsEnemy(q) || q == g_merchant.ped) continue;
+            if (std::find(g_guards.begin(), g_guards.end(), GetPedRef(q)) != g_guards.end() || g_guardNames.count(GetPedRef(q))) continue;
+            float d = (q->GetPosition() - gp->GetPosition()).Length();
+            if (d < bestD && Clear(gp->GetPosition() + CVector{0, 0, 0.6f}, q->GetPosition() + CVector{0, 0, 0.6f})) bestD = d, best = q;
+        }
+        if (best) Cmd(0x05E2).I(h).I(GetPedRef(best)).Run();  // TASK_KILL_CHAR_ON_FOOT
+    }
+}
 void GuardsTo(const CVector& at, int area) {  // with this player to another place
     for (int h : g_guards)
         if (CPed* p = GetPed(h); p && p->Health() > 0.0f) {
@@ -2610,9 +2635,8 @@ void TakeOffer() {
     g_box.offered = false;
     Send(A_BOXTAKEN);
     const BoxGun& g = kBoxGuns[(size_t)g_box.gun % (sizeof(kBoxGuns) / sizeof(kBoxGuns[0]))];
-    if (!g.weapon) {
-        if (g_arena.host) SpawnBodyguard(Net().MyId());
-        else Send(A_GUARDREQ);  // the host's game makes him
+    if (!g.weapon) {  // the homie: this player's own, in its game (made by the host's he followed a copy and was not seen)
+        SpawnBodyguard(Net().MyId());
         return;
     }
     if (CPlayerPed* me = FindPlayerPed(0)) {
@@ -3128,8 +3152,23 @@ const DefaultSpot kDefaultSpots[] = {
     {"crack", "build9", "2552.81 -1298.59 1043.12 -164.1"},
     {"crack", "build10", "2570.57 -1294.35 1036.77 -177.5"},
     {"motel", "spawn", "2244.32 -1190.78 1028.80 45.1"},
-    {"motel", "enemy1", "2241.32 -1162.16 1028.80 -178.7"},
-    {"motel", "enemy2", "2208.51 -1188.46 1028.80 -90.9"},
+    {"motel", "enemy1", "2237.24 -1150.52 1028.80 88.1"},
+    {"motel", "enemy2", "2192.53 -1182.65 1028.80 1.6"},
+    {"motel", "merchant", "2198.94 -1188.60 1028.80 -89.9"},
+    {"motel", "merchantto", "2225.79 -1188.41 1028.80 -90.9"},
+    {"crack", "merchant", "2527.32 -1293.76 1030.42 -89.0"},
+    {"crack", "merchantto", "2535.03 -1296.64 1030.42 -91.4"},
+    {"mansion", "spawn", "1272.61 -835.76 1084.63 87.2"},
+    {"mansion", "radio1", "1272.09 -828.11 1084.63 2.0"},
+    {"mansion", "soda1", "1275.26 -824.54 1084.63 0.5"},
+    {"mansion", "soda2", "1273.57 -824.54 1084.63 0.5"},
+    {"mansion", "merchant", "1239.03 -832.37 1083.01 -112.3"},
+    {"mansion", "merchantto", "1262.95 -837.68 1083.01 -13.3"},
+    {"rc", "merchant", "-979.35 1042.08 1343.99 0.5"},
+    {"rc", "merchantto", "-979.43 1055.60 1343.98 -57.6"},
+    {"planning", "radio1", "353.38 178.23 1013.19 -5.9"},
+    {"planning", "soda1", "345.95 169.33 1013.19 -178.6"},
+    {"planning", "soda2", "343.59 169.33 1013.19 178.8"},
     {"motel", "soda1", "2234.62 -1192.53 1028.80 91.7"},
     {"motel", "radio1", "2248.91 -1190.91 1029.42 -90.3"},
     {"rc", "radio1", "-973.44 1063.54 1344.01 1.0"},
@@ -3706,6 +3745,7 @@ void MakeMedic(int wave) {
 constexpr int WEAPON_BAT_ARENA = 5;
 CVector MemberSpot(const CVector& anchor, int k);
 void ShowEvent(uint8_t kind) {  // every game
+    if (kind == 2) ui::TheChat().AddSystem(TR("СЛОЖНАЯ ВОЛНА! Врагов больше, и они крепче.", "A HARD WAVE! More of them, and tougher."));
     if (kind == 1)
         ui::TheChat().AddSystem(TR("СОБЫТИЕ: бейсбольная ярость! Все враги с битами бегут с обеих сторон.",
                                    "EVENT: baseball fury! Every enemy with a bat, running in from both sides."));
@@ -3737,8 +3777,8 @@ void MakeTwins(int wave) {
     if (m1 == m0) m1 = m0 == 287 ? 285 : 287;  // the army has one look: the other twin is SWAT-clad
     float dir = Rand(0.0f, 6.2831853f);
     CVector at = SpawnSpot(dir, 1.0f, 8.0f);
-    int h0 = MakeEnemy(m0, WEAPON_SAWNOFF, 190, 0, 75, at, squad, R_TWIN, false);
-    int h1 = MakeEnemy(m1, WEAPON_PISTOL, 190, 0, 80, MemberSpot(at, 1), squad, R_TWIN, false);  // eagles (TwinEagles)
+    int h0 = MakeEnemy(m0, WEAPON_SAWNOFF, 50, 0, 75, at, squad, R_TWIN, false);
+    int h1 = MakeEnemy(m1, WEAPON_PISTOL, 50, 0, 80, MemberSpot(at, 1), squad, R_TWIN, false);  // eagles (TwinEagles)
     g_twinPeds[0] = h0 >= 0 ? GetPed(h0) : nullptr;
     g_twinPeds[1] = h1 >= 0 ? GetPed(h1) : nullptr;
     MountQuad(h0), MountQuad(h1);  // the RC battlefield: on quad bikes
@@ -3854,6 +3894,7 @@ void SpawnWave() {
     // a baseball bat each, and runs mad at the players and the barricades
     if (placeKey == "motel" && w >= 2 && !BossWave(w) && !MiniBoss(w) && RandInt(0, 99) < 15) {
         int count = std::min(14, 3 + w * 2 + PlayersIn());
+        if (PlayersIn() < 3) count = std::max(3, count * (PlayersIn() == 1 ? 70 : 85) / 100);
         CVector pts[2];
         int have = 0;
         if (g_enemyPts.size() >= 2) {  // the host's own points: the two farthest apart
@@ -3892,6 +3933,9 @@ void SpawnWave() {
         return;
     }
     int count = std::min(14, 2 + w * 2 + PlayersIn());
+    if (PlayersIn() < 3) count = std::max(2, count * (PlayersIn() == 1 ? 70 : 85) / 100);  // one or two players: a lighter wave
+    bool hard = HardWave(w);
+    if (hard) count = std::min(18, count * 3 / 2);
     if (MiniBoss(w) == 2) count = std::max(2, count * 6 / 10);  // the Butcher's wave: fewer of the others
     // squads of 3-4, spread evenly round the players; the first comes straight on, the others go round; the knifemen
     // (1 from 6 enemies, 2 from 11) alone, from elsewhere
@@ -3906,6 +3950,12 @@ void SpawnWave() {
         MakeSquad(dir, half, i > 0, around[(size_t)(i - 1 + 5) % 5], size, w, false);
     }
     for (int k = 0; k < knives; ++k) MakeKnifeman(w);
+    if (hard) {  // the hard wave: a third more health on each of them
+        for (auto& [q, qe] : g_info)
+            if (IsPedValid(q) && q->Health() > 0.0f) q->Health() *= 1.3f, qe.maxHealth *= 1.3f, qe.spawnHealth *= 1.3f;
+        Send(A_EVENT, [](Writer& wr) { wr.U8(2); });
+        ShowEvent(2);
+    }
     // medics from the 2nd wave (two with many enemies), the flamethrower man from the 2nd (two in a big place later on)
     if (fac.medics && w >= 2) {
         int medics = count >= 10 ? 2 : 1;
@@ -3934,8 +3984,8 @@ void SpawnWave() {
         // the AK-47 and its grenade launcher, a quarter with a katana
         int roll = RandInt(0, 99);
         g_bossKatana = b != kTBone && roll < 50;  // half with a katana, the other half with the launcher (T-Bone always)
-        g_bossUgl = !g_bossKatana;
-        int bossWeapon = g_bossKatana ? 8 : g_bossUgl ? 30 : kBosses[b].weapon;
+        g_bossUgl = false;  // no launcher any more: a plain AK-47 (or the katana)
+        int bossWeapon = g_bossKatana ? 8 : 30;
         int h = MakeEnemy(model, bossWeapon, g_bossKatana ? 300 : 100, 100, 85, SpawnSpot(base + 3.14159f, 1.0f, 8.0f), bossSquad, R_BOSS, false);
         if (CPed* p = h >= 0 ? GetPed(h) : nullptr) g_bossPed = p;
         // his men: once, unannounced, silent, round to the players' backs
@@ -5738,7 +5788,7 @@ void SpawnTBone() {
     CPlayerPed* me = FindPlayerPed(0);
     if (!me) return;
     int b = kTBone;
-    g_bossUgl = true, g_bossKatana = false;
+    g_bossUgl = false, g_bossKatana = false;
     Send(A_BOSS, [b](Writer& wr) { wr.U8((uint8_t)b); });
     LoadBoss(b);
     g_arena.boss = b;
@@ -7387,11 +7437,11 @@ void DrawKeys() {
 }
 // the waves to the next boss: a bar at the top, a cell a wave, the boss's name at its end
 void DrawWaveBar(float y) {
-    if (g_arena.endAt) return;
-    int from = 0, to = 0;  // the cells: the waves after the last boss wave up to the next one
+    if (g_arena.endAt || !g_break) return;  // only between the waves
+    int from = 0, to = 0;  // the cells: the ten waves up to the next boss
     if (Endless()) {
-        int w = std::max(1, g_arena.wave + (g_break ? 1 : 0));
-        to = ((w + 4) / 5) * 5, from = to - 5;
+        int w = std::max(1, g_arena.wave + 1);
+        to = ((w + 9) / 10) * 10, from = to - 10;
     } else {
         from = 0, to = g_arena.waves;
     }
@@ -7399,7 +7449,7 @@ void DrawWaveBar(float y) {
     if (n <= 0 || n > 12) return;
     auto& g = ui::Gfx();
     float s = g.Scale();
-    float cw = 44 * s, gap = 5 * s, ch = 9 * s;
+    float cw = 34 * s, gap = 4 * s, ch = 9 * s;
     std::string boss = g_nextBoss >= 0 ? BossName(g_nextBoss) : std::string("?");
     float bw = g.TextWidth(ui::FONT_SMALL, boss) + 16 * s;
     float total = (float)n * cw + (float)(n - 1) * gap + 10 * s + bw;
@@ -7411,7 +7461,8 @@ void DrawWaveBar(float y) {
         g.Rect(x, y, cw, ch, 0xA0000000);
         uint32_t c = done ? 0xFFACCBF1 : cur ? 0xFFFFD060 : 0x00000000;
         if (c) g.Rect(x + 1 * s, y + 1 * s, cw - 2 * s, ch - 2 * s, c);
-        if (BossWave(wave)) g.RectOutline(x, y, cw, ch, 0xFFC8282D, std::max(1.0f, s));
+        if (BossWave(wave)) g.RectOutline(x, y, cw, ch, 0xFFC8282D, std::max(1.0f, s) * 2.0f);
+        else if (HardWave(wave)) g.RectOutline(x, y, cw, ch, 0xFFFF9020, std::max(1.0f, s) * 2.0f);
         x += cw + gap;
     }
     x += 10 * s - gap;
@@ -7502,6 +7553,7 @@ void Update() {
     if (g_arena.taken) HoldWorld(true);
     MerchantFrame(now);
     GadgetFrame(now);
+    GuardsFrame(now);
     MeleeHint();
     if (g_arena.endAt) {
         if (now >= g_arena.endAt) End(false);
@@ -7700,7 +7752,7 @@ void Update() {
             if (!RcPlace() && RandInt(0, 99) < 10) SpawnDrop(D_SCRAP, at + CVector{0.5f, 0.3f, 0});  // no drones here: scrap off men
             continue;
         }
-        if (qe.role == R_BOSS && g_bossUgl) SpawnDrop(D_GUN, at + CVector{0, 0.7f, 0}, 30, 300, 0xFF, 1);  // his AK
+        if (qe.role == R_BOSS && !g_bossKatana) SpawnDrop(D_GUN, at + CVector{0, 0.7f, 0}, 30, 300);  // his AK (a plain one)
         if (qe.role == R_BOSS && g_bossKatana) SpawnDrop(D_GUN, at + CVector{0, 0.7f, 0}, 8, 1);  // the katana
         if (qe.role == R_SAW) SpawnDrop(D_GUN, at + CVector{0.7f, 0, 0}, 9, 1);  // the Butcher's chainsaw: a dash of its own
         if (qe.role == R_FLAMER) SpawnDrop(D_GUN, at + CVector{0, -0.7f, 0}, 37, 500);  // its flamethrower
@@ -8911,6 +8963,10 @@ bool KeyDown(int vk, bool repeat) {
             g_sodaDrinkAt = NowMs() + 1200;
         }
         CallMethod<0x506EA0>((void*)0xB6BC90, 40 /* AE_FRONTEND_PURCHASE_WEAPON: the coin */, 0.0f, 1.0f);
+        {
+            CVector at = me->GetPosition();
+            Cmd(0x018C).F(at.x).F(at.y).F(at.z).I(1054).Run();  // ADD_ONE_OFF_SOUND: SOUND_BUY (the coin in)
+        }
         g_sodaHealAt = NowMs() + 2800;
         CallMethod<0x506EA0>((void*)0xB6BC90, 40 /* AE_FRONTEND_PURCHASE_WEAPON */, 0.0f, 1.0f);
         return true;
