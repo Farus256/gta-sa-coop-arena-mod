@@ -354,15 +354,15 @@ struct ShopItem {
     const char* what[2];
 };
 const ShopItem kShop[] = {
-    {0, 1, 2500, TRP("Броня Джаггернаута", "The Juggernaut's armour"), TRP("броня держит на 50% больше, обоймы больше, чуть медленнее", "armour takes 50% more, bigger clips, a little slower")},
-    {0, 2, 2000, TRP("Броня Поджигателя", "The Firestarter's armour"), TRP("огонь не жжёт, +2 молотова и +200 к огнемёту каждую волну, медленнее", "fire does not burn, +2 molotovs and +200 flamethrower ammo a wave, slower")},
-    {0, 3, 2000, TRP("Броня Солдата", "The Soldier's armour"), TRP("быстрее, оружие точнее и дальше, броня держит на 25% меньше", "faster, guns more accurate and farther, armour takes 25% less")},
-    {1, 1, 1500, TRP("Визор копа", "The cop's visor"), TRP("[X] враги видны сквозь стены, заряд 3%/с, +3% за убийство", "[X] enemies seen through walls, 3% charge a second, +3% a kill")},
-    {1, 2, 2000, TRP("Рейдж-доза", "The rage dose"), TRP("[X] укол, 3 с судорог, потом RAMPAGE: 200 HP, быстрее, точнее, сильнее; раз в 2 волны, и лёжа раненым", "[X] a shot, 3 s of fits, then RAMPAGE: 200 HP, faster, more accurate, harder; once in 2 waves, wounded too")},
-    {1, 3, 2500, TRP("Пульт «Shahed»", "The Shahed's remote"), TRP("[X] свой вертолётик-камикадзе; новый заряд из 2 груд хлама со сбитых дронов", "[X] your own kamikaze helicopter; a new charge from 2 heaps of scrap off downed drones")},
-    {2, 1, 2000, TRP("Подствольный гранатомёт", "An underbarrel launcher"), TRP("[N] на любом оружии, заряжается гранатой", "[N] on any gun, loads with a grenade")},
-    {2, 2, 1200, TRP("Штык-нож", "A bayonet"), TRP("[N] удар вперёд: урон и враг на полу", "[N] a thrust: damage and the enemy down")},
-    {2, 3, 1000, TRP("Магазины «Спарка»", "Twin mags"), TRP("каждая вторая перезарядка быстрая (первая тоже)", "every second reload fast (the first too)")},
+    {0, 1, 1200, TRP("Броня Джаггернаута", "The Juggernaut's armour"), TRP("броня держит на 50% больше, обоймы больше, чуть медленнее", "armour takes 50% more, bigger clips, a little slower")},
+    {0, 2, 1300, TRP("Броня Поджигателя", "The Firestarter's armour"), TRP("огонь не жжёт, +2 молотова и +200 к огнемёту каждую волну, медленнее", "fire does not burn, +2 molotovs and +200 flamethrower ammo a wave, slower")},
+    {0, 3, 1000, TRP("Броня Солдата", "The Soldier's armour"), TRP("быстрее, оружие точнее и дальше, броня держит на 25% меньше", "faster, guns more accurate and farther, armour takes 25% less")},
+    {1, 1, 400, TRP("Визор копа", "The cop's visor"), TRP("[X] враги видны сквозь стены, заряд 3%/с, +3% за убийство", "[X] enemies seen through walls, 3% charge a second, +3% a kill")},
+    {1, 2, 1300, TRP("Рейдж-доза", "The rage dose"), TRP("[X] укол, 3 с судорог, потом RAMPAGE: 200 HP, быстрее, точнее, сильнее; раз в 2 волны, и лёжа раненым", "[X] a shot, 3 s of fits, then RAMPAGE: 200 HP, faster, more accurate, harder; once in 2 waves, wounded too")},
+    {1, 3, 700, TRP("Пульт «Shahed»", "The Shahed's remote"), TRP("[X] свой вертолётик-камикадзе; новый заряд из 2 груд хлама со сбитых дронов", "[X] your own kamikaze helicopter; a new charge from 2 heaps of scrap off downed drones")},
+    {2, 1, 500, TRP("Подствольный гранатомёт", "An underbarrel launcher"), TRP("[N] на любом оружии, заряжается гранатой", "[N] on any gun, loads with a grenade")},
+    {2, 2, 300, TRP("Штык-нож", "A bayonet"), TRP("[N] удар вперёд: урон и враг на полу", "[N] a thrust: damage and the enemy down")},
+    {2, 3, 150, TRP("Магазины «Спарка»", "Twin mags"), TRP("каждая вторая перезарядка быстрая (первая тоже)", "every second reload fast (the first too)")},
 };
 constexpr int kShopCount = (int)(sizeof(kShop) / sizeof(kShop[0]));
 bool Owned(const ShopItem& it) {
