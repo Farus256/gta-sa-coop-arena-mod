@@ -6621,7 +6621,7 @@ void DrawShop() {
 }
 
 // ---- the armours (while there is armour on): the damage it takes, speed, clips, fire, the gifts each wave
-uint32_t ArmourColour() { return g_armourKind == 1 ? 0xFF5A46C8 : g_armourKind == 2 ? 0xFFC8282D : g_armourKind == 3 ? 0xFF3C9A3C : 0xFFE1E1E1; }
+uint32_t ArmourColour() { return g_armourKind == 1 ? 0xFF5A46C8 : g_armourKind == 2 ? 0xFFFF8C1A : g_armourKind == 3 ? 0xFF3C9A3C : 0xFFE1E1E1; }
 const char* ArmourName() {
     return g_armourKind == 1 ? TR("Броня Джаггернаута", "Juggernaut armour") : g_armourKind == 2 ? TR("Броня Поджигателя", "Firestarter armour")
            : g_armourKind == 3 ? TR("Броня Солдата", "Soldier armour") : "";
