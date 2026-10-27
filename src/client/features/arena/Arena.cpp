@@ -360,6 +360,7 @@ int g_rageReadyWave = 0;  // the rage dose: once in 2 waves
 uint64_t g_rageStunUntil = 0, g_rageUntil = 0, g_rageTextUntil = 0;
 int g_shahedCharges = 0, g_scrap = 0;
 uint64_t g_shahedSince = 0;
+float g_shahedSpeed = 0.0f;
 bool g_shopOpen = false;
 struct ShopItem {
     int kind;  // 0 armour, 1 gadget, 2 mod
@@ -6944,6 +6945,7 @@ void RampageOn() {
     Cmd(0x0687).I(GetPedRef(me)).Run();
     CallMethod<0x506EA0>((void*)0xB6BC90, 32 /* a frontend sting */, 0.0f, 1.0f);
 }
+void ShahedBoom(CVehicle* rc);
 void UseGadget() {
     CPlayerPed* me = FindPlayerPed(0);
     if (!me || !g_gadget) return;
@@ -6975,7 +6977,10 @@ void UseGadget() {
         return;
     }
     if (g_gadget == 3) {  // the Shahed
-        if (Ref<CVehicle*>((uintptr_t)&PlayerInfos()[0] + 0xB0)) return;  // one flying already
+        if (CVehicle* rc = Ref<CVehicle*>((uintptr_t)&PlayerInfos()[0] + 0xB0)) {  // one flying: X blows it up now
+            if (g_shahedSince) ShahedBoom(rc);
+            return;
+        }
         if (g_shahedCharges <= 0) {
             ShowHelp(TR("Нет заряда: нужно 2 груды хлама со сбитых дронов.", "No charge: 2 heaps of scrap off downed drones are needed."), 3500);
             return;
@@ -6993,16 +6998,65 @@ void UseGadget() {
         if (CVehicle* rc = Ref<CVehicle*>((uintptr_t)&PlayerInfos()[0] + 0xB0))
             Cmd(0x0840).I(GetVehicleRef(rc)).I(kPlaces[g_arena.place].area).Run();  // SET_VEHICLE_AREA_VISIBLE
         g_shahedSince = now;
+        g_shahedSpeed = 0.0f;
+        ShowHelp(TR("Shahed: мышь — куда лететь, W — быстрее, S — тормоз, X — взорвать.", "Shahed: the mouse steers, W faster, S brakes, X blows it up."), 5000);
     }
 }
+// once: the blast where it is, the control and the camera back to CJ, the toy itself gone (it was left with the player
+// and blew up again every frame)
 void ShahedBoom(CVehicle* rc) {
+    if (!g_shahedSince) return;
+    g_shahedSince = 0;
     CVector at = rc->GetPosition();
+    int vh = GetVehicleRef(rc);
     Call<0x45AE80>(false);  // CRemote::TakeRemoteControlledCarFromPlayer: the control back to CJ
-    if (CPlayerPed* me = FindPlayerPed(0)) Cmd(0x04D7).I(GetPedRef(me)).I(0).Run();  // FREEZE_CHAR_POSITION off
-    Cmd(0x015A).Run();  // RESTORE_CAMERA_JUMPCUT: the camera back on CJ (it stayed on the blast)
+    Ref<CVehicle*>((uintptr_t)&PlayerInfos()[0] + 0xB0) = nullptr;
+    if (vh >= 0 && GetVehicle(vh)) Cmd(0x00A6).I(vh).Run();  // DELETE_CAR
+    if (CPlayerPed* me = FindPlayerPed(0)) {
+        Cmd(0x04D7).I(GetPedRef(me)).I(0).Run();  // FREEZE_CHAR_POSITION off
+        Cmd(0x01B4).I(0).I(1).Run();             // SET_PLAYER_CONTROL on: the mouse and the keys his again
+    }
+    Cmd(0x02EB).Run();  // RESTORE_CAMERA_JUMPCUT: the camera back on CJ
     Cmd(0x0373).Run();  // SET_CAMERA_BEHIND_PLAYER
     Call<0x736A50>((CEntity*)nullptr, (CEntity*)FindPlayerPed(0), 2 /* EXPLOSION_ROCKET */, at, (uint32_t)0, (uint8_t)1, -1.0f, (uint8_t)0);  // AddExplosion: his
-    g_shahedSince = 0;
+}
+// every frame while it flies: it goes where the camera looks (the mouse), never falls; W faster, S brakes. Armed after
+// 0.6 s: then a wall, the floor or a man before it is the blast (it fell on the floor at once and blew up there)
+void ShahedFly(CVehicle* rc, uint64_t now, float dt) {
+    bool fg = IsForeground() && !ui::TheChat().IsOpen();
+    float want = 13.0f;
+    if (fg && (GetAsyncKeyState('W') & 0x8000)) want = 24.0f;
+    if (fg && (GetAsyncKeyState('S') & 0x8000)) want = 3.0f;
+    g_shahedSpeed += (want - g_shahedSpeed) * std::min(1.0f, dt * 2.5f);
+    CMatrix* m = rc->Matrix();
+    if (!m) return;
+    CVector look = cam::Front();
+    if (look.Length() < 0.1f) look = m->forward;
+    look = look.Normalized();
+    CVector f = m->forward + (look - m->forward) * std::min(1.0f, dt * 4.0f);  // turns to it smoothly
+    if (f.Length() < 0.1f) f = look;
+    f = f.Normalized();
+    CVector r{f.y, -f.x, 0.0f};  // level: no roll
+    if (r.Length() < 0.01f) r = m->right;
+    r = r.Normalized();
+    CVector u{r.y * f.z - r.z * f.y, r.z * f.x - r.x * f.z, r.x * f.y - r.y * f.x};
+    m->right = r, m->forward = f, m->up = u;
+    rc->MoveSpeed() = f * (g_shahedSpeed / 50.0f);  // metres a frame of the game's 50
+    rc->TurnSpeed() = CVector{0, 0, 0};
+    if (now - g_shahedSince < 600) return;
+    CVector at = rc->GetPosition(), hit;
+    bool boom = now - g_shahedSince > 25000;
+    if (!boom && Ray(at, at + f * (g_shahedSpeed * dt + 0.9f), hit)) boom = true;  // a wall, a barricade
+    float z = 0;
+    if (!boom && FloorNoBars(at.x, at.y, at.z + 0.2f, z) && at.z - z < 0.6f) boom = true;  // the floor
+    CPoolHeader* pool = PedPool();
+    for (int i = 0; pool && i < pool->size && !boom; ++i) {
+        if (pool->byteMap[i] < 0) continue;
+        auto* q = (CPed*)(pool->objects + (size_t)i * kPedPoolElemSize);
+        if (q->IsPlayer() || q->Health() <= 0.0f || !arena::IsEnemy(q) || q == g_merchant.ped) continue;
+        if ((q->GetPosition() - at).Length() < 2.2f) boom = true;
+    }
+    if (boom) ShahedBoom(rc);
 }
 // the visor on: each shot of this player's goes into the head of the nearest enemy it can see (the game's own damage
 // with the head as the piece hit: a headshot; the hit goes to the man's own game as any other)
@@ -7049,21 +7103,11 @@ void GadgetFrame(uint64_t now) {
     if (g_shahedSince && !Ref<CVehicle*>((uintptr_t)&PlayerInfos()[0] + 0xB0) && now - g_shahedSince > 1000) {  // gone some other way
         g_shahedSince = 0;
         Cmd(0x04D7).I(GetPedRef(me)).I(0).Run();  // FREEZE_CHAR_POSITION off
+        Cmd(0x01B4).I(0).I(1).Run();             // SET_PLAYER_CONTROL on
+        Cmd(0x02EB).Run();                        // RESTORE_CAMERA_JUMPCUT
     }
-    if (CVehicle* rc = Ref<CVehicle*>((uintptr_t)&PlayerInfos()[0] + 0xB0)) {  // the Shahed: into a man, onto the floor, or 25 s
-        bool hit = now - g_shahedSince > 25000;
-        CVector at = rc->GetPosition();
-        float z = 0;
-        if (FloorNoBars(at.x, at.y, at.z + 0.2f, z) && at.z - z < 0.7f && now - g_shahedSince > 1500) hit = true;
-        CPoolHeader* pool = PedPool();
-        for (int i = 0; pool && i < pool->size && !hit; ++i) {
-            if (pool->byteMap[i] < 0) continue;
-            auto* q = (CPed*)(pool->objects + (size_t)i * kPedPoolElemSize);
-            if (q->IsPlayer() || q->Health() <= 0.0f || !arena::IsEnemy(q) || q == g_merchant.ped) continue;
-            if ((q->GetPosition() - at).Length() < 2.2f) hit = true;
-        }
-        if (hit) ShahedBoom(rc);
-    }
+    if (CVehicle* rc = Ref<CVehicle*>((uintptr_t)&PlayerInfos()[0] + 0xB0); rc && g_shahedSince)  // the Shahed: flown by hand
+        ShahedFly(rc, now, std::max(dt, 0.001f));
     // the armour's effects while it is on (and the rage's)
     bool on = ArmourOn();
     bool rage = g_rageUntil && now < g_rageUntil;
