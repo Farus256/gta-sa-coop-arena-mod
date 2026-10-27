@@ -4376,14 +4376,18 @@ void SpawnDrone() {
     LOGI("Arena: an RC helicopter comes in");
 
 }
+// the floor far under a spot (a drone high up: the 3.5 m of FloorBelow did not reach it, its loot stayed in the air)
+float FloorFar(const CVector& at) {
+    CVector hit;
+    return Ray(at - CVector{0, 0, 0.5f}, at - CVector{0, 0, 80.0f}, hit) ? hit.z : at.z - 2.0f;
+}
 void Boom(Drone& d, bool shotDown) {
     CVehicle* v = GetVehicle(d.handle);
     if (v) {
         CVector at = v->GetPosition();
         Call<0x736A50>((CEntity*)nullptr, (CEntity*)nullptr, 11 /* EXPLOSION_SMALL */, at, (uint32_t)0, (uint8_t)1, -1.0f, (uint8_t)0);  // AddExplosion (seen)
         if (shotDown) {
-            float z = at.z - 2.0f;
-            FloorBelow(at.x, at.y, at.z, z);
+            float z = FloorFar(at);  // on the floor under it
             SpawnDrop(D_CASH, CVector{at.x, at.y, z + 0.3f}, 0, 50);
         }
         Cmd(0x00A6).I(d.handle).Run();  // DELETE_CAR
@@ -4411,9 +4415,8 @@ void DronesFrame(uint64_t now) {  // host, every frame
         }
         if (v->Health() < 1000.0f) d.hp -= 1000.0f - v->Health(), v->Health() = 1000.0f;  // a hit here
         if (d.hp <= 0.0f) {
-            float fz = 0;
             CVector at = v->GetPosition();
-            if (FloorNoBars(at.x, at.y, at.z, fz)) at.z = fz + 0.3f;
+            at = CVector{at.x + 0.6f, at.y, FloorFar(at) + 0.3f};  // on the floor under it, beside its money
             SpawnDrop(D_SCRAP, at);  // its scrap: two of them make a Shahed
             Boom(d, true);
             continue;
