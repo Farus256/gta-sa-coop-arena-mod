@@ -6199,6 +6199,7 @@ void End(bool tell) {
     PlayerGuns(false, false);
     Cmd(0x055D).I(0).I(0).Run();  // MAKE_PLAYER_FIRE_PROOF off
     if (Ref<CVehicle*>((uintptr_t)&PlayerInfos()[0] + 0xB0)) Call<0x45AE80>(false);  // a Shahed in the air: gone
+    if (CPlayerPed* me = FindPlayerPed(0)) Cmd(0x04D7).I(GetPedRef(me)).I(0).Run();
     if (g_arena.host && g_merchant.ped && IsPedValid(g_merchant.ped)) Cmd(0x009B).I(GetPedRef(g_merchant.ped)).Run();
     g_merchant = MerchantState{};
     ResetShop();
@@ -6516,7 +6517,7 @@ void DrawShop() {
 }
 
 // ---- the armours (while there is armour on): the damage it takes, speed, clips, fire, the gifts each wave
-uint32_t ArmourColour() { return g_armourKind == 1 ? 0xFF3B2A8C : g_armourKind == 2 ? 0xFFC8282D : g_armourKind == 3 ? 0xFF3C9A3C : 0xFFE1E1E1; }
+uint32_t ArmourColour() { return g_armourKind == 1 ? 0xFF5A46C8 : g_armourKind == 2 ? 0xFFC8282D : g_armourKind == 3 ? 0xFF3C9A3C : 0xFFE1E1E1; }
 const char* ArmourName() {
     return g_armourKind == 1 ? TR("Броня Джаггернаута", "Juggernaut armour") : g_armourKind == 2 ? TR("Броня Поджигателя", "Firestarter armour")
            : g_armourKind == 3 ? TR("Броня Солдата", "Soldier armour") : "";
@@ -6573,17 +6574,11 @@ void ArmourWave() {  // each wave: the Firestarter's gifts
     if (!SlotTaken(me, WEAPON_GRENADE) || SlotTaken(me, WEAPON_MOLOTOV)) Give(h, WEAPON_MOLOTOV, 2);
     if (!SlotTaken(me, 38) && !SlotTaken(me, 35) && !SlotTaken(me, 36)) Give(h, 37, 200);  // not over a heavier gun
 }
-void DrawArmourBar() {
+void DrawArmourBar() {  // the game's own bar has the armour's colour (HookRenderArmorBar); its name under the money
     if (!g_armourKind) return;
-    CPlayerPed* me = FindPlayerPed(0);
-    if (!me) return;
     auto& g = ui::Gfx();
     float s = g.Scale();
-    float w = 200 * s, h = 10 * s, x = g.Width() - w - 40 * s, y = g.Height() * 0.205f;
-    float k = std::clamp(me->Armour() / 100.0f, 0.0f, 1.0f);
-    g.Rect(x - 2 * s, y - 2 * s, w + 4 * s, h + 4 * s, 0xFF000000);
-    g.Rect(x, y, w * k, h, ArmourColour());
-    g.Text(ui::FONT_SMALL, x + w, y + h + 2 * s, ArmourName(), ArmourColour() | 0xFF000000, ui::TEXT_RIGHT | ui::TEXT_OUTLINE);
+    g.Text(ui::FONT_SMALL, g.Width() - 40 * s, g.Height() * 0.285f, ArmourName(), ArmourColour() | 0xFF000000, ui::TEXT_RIGHT | ui::TEXT_OUTLINE);
 }
 
 // ---- the gadgets (X)
@@ -6635,7 +6630,13 @@ void UseGadget() {
             return;
         }
         --g_shahedCharges;
-        CVector at = me->GetPosition() + CVector{0, 0, 4.0f};
+        // in front of him and high (15 m, or under the ceiling of the place), never on him: he stood on it and rode it
+        float hd = me->CurrentRotation();
+        CVector base = me->GetPosition() + CVector{-std::sin(hd), std::cos(hd), 0.0f} * 3.0f;
+        CVector top;
+        float up = Ray(base, base + CVector{0, 0, 16.0f}, top) ? std::max(2.5f, top.z - base.z - 1.5f) : 15.0f;
+        CVector at = base + CVector{0, 0, std::min(15.0f, up)};
+        Cmd(0x04D7).I(h).I(1).Run();  // FREEZE_CHAR_POSITION: CJ stays on the floor while he steers
         LoadModelNow(501);  // the RC Goblin
         Cmd(0x046E).I(0).F(at.x).F(at.y).F(at.z).F(me->CurrentRotation() * 57.29578f).I(501).Run();  // GIVE_REMOTE_CONTROLLED_MODEL_TO_PLAYER
         if (CVehicle* rc = Ref<CVehicle*>((uintptr_t)&PlayerInfos()[0] + 0xB0))
@@ -6645,7 +6646,8 @@ void UseGadget() {
 }
 void ShahedBoom(CVehicle* rc) {
     CVector at = rc->GetPosition();
-    Call<0x45AE80>(false);  // CRemote::TakeRemoteControlledCarFromPlayer: the control back to CJ
+    Call<0x45AE80>(false);  // CRemote::TakeRemoteControlledCarFromPlayer: the control and the camera back to CJ
+    if (CPlayerPed* me = FindPlayerPed(0)) Cmd(0x04D7).I(GetPedRef(me)).I(0).Run();  // FREEZE_CHAR_POSITION off
     Call<0x736A50>((CEntity*)nullptr, (CEntity*)FindPlayerPed(0), 2 /* EXPLOSION_ROCKET */, at, (uint32_t)0, (uint8_t)1, -1.0f, (uint8_t)0);  // AddExplosion: his
     g_shahedSince = 0;
 }
@@ -6663,6 +6665,10 @@ void GadgetFrame(uint64_t now) {
     if (g_rageUntil && now >= g_rageUntil) {
         g_rageUntil = 0;
         if (me->Health() > MaxHealth()) me->Health() = MaxHealth();
+    }
+    if (g_shahedSince && !Ref<CVehicle*>((uintptr_t)&PlayerInfos()[0] + 0xB0) && now - g_shahedSince > 1000) {  // gone some other way
+        g_shahedSince = 0;
+        Cmd(0x04D7).I(GetPedRef(me)).I(0).Run();  // FREEZE_CHAR_POSITION off
     }
     if (CVehicle* rc = Ref<CVehicle*>((uintptr_t)&PlayerInfos()[0] + 0xB0)) {  // the Shahed: into a man, onto the floor, or 25 s
         bool hit = now - g_shahedSince > 25000;
@@ -6732,7 +6738,7 @@ void DrawGadgets(uint64_t now) {
                         : g_gadget == 2 ? (g_arena.wave >= g_rageReadyWave ? std::string(TR("Рейдж-доза: готова", "Rage dose: ready"))
                                                                            : Format(TR("Рейдж-доза: с волны %d", "Rage dose: from wave %d"), g_rageReadyWave))
                                         : Format(TR("Shahed: %d  (хлам %d/2)", "Shahed: %d  (scrap %d/2)"), g_shahedCharges, g_scrap);
-        g.Text(ui::FONT_SMALL, g.Width() - 40 * s, g.Height() * 0.245f, t, 0xFFFFFFFF, ui::TEXT_RIGHT | ui::TEXT_OUTLINE);
+        g.Text(ui::FONT_SMALL, g.Width() - 40 * s, g.Height() * 0.285f + g.LineHeight(ui::FONT_SMALL) + 2 * s, t, 0xFFFFFFFF, ui::TEXT_RIGHT | ui::TEXT_OUTLINE);
     }
 }
 
@@ -7606,6 +7612,7 @@ void Update() {
         if (qe.role == R_MEDIC) special = RandInt(0, 99) < 35;  // a medic: now and then
         if (!special) {
             if (RandInt(0, 99) < 5) SpawnDrop(D_SMALL, at);  // a common enemy: now and then a few clips, never its gun
+            if (!RcPlace() && RandInt(0, 99) < 10) SpawnDrop(D_SCRAP, at + CVector{0.5f, 0.3f, 0});  // no drones here: scrap off men
             continue;
         }
         if (qe.role == R_BOSS && g_bossUgl) SpawnDrop(D_GUN, at + CVector{0, 0.7f, 0}, 30, 300, 0xFF, 1);  // his AK
@@ -8344,6 +8351,19 @@ void __fastcall HookAmbience(void* self, void* edx) {
 // do (GrowSkill), slowly
 using WeaponHitStatsFn = void(__cdecl*)(int);
 WeaponHitStatsFn g_origWeaponHitStats = nullptr;
+// CHud::RenderArmorBar draws the bar in HUD_COLOUR_LIGHT_GRAY (CHudColours at 0xBAB22C, 4 bytes an entry): that colour
+// is the armour's for the bar alone (the same grey is the game's text too: it is back right after)
+using ArmorBarFn = void(__cdecl*)(int, int, int);
+ArmorBarFn g_origArmorBar = nullptr;
+void __cdecl HookRenderArmorBar(int playerId, int x, int y) {
+    if (!g_armourKind || !g_arena.on) return g_origArmorBar(playerId, x, y);
+    uint8_t* c = (uint8_t*)(0xBAB22C + 4 * 4);  // HUD_COLOUR_LIGHT_GRAY: r, g, b, a
+    uint8_t was[4] = {c[0], c[1], c[2], c[3]};
+    uint32_t argb = ArmourColour();
+    c[0] = (uint8_t)(argb >> 16), c[1] = (uint8_t)(argb >> 8), c[2] = (uint8_t)argb;
+    g_origArmorBar(playerId, x, y);
+    memcpy(c, was, 4);
+}
 void __cdecl HookWeaponHitStats(int weapon) {
     if (g_arena.on) return;
     g_origWeaponHitStats(weapon);
@@ -8355,6 +8375,7 @@ public:
     void OnInstallHooks() override {
         Net().SetHandler(proto::G_ARENA, &Handle);
         mem::HookFn(0x55CEB0, &HookWeaponHitStats, &g_origWeaponHitStats, "CStats::UpdateStatsWhenWeaponHit");
+        mem::HookFn(0x5890A0, &HookRenderArmorBar, &g_origArmorBar, "CHud::RenderArmorBar");
         mem::HookFn(0x4D6E60, &HookAmbience, &g_origAmbience, "CAEAmbienceTrackManager::UpdateAmbienceTrackAndVolume");
         mem::HookFn(0x73B2A0, &HookHasAmmo, &g_origHasAmmo, "CWeapon::HasWeaponAmmoToBeUsed");
         mem::HookFn(0x725120, &HookPlaceMarker, &g_origPlaceMarker, "C3dMarkers::PlaceMarker");
