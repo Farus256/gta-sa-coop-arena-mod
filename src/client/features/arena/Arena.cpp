@@ -2008,7 +2008,7 @@ struct BoxState {
     uint8_t by = 0;
     int gun = 0;
     bool teddy = false;
-    bool offered = false;  // its weapon waits over it for the one who paid (E takes it) till then
+    bool offered = false;  // its weapon waits over it for anyone (E takes it) till then
     uint64_t offerUntil = 0;
 } g_box;
 
@@ -2632,9 +2632,9 @@ void UseBox(uint8_t by) {
     StartRoll(by, gun, teddy);
 }
 void SpawnBodyguard(uint8_t owner);
-// E at the box while its weapon waits for this player: it takes it (a weapon in the same slot goes for it)
+// E at the box while its weapon waits (anyone's, not only the payer's): it takes it (a weapon in the same slot goes for it)
 void TakeOffer() {
-    if (!g_box.offered || !(g_box.by == Net().MyId() || !Net().Online())) return;
+    if (!g_box.offered) return;  // anyone takes it, not only the one who paid
     g_box.offered = false;
     Send(A_BOXTAKEN);
     const BoxGun& g = kBoxGuns[(size_t)g_box.gun % (sizeof(kBoxGuns) / sizeof(kBoxGuns[0]))];
@@ -2661,7 +2661,7 @@ void UpdateBox(uint64_t now) {
             DelObj(g_box.handle);
             DelObj(g_box.handle2);
             if (g_arena.host) g_box.moveAt = now + 6000;
-        } else {  // the weapon waits over the box: the one who paid takes it with E (8 s), or not
+        } else {  // the weapon waits over the box: anyone takes it with E (8 s), or not
             g_box.offered = true;
             g_box.offerUntil = now + 8000;
         }
@@ -9036,9 +9036,7 @@ std::string PromptText(std::string& hint) {
     }
     if (g_nearKind == N_WALL) return {};
     // the box
-    bool mine = g_box.by == Net().MyId() || !Net().Online();
-    if (g_box.offered) {
-        if (!mine) return {};
+    if (g_box.offered) {  // anyone may take it
         const BoxGun& g = kBoxGuns[(size_t)g_box.gun % (sizeof(kBoxGuns) / sizeof(kBoxGuns[0]))];
         int held = SlotTaken(FindPlayerPed(0), g.weapon);
         hint = held ? Format(TR("[E] Взять вместо: %s", "[E] Take instead of: %s"), WeaponName(held)) : std::string(TR("[E] Взять", "[E] Take"));
