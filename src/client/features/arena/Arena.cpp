@@ -853,8 +853,10 @@ void AutoZones();
 CVector SpawnSpot(float angle, float halfSector, float minApart) {
     const Place& pl = kPlaces[g_arena.place];
     std::vector<CVector> players = PlayerSpots();
-    if (g_enemyPts.empty() && CrackPlace() && g_arena.host) AutoZones();  // the crack palace: they come in at its zones
-    const std::vector<CVector>& pts = !g_enemyPts.empty() ? g_enemyPts : CrackPlace() ? g_zones : g_enemyPts;
+    // the crack palace: they come in at the zone under attack (the one the players are told of)
+    std::vector<CVector> zoneOnly;
+    if (CrackPlace() && g_zoneNow >= 0) zoneOnly.push_back(g_zoneAt);
+    const std::vector<CVector>& pts = !zoneOnly.empty() ? zoneOnly : g_enemyPts;
     if (!pts.empty()) {  // the host's own points (or the zones): one of them far from the players, beside it
         CVector best = pts[0];
         float score = -1e9f;
@@ -3429,6 +3431,13 @@ void SpawnWave() {
     g_killed.clear();
     g_lastSpawns = g_spawnsNow;
     g_spawnsNow.clear();
+    if (CrackPlace()) {  // the crack palace: this wave's zone first, so its men come in at it (ZoneWave tells everyone)
+        AutoZones();
+        if (!g_zones.empty()) {
+            int idx = (g_arena.wave - 1) % (int)g_zones.size();
+            g_zoneNow = idx, g_zoneAt = g_zones[(size_t)idx];
+        }
+    }
     Rejoin();
     OutfitWaveStart();
     SendBars();
