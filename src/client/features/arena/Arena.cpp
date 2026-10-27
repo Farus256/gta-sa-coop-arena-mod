@@ -7024,8 +7024,8 @@ void UseGadget() {
         CVector at = base + CVector{0, 0, std::min(8.0f, up)};  // a little lower than it was (15 m)
         if (RcPlace()) {  // the RC field: over CJ's head (it flies at once: no standing on it)
             CVector head = me->GetPosition(), roof;
-            float room = Ray(head, head + CVector{0, 0, 6.0f}, roof) ? roof.z - head.z - 1.0f : 3.5f;
-            at = head + CVector{0, 0, std::clamp(room, 1.8f, 3.5f)};
+            float room = Ray(head, head + CVector{0, 0, 12.0f}, roof) ? roof.z - head.z - 1.0f : 7.0f;
+            at = head + CVector{0, 0, std::clamp(room, 2.5f, 7.0f)};
         }
         Cmd(0x04D7).I(h).I(1).Run();  // FREEZE_CHAR_POSITION: CJ stays on the floor while he steers
         LoadModelNow(501);  // the RC Goblin
