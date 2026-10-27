@@ -394,7 +394,7 @@ void RenderConnectMenu() {
     float lh = g.LineHeight(FONT_NORMAL), sh = g.LineHeight(FONT_SMALL), mh = g.LineHeight(FONT_MENU),
           ch = g.LineHeight(FONT_MENU_SMALL), bh = g.LineHeight(FONT_BIG);
     float rowH = lh + 14 * s;
-    float W = 820 * s, H = 690 * s;
+    float W = 820 * s, H = 770 * s;  // room for the hints row (the button and the text under it clear of the footer)
     float x = (g.Width() - W) * 0.5f, y = (g.Height() - H) * 0.5f;
     // everyone in the lobby (the host too, for now: to try the characters): the character window right of the lobby
     // (the lobby stays in the middle while both fit)

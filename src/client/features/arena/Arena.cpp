@@ -2319,6 +2319,9 @@ void ShowWardrobe() {  // every game: by the box, to its right, on the floor
     g_ward.pos = at;
     g_ward.heading = g_box.heading;
     g_ward.handle = MakeObj(model, at, g_box.heading, lift, height);
+    // its collision reaches lower than the box itself: it hung in the air; down onto the floor
+    if (g_ward.handle >= 0) Cmd(0x01BC).I(g_ward.handle).F(at.x).F(at.y).F(at.z + std::max(0.0f, lift - 0.45f)).Run();  // SET_OBJECT_COORDINATES
+    LOGI("Arena: the clothes box %d (lift %.2f, height %.2f)", model, lift, height);
     Anchor(g_ward.handle);
     ShowStatBox();
 }
@@ -6688,7 +6691,7 @@ void DrawHelpBox(uint64_t now) {
     float w = 470 * s, pad = 14 * s, lh = g.LineHeight(ui::FONT_NORMAL);
     auto lines = g.Wrap(ui::FONT_NORMAL, ui::Widen(g_helpBox.text), w - pad * 2);
     float h = lh * (float)lines.size() + pad * 2;
-    float x = 40 * s, y = 40 * s;
+    float x = (g.Width() - w) * 0.5f, y = g.Height() * 0.80f - h;  // the middle, low, over the subtitles
     g.Rect(x, y, w, h, 0xB4000000);
     for (size_t i = 0; i < lines.size(); ++i) g.TextW(ui::FONT_NORMAL, x + pad, y + pad + lh * (float)i, lines[i], 0xFFFFFFFF, ui::TEXT_SHADOW);
 }
@@ -6776,7 +6779,7 @@ void HoldWorld(bool on) {
     }
 }
 // ---- the skills box ($600, by the weapon box): one of CJ's own skills up by a random share
-constexpr int kStatBoxCost = 600;
+constexpr int kStatBoxCost = 300;
 void ShowStatBox() {  // every game
     DelObj(g_statBox.handle);
     if (!g_box.placed) return;
@@ -6791,6 +6794,8 @@ void ShowStatBox() {  // every game
     float lift = 0, height = 0;
     g_statBox.pos = at;
     g_statBox.handle = MakeObj(model, at, g_box.heading, lift, height);
+    if (g_statBox.handle >= 0) Cmd(0x01BC).I(g_statBox.handle).F(at.x).F(at.y).F(at.z + std::max(0.0f, lift - 0.45f)).Run();  // down onto the floor
+    LOGI("Arena: the skills box %d (lift %.2f, height %.2f)", model, lift, height);
     Anchor(g_statBox.handle);
 }
 void RebuildBody();
@@ -6837,8 +6842,43 @@ void ArmourFrame() {
         int h = model >= 0 ? MakeObj(model, p->GetPosition(), 0.0f, lift, height) : -1;
         if (h < 0) continue;
         Cmd(0x0382).I(h).I(0).Run();  // SET_OBJECT_COLLISION: none
-        Cmd(0x069B).I(h).I(GetPedRef(p)).F(0.0f).F(0.06f).F(0.22f).F(0.0f).F(0.0f).F(0.0f).Run();  // ATTACH_OBJECT_TO_CHAR: on the chest
+        Cmd(0x0550).I(h).I(1).Run();  // FREEZE_OBJECT_POSITION: it goes where VestsOnBodies puts it
+        if (CObject* o = GetObject(h)) Field<float>(o, 0x15C) = 1.2f;  // CObject::m_fScale: a fifth bigger
         g_vestObjs[p] = h;
+    }
+}
+// a bone's place now (CPed::m_apBones' frame in the skin's world matrices)
+bool BoneAt(CPed* p, int node, CVector& at) {
+    auto* clump = (uint8_t*)p->RwObject();
+    void* nd = Field<void*>(p, 0x488 + node * 4);                                       // CPed::m_apBones
+    void* hier = clump && clump[0] == 2 ? Call<0x734A40, void*>(clump) : nullptr;      // GetAnimHierarchyFromSkinClump
+    int i = nd && hier ? Call<0x7C51A0, int>(hier, Field<int32_t>(nd, 0x14)) : -1;     // RpHAnimIDGetIndex
+    auto* bones = hier ? Call<0x7C5120, uint8_t*>(hier) : nullptr;                     // RpHAnimHierarchyGetMatrixArray
+    if (i < 0 || !bones) return false;
+    at = ((const CMatrix*)(bones + (size_t)i * 0x40))->pos;
+    return true;
+}
+// every frame as it is drawn: each vest on its chest, upright along the spine (torso to head: bent, crouched, leaning
+// as he is), facing the way he faces
+void VestsOnBodies() {
+    for (auto& [p, h] : g_vestObjs) {
+        CObject* o = h >= 0 ? GetObject(h) : nullptr;
+        CMatrix *m = o ? o->Matrix() : nullptr, *pm = IsPedValid(p) ? p->Matrix() : nullptr;
+        CVector torso, head;
+        if (!m || !pm || !BoneAt(p, 1 /* PED_NODE_UPPER_TORSO */, torso) || !BoneAt(p, 2 /* PED_NODE_HEAD */, head)) continue;
+        CVector up = head - torso;
+        float l = up.Length();
+        up = l > 0.01f ? up * (1.0f / l) : pm->up;
+        CVector fwd = pm->forward - up * pm->forward.Dot(up);  // the way he faces, square to the spine
+        float fl = fwd.Length();
+        fwd = fl > 0.01f ? fwd * (1.0f / fl) : pm->forward;
+        CVector right{fwd.y * up.z - fwd.z * up.y, fwd.z * up.x - fwd.x * up.z, fwd.x * up.y - fwd.y * up.x};
+        WorldRemove(o);
+        m->right = right, m->forward = fwd, m->up = up;
+        m->pos = torso + fwd * 0.05f - up * 0.10f;  // over the chest and the belly
+        CallMethod<0x446F90>(o);  // CEntity::UpdateRW
+        CallMethod<0x532B00>(o);  // CEntity::UpdateRwFrame
+        WorldAdd(o);
     }
 }
 void ClearBodyVests() {
@@ -7481,6 +7521,7 @@ void DrawCod() {
     DrawMvp(now);
     DrawHelpBox(now);
     DrawKeys();
+    VestsOnBodies();
     if (g_zoneNow >= 0)
         Label(g_zoneAt + CVector{0, 0, 1.3f}, Format(TR("ЗОНА %d", "ZONE %d"), g_zoneNow + 1), 0xFFFFA040, 300.0f, true);
     for (auto& [h, name] : g_guardNames)  // the homies' names
