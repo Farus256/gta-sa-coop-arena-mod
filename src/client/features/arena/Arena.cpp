@@ -64,6 +64,7 @@
 #include "shared/ui/chat/Chat.h"
 #include "shared/ui/marks/Marks.h"
 #include "shared/ui/renderer/Renderer.h"
+#include "shared/ui/input/Input.h"
 #include "shared/ui/widgets/Widgets.h"
 
 namespace coop {
@@ -331,6 +332,8 @@ struct MerchantState {
     uint64_t textUntil = 0, walkUntil = 0;
     int wave = 0;          // host: the wave he came after
 } g_merchant;
+bool g_hasMerchantSpot = false;  // host: where he comes in at this place (/торговец), else an enemies' spot
+game::CVector g_merchantSpot;
 bool MerchantWave(int w) { return w == 5 || (w > 5 && (w - 5) % 10 == 0); }
 // what this player bought: the armour's kind (0 none, 1 the Juggernaut's, 2 the Firestarter's, 3 the Soldier's), the
 // gadget (0 none, 1 the cop's visor, 2 the rage dose, 3 the Shahed's remote), the mods
@@ -372,10 +375,12 @@ void ResetShop() {  // a new arena: nothing bought
     g_visorCharge = 100.0f, g_visorOn = false;
     g_rageReadyWave = 0, g_rageStunUntil = g_rageUntil = g_rageTextUntil = 0;
     g_shahedCharges = g_scrap = 0, g_shahedSince = 0;
+    if (g_shopOpen) ui::In().SetKeyboardCapture(false), ui::In().SetMouseCapture(false);
     g_shopOpen = false;
 }
 void PlayerGuns(bool bigClips, bool sharp);
 void BayonetHit(game::CPed* p);
+void SetShopOpen(bool on);
 void Label(const game::CVector& at, const std::string& text, uint32_t color, float maxDist, bool throughWalls);
 int MountQuad(int h);
 bool RcPlace() { return std::string(kPlaces[g_arena.place].keys[0][1]) == "rc"; }
@@ -3166,6 +3171,9 @@ void LoadOwnPoints() {
     float h = 0;
     for (const std::string& v : SpotLines(file, sec, "spawn", 0))
         if (ReadVec(v, p, h)) g_hasOwnSpawn = true, g_ownSpawn = p;
+    g_hasMerchantSpot = false;
+    for (const std::string& v : SpotLines(file, sec, "merchant", 0))
+        if (ReadVec(v, p, h)) g_hasMerchantSpot = true, g_merchantSpot = p;
     for (const std::string& v : SpotLines(file, sec, "enemy", 8))
         if (ReadVec(v, p, h)) g_enemyPts.push_back(p);
     for (const std::string& v : SpotLines(file, sec, "zone", 4))
@@ -3282,7 +3290,7 @@ void SaveSpot(const std::string& what) {
                                              : TR("Автомат %d поставлен здесь (сохранено для этого места).", "Machine %d put here (kept for this place)."), k));
     } else if (what.size() > 5 && what.compare(what.size() - 5, 5, "reset") == 0) {  // one kind forgotten: /arena <kind> сброс
         std::string kind = what.substr(0, what.size() - 5);
-        int most = kind == "enemy" ? 8 : kind == "zone" || kind == "radio" || kind == "soda" ? 4 : kind == "bar" ? kMaxBars
+        int most = kind == "merchant" ? 0 : kind == "enemy" ? 8 : kind == "zone" || kind == "radio" || kind == "soda" ? 4 : kind == "bar" ? kMaxBars
                  : kind == "build" ? kMaxBuildSpots : 0;
         if (most == 0) ini.Set(sec, kind, "");  // box, spawn: one each
         for (int k = 1; k <= most; ++k) ini.Set(sec, Format("%s%d", kind.c_str(), k), "");
@@ -3315,6 +3323,10 @@ void SaveSpot(const std::string& what) {
         }
         ui::TheChat().AddSystem(text);
         return;
+    } else if (what == "merchant") {
+        ini.Set(sec, "merchant", line);
+        g_hasMerchantSpot = true, g_merchantSpot = p;
+        ui::TheChat().AddSystem(TR("Торговец будет приходить отсюда (сохранено для этого места).", "The merchant comes in from here (kept for this place)."));
     } else if (what == "spawn") {
         ini.Set(sec, "spawn", line);
         ui::TheChat().AddSystem(TR("Точка появления игроков сохранена (со следующей арены).", "The players' spot to come in at is kept (from the next arena on)."));
@@ -6323,7 +6335,12 @@ void Buy(int i) {
     else if (it.kind == 1) g_gadget = it.which, g_shahedCharges = it.which == 3 ? 1 : g_shahedCharges;
     else (it.which == 1 ? g_modUgl : it.which == 2 ? g_modBayonet : g_modSpark) = true;
     if (it.kind == 2 && it.which == 1) g_uglLoaded = true;
-    CallMethod<0x506EA0>((void*)0xB6BC90, 40 /* AE_FRONTEND_PURCHASE_WEAPON */, 0.0f, 1.0f);
+    CallMethod<0x506EA0>((void*)0xB6BC90, 40 /* AE_FRONTEND_PURCHASE_WEAPON: the till */, 0.0f, 1.0f);
+    if (CPlayerPed* me = FindPlayerPed(0)) {
+        CVector at = me->GetPosition();
+        Cmd(0x018C).F(at.x).F(at.y).F(at.z).I(1054).Run();  // ADD_ONE_OFF_SOUND: SOUND_BUY
+    }
+    LOGI("Arena: bought %s", it.name[1]);
     ShowHelp(Format("%s: %s", kShop[i].name[Lang()], kShop[i].what[Lang()]), 6000);
 }
 
@@ -6331,11 +6348,11 @@ void Buy(int i) {
 void ShowMerchant(bool on, uint16_t id) {  // every game
     g_merchant.on = on, g_merchant.id = id;
     if (on) g_merchant.textUntil = NowMs() + 4500;
-    else g_shopOpen = false, g_merchant.ped = nullptr;
+    else SetShopOpen(false), g_merchant.ped = nullptr;
 }
 void StartMerchant() {  // host
     if (!LoadModelNow(MODEL_MERCHANT)) return;
-    CVector at = SpawnSpot(Rand(0.0f, 6.2831853f), 3.2f, 6.0f);
+    CVector at = g_hasMerchantSpot ? g_merchantSpot + CVector{0, 0, 1.0f} : SpawnSpot(Rand(0.0f, 6.2831853f), 3.2f, 6.0f);
     int h = -1;
     Cmd(0x009A).I(4 /* PED_TYPE_CIVMALE */).I(MODEL_MERCHANT).F(at.x).F(at.y).F(at.z - 1.0f).Out(&h).Run();  // CREATE_CHAR
     CPed* p = h >= 0 ? GetPed(h) : nullptr;
@@ -6392,12 +6409,24 @@ void MerchantFrame(uint64_t now) {  // every game
         g_merchant.ped = h >= 0 ? GetPed(h) : nullptr;
     }
     CPlayerPed* me = FindPlayerPed(0);
-    if (g_shopOpen && (!me || !g_merchant.ped || (me->GetPosition() - g_merchant.ped->GetPosition()).Length() > 3.5f)) g_shopOpen = false;
+    if (g_shopOpen && (!me || !g_merchant.ped || (me->GetPosition() - g_merchant.ped->GetPosition()).Length() > 3.5f)) SetShopOpen(false);
 }
 bool NearMerchant() {
     CPlayerPed* me = FindPlayerPed(0);
     return g_merchant.on && g_merchant.ped && IsPedValid(g_merchant.ped) && me &&
            (me->GetPosition() - g_merchant.ped->GetPosition()).Length() < 2.6f;
+}
+// The merchant's screen, as Ammu-Nation's: three tabs (armour, gadgets, mods), a card each item; W/S or the arrows pick,
+// A/D the tab, Enter, Space or a click buys, Esc, Backspace or E leave. The mouse is free while it is open.
+int g_shopTab = 0, g_shopSel = 0;
+uint64_t g_shopOpenedMs = 0;
+float g_shopMouseX = -1, g_shopMouseY = -1;
+void SetShopOpen(bool on) {
+    if (on == g_shopOpen) return;
+    g_shopOpen = on;
+    ui::In().SetKeyboardCapture(on);
+    ui::In().SetMouseCapture(on);
+    if (on) g_shopSel = 0, g_shopOpenedMs = NowMs();
 }
 void DrawShop() {
     auto& g = ui::Gfx();
@@ -6412,25 +6441,78 @@ void DrawShop() {
     if (g_merchant.on && g_merchant.ped && IsPedValid(g_merchant.ped))
         Label(g_merchant.ped->GetPosition() + CVector{0, 0, 1.2f}, TR("Торговец  [E]", "Merchant  [E]"), 0xFFE1C35A, 40.0f, true);
     if (!g_shopOpen) return;
-    float w = 760 * s, row = g.LineHeight(ui::FONT_NORMAL) + g.LineHeight(ui::FONT_SMALL) + 10 * s;
-    float h = row * kShopCount + 90 * s;
-    float x = (g.Width() - w) * 0.5f, y = (g.Height() - h) * 0.5f;
-    g.Rect(x, y, w, h, 0xE0000000);
-    g.RectOutline(x, y, w, h, 0xFF26303B, std::max(1.0f, s));
-    g.Text(ui::FONT_MENU, x + w * 0.5f, y + 12 * s, TR("ТОРГОВЕЦ", "MERCHANT"), 0xFFACCBF1, ui::TEXT_CENTER | ui::TEXT_SHADOW);
-    float ty = y + 20 * s + g.LineHeight(ui::FONT_MENU);
-    for (int i = 0; i < kShopCount; ++i) {
-        const ShopItem& it = kShop[i];
-        bool own = Owned(it), can = Cash() >= it.price;
-        uint32_t c = own ? 0xFF5FA04E : can ? 0xFFFFFFFF : 0xFF8D9CAD;
-        g.Text(ui::FONT_NORMAL, x + 24 * s, ty, Format("%d  %s", i + 1, it.name[Lang()]), c, ui::TEXT_SHADOW);
-        g.Text(ui::FONT_NORMAL, x + w - 24 * s, ty, own ? std::string(TR("куплено", "bought")) : Format("$%d", it.price), c, ui::TEXT_RIGHT | ui::TEXT_SHADOW);
-        g.Text(ui::FONT_SMALL, x + 52 * s, ty + g.LineHeight(ui::FONT_NORMAL), it.what[Lang()], 0xFF8D9CAD, ui::TEXT_SHADOW);
-        ty += row;
+    // this tab's items
+    std::vector<int> items;
+    for (int i = 0; i < kShopCount; ++i)
+        if (kShop[i].kind == g_shopTab) items.push_back(i);
+    auto& st = ui::In().State();
+    bool buy = false;
+    for (int vk : st.keyDowns) {
+        if (vk == 'E' && now - g_shopOpenedMs < 500) continue;  // the E that opened it (and its repeats)
+        if (vk == VK_ESCAPE || vk == VK_BACK || vk == 'E') return SetShopOpen(false);
+        if (vk == 'A' || vk == VK_PRIOR) g_shopTab = (g_shopTab + 2) % 3, g_shopSel = 0;
+        if (vk == 'D' || vk == VK_NEXT || vk == VK_TAB) g_shopTab = (g_shopTab + 1) % 3, g_shopSel = 0;
+        if (vk == 'W' || vk == VK_UP || vk == VK_LEFT) g_shopSel = std::max(0, g_shopSel - 1);
+        if (vk == 'S' || vk == VK_DOWN || vk == VK_RIGHT) g_shopSel = std::min((int)items.size() - 1, g_shopSel + 1);
+        if (vk == VK_RETURN || vk == VK_SPACE) buy = true;
     }
-    g.Text(ui::FONT_SMALL, x + w * 0.5f, y + h - 28 * s,
-           TR("1-9 — купить   E — закрыть   (одна броня и один гаджет: новые заменяют прежние)", "1-9 buy   E close   (one armour, one gadget: a new one takes the old one's place)"),
+    items.clear();
+    for (int i = 0; i < kShopCount; ++i)
+        if (kShop[i].kind == g_shopTab) items.push_back(i);
+    g_shopSel = std::clamp(g_shopSel, 0, std::max(0, (int)items.size() - 1));
+    float W = 1000 * s, H = 600 * s;
+    float x = (g.Width() - W) * 0.5f, y = (g.Height() - H) * 0.5f;
+    g.Rect(0, 0, g.Width(), g.Height(), 0x70000000);
+    g.Rect(x, y, W, H, 0xF0000000);
+    g.RectOutline(x, y, W, H, 0xFF26303B, std::max(1.0f, s));
+    g.GameText(ui::GAME_FONT_GOTHIC, x + 40 * s, y + 14 * s, "Merchant", 56 * s, 0xFFACCBF1);  // the menus' own title
+    g.GameText(ui::GAME_FONT_PRICEDOWN, x + W - 40 * s, y + 24 * s, Format("$%d", Cash()), 40 * s, 0xFF36682C, ui::TEXT_RIGHT);
+    auto hover = [&](float hx, float hy, float hw, float hh) { return st.mouseX >= hx && st.mouseX < hx + hw && st.mouseY >= hy && st.mouseY < hy + hh; };
+    // the tabs
+    const char* tabs[3] = {TR("[ БРОНЯ ]", "[ ARMOUR ]"), TR("[ ГАДЖЕТЫ ]", "[ GADGETS ]"), TR("[ МОДИФИКАЦИИ ]", "[ MODS ]")};
+    float ty = y + 90 * s, tw = (W - 80 * s) / 3.0f, th = g.LineHeight(ui::FONT_MENU) + 14 * s;
+    for (int t = 0; t < 3; ++t) {
+        float tx = x + 40 * s + tw * (float)t;
+        bool hv = hover(tx, ty, tw, th);
+        if (hv && st.lmbPressed && t != g_shopTab) g_shopTab = t, g_shopSel = 0, st.lmbPressed = false;
+        bool act = t == g_shopTab;
+        if (act) g.Rect(tx + 4 * s, ty, tw - 8 * s, th, 0x40ACCBF1);
+        g.Text(ui::FONT_MENU, tx + tw * 0.5f, ty + 7 * s, tabs[t], act ? 0xFFACCBF1 : hv ? 0xFF8D9CAD : 0xFF4A5A6B, ui::TEXT_CENTER | ui::TEXT_SHADOW);
+    }
+    // the cards
+    float cy = ty + th + 24 * s, gap = 20 * s;
+    float cw = (W - 80 * s - gap * 2) / 3.0f, chh = H - (cy - y) - 70 * s;
+    for (size_t k = 0; k < items.size() && k < 3; ++k) {
+        const ShopItem& it = kShop[items[k]];
+        float cx = x + 40 * s + (cw + gap) * (float)k;
+        bool hv = hover(cx, cy, cw, chh);
+        if (hv && (st.mouseX != g_shopMouseX || st.mouseY != g_shopMouseY)) g_shopSel = (int)k;  // the mouse moved onto it
+        bool sel = g_shopSel == (int)k;
+        bool own = Owned(it), can = Cash() >= it.price;
+        g.Rect(cx, cy, cw, chh, sel ? 0xE0182230 : 0xC0101418);
+        g.RectOutline(cx, cy, cw, chh, sel ? 0xFFACCBF1 : 0xFF26303B, std::max(1.0f, s) * (sel ? 2.5f : 1.0f));
+        float py = cy + 16 * s;
+        for (auto& line : g.Wrap(ui::FONT_MENU, ui::Widen(it.name[Lang()]), cw - 32 * s)) {
+            g.TextW(ui::FONT_MENU, cx + cw * 0.5f, py, line, sel ? 0xFFACCBF1 : 0xFFFFFFFF, ui::TEXT_CENTER | ui::TEXT_SHADOW);
+            py += g.LineHeight(ui::FONT_MENU);
+        }
+        py += 10 * s;
+        if (own) g.Text(ui::FONT_MENU, cx + cw * 0.5f, py, it.kind == 0 ? TR("НАДЕТО", "WORN") : TR("КУПЛЕНО", "BOUGHT"), 0xFF5FA04E, ui::TEXT_CENTER | ui::TEXT_SHADOW);
+        else g.GameText(ui::GAME_FONT_PRICEDOWN, cx + cw * 0.5f, py, Format("$%d", it.price), 34 * s, can ? 0xFF36682C : 0xFFB4191D, ui::TEXT_CENTER);
+        py += 46 * s;
+        for (auto& line : g.Wrap(ui::FONT_SMALL, ui::Widen(it.what[Lang()]), cw - 32 * s)) {
+            g.TextW(ui::FONT_SMALL, cx + 16 * s, py, line, 0xFFC8C8C8, ui::TEXT_SHADOW);
+            py += g.LineHeight(ui::FONT_SMALL);
+        }
+        if (hv && st.lmbPressed) buy = true, g_shopSel = (int)k, st.lmbPressed = false;
+    }
+    g_shopMouseX = st.mouseX, g_shopMouseY = st.mouseY;
+    if (buy && g_shopSel < (int)items.size()) Buy(items[(size_t)g_shopSel]);
+    g.Text(ui::FONT_SMALL, x + W * 0.5f, y + H - 34 * s,
+           TR("W/S, стрелки — выбор    A/D — вкладка    Enter, Пробел, ЛКМ — купить    Esc, E — выйти",
+              "W/S, arrows: pick    A/D: tab    Enter, Space, click: buy    Esc, E: leave"),
            0xFF8D9CAD, ui::TEXT_CENTER | ui::TEXT_SHADOW);
+    ui::w::DrawCursor();
 }
 
 // ---- the armours (while there is armour on): the damage it takes, speed, clips, fire, the gifts each wave
@@ -8352,6 +8434,23 @@ public:
     }
     bool OnCommand(const std::string& cmd, const std::vector<std::string>& args) override {
         std::string c = LowerRu(cmd);
+        if (c == "торговец" || c == "setmerchant") {  // /торговец: where the merchant comes in at this place
+            if (!g_arena.on || !g_arena.taken) ui::TheChat().AddError(TR("Сначала начните арену в этом месте.", "Start an arena at that place first."));
+            else SaveSpot("merchant");
+            return true;
+        }
+        if (c == "spawnmerchant" || c == "вызватьторговца") {  // the merchant now (a test; the host)
+            if (!g_arena.on || !g_arena.host) ui::TheChat().AddError(TR("Только хост во время арены.", "Only the host, in an arena."));
+            else if (!g_merchant.on) {
+                StartMerchant();
+                if (g_merchant.on && g_break && g_arena.nextWaveMs) g_arena.nextWaveMs = std::max(g_arena.nextWaveMs, NowMs() + 60000), Send(A_PREP, [](Writer& w) { w.U8(60); });
+                Send(A_MERCHANT, [](Writer& w) {
+                    w.U8(1);
+                    w.U16(0);
+                });
+            }
+            return true;
+        }
         if (c == "подсказки" || c == "tips") {  // the arena's hints on and off (F9 too)
             Cfg().tips = !Cfg().tips;
             flow::SaveConnectSettings();
@@ -8412,6 +8511,7 @@ public:
         }
         const char* spot = a0 == "ящик" || a0 == "box"               ? "box"
                            : a0 == "спавн" || a0 == "spawn"         ? "spawn"
+                           : a0 == "торговец" || a0 == "merchant"   ? "merchant"
                            : a0 == "враги" || a0 == "enemy"         ? "enemy"
                            : a0 == "зона" || a0 == "zone"           ? "zone"
                            : a0 == "радио" || a0 == "radio"         ? "radio"
@@ -8480,6 +8580,7 @@ struct Reg {
 
 namespace arena {
 
+bool ShopOpen() { return g_shopOpen; }
 int OutgoingDamage(CEntity* creator, int weapon, int damage) { return On() ? OutgoingDamageArena(weapon, damage) : damage; }
 void BarricadeBlast(const CVector& at) {
     if (g_arena.on && g_arena.taken && !g_ebars.empty()) EBarBlast(at);
@@ -8622,18 +8723,9 @@ bool KeyDown(int vk, bool repeat) {
         return true;
     }
     if (!On() || !ReviveText(hint).empty()) return false;
-    if (g_shopOpen) {  // the merchant's list: 1-9 buy, E closes
-        if (vk >= '1' && vk <= '9') {
-            if (!repeat) Buy(vk - '1');
-            return true;
-        }
-        if (vk == 'E') {
-            if (!repeat) g_shopOpen = false;
-            return true;
-        }
-    }
+    if (g_shopOpen) return true;  // the merchant's screen reads its keys itself (DrawShop)
     if (vk == 'E' && NearMerchant()) {
-        if (!repeat) g_shopOpen = true;
+        if (!repeat) SetShopOpen(true);
         return true;
     }
     if (vk == 'H') return repeat ? g_holo : HoloKey();  // held: the hologram (HoloFrame)

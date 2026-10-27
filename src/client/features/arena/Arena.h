@@ -36,7 +36,9 @@ bool Running();     // an arena is on now
 bool IsArenaEnemy(game::CPed* p);
 void BarricadeBlast(const game::CVector& at);
 // a hit by this player: its damage as the arena makes it (the rage's harder blows)
-int OutgoingDamage(game::CEntity* creator, int weapon, int damage);  // a blast of this game's: the builders' barricades near it break  // one of the arena's enemies (the host's, or a copy)
+int OutgoingDamage(game::CEntity* creator, int weapon, int damage);
+// the merchant's screen is open: it has the keyboard and the mouse
+bool ShopOpen();  // a blast of this game's: the builders' barricades near it break  // one of the arena's enemies (the host's, or a copy)
 void StartNow();    // host: the next arena now (F9)
 int FactionCount();
 std::string FactionTitle(int i);
