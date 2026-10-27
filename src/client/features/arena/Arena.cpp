@@ -5640,7 +5640,16 @@ void Tactics() {
         float d = (t->GetPosition() - p->GetPosition()).Length();
         CVector eye = p->GetPosition() + CVector{0, 0, 0.6f}, at = t->GetPosition() + CVector{0, 0, 0.4f};
         bool sees = Clear(eye, at);
-        if (now < e.getUpUntil) continue;  // getting up
+        if (e.getUpUntil) {  // raised by a medic: getting up, then straight back into the fight (it stood there idle)
+            if (now < e.getUpUntil) continue;
+            e.getUpUntil = 0;
+            Cmd(0x0687).I(h).Run();  // CLEAR_CHAR_TASKS: the getting up's animation done with
+            e.mode = e.role == R_KNIFE ? M_SNEAK : M_FIGHT;
+            e.routing = false;
+            e.lastMoveMs = now, e.lastPos = p->GetPosition();
+            if (e.role != R_KNIFE) SetOn(p, e, t);
+            continue;
+        }
         if (e.role == R_OPERATOR) {  // he stands there with his remote, sending his helicopters; on the floor, not in the air
             CVector pp = p->GetPosition();
             float fz = 0;
