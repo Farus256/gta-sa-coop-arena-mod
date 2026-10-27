@@ -3181,13 +3181,41 @@ void SaveSpot(const std::string& what) {
         if (g_arena.host) SendProps();
         ui::TheChat().AddSystem(Format(radio ? TR("Радио %d поставлено здесь (сохранено для этого места).", "Radio %d put here (kept for this place).")
                                              : TR("Автомат %d поставлен здесь (сохранено для этого места).", "Machine %d put here (kept for this place)."), k));
-    } else if (what == "sodareset") {
-        for (int k = 1; k <= 4; ++k) ini.Set(sec, Format("soda%d", k), "");
-        g_sodaSpots.clear();
-        ShowProps();
-        if (g_arena.host) SendProps();
-        ui::TheChat().AddSystem(TR("Все автоматы с напитками этого места сброшены (снова один у ящика).",
-                                   "All the drinks machines of this place forgotten (one by the box again)."));
+    } else if (what.size() > 5 && what.compare(what.size() - 5, 5, "reset") == 0) {  // one kind forgotten: /arena <kind> сброс
+        std::string kind = what.substr(0, what.size() - 5);
+        int most = kind == "enemy" ? 8 : kind == "zone" || kind == "radio" || kind == "soda" ? 4 : kind == "bar" ? kMaxBars
+                 : kind == "build" ? kMaxBuildSpots : 0;
+        if (most == 0) ini.Set(sec, kind, "");  // box, spawn: one each
+        for (int k = 1; k <= most; ++k) ini.Set(sec, Format("%s%d", kind.c_str(), k), "");
+        ini.Save(SpotsPath());
+        const char* text =
+            kind == "box"     ? TR("Ящик этого места сброшен: со следующей арены он на своём месте по умолчанию.",
+                                   "The box of this place forgotten: from the next arena it is at its own spot again.")
+            : kind == "spawn" ? TR("Точка появления игроков сброшена (снова по умолчанию, со следующей арены).",
+                                   "The players' spot forgotten (the default again, from the next arena on).")
+            : kind == "enemy" ? TR("Все точки врагов этого места сброшены (снова по умолчанию).", "All the enemy points of this place forgotten (the defaults again).")
+            : kind == "zone"  ? TR("Все зоны этого места сброшены (снова по умолчанию).", "All the zones of this place forgotten (the defaults again).")
+            : kind == "radio" ? TR("Все радио этого места сброшены (снова одно у ящика).", "All the radios of this place forgotten (one by the box again).")
+            : kind == "soda"  ? TR("Все автоматы с напитками этого места сброшены (снова один у ящика).",
+                                   "All the drinks machines of this place forgotten (one by the box again).")
+            : kind == "bar"   ? TR("Все сохранённые баррикады этого места сброшены (со следующей арены).",
+                                   "All the kept barricades of this place forgotten (from the next arena on).")
+                              : TR("Все места строителя этого места сброшены (снова по умолчанию).", "All the builder spots of this place forgotten (the defaults again).");
+        if (g_arena.host) {
+            std::vector<Prop> radios = g_radioSpots, sodas = g_sodaSpots;
+            LoadOwnPoints();  // the enemies', the zones', the builders' points as they are now
+            if (kind != "radio") g_radioSpots = radios;
+            if (kind != "soda") g_sodaSpots = sodas;
+        } else {
+            if (kind == "radio") g_radioSpots.clear();
+            if (kind == "soda") g_sodaSpots.clear();
+        }
+        if (kind == "radio" || kind == "soda") {
+            ShowProps();
+            if (g_arena.host) SendProps();
+        }
+        ui::TheChat().AddSystem(text);
+        return;
     } else if (what == "spawn") {
         ini.Set(sec, "spawn", line);
         ui::TheChat().AddSystem(TR("Точка появления игроков сохранена (со следующей арены).", "The players' spot to come in at is kept (from the next arena on)."));
@@ -6610,6 +6638,26 @@ void Update() {
     }
     if (g_arena.host) DronesFrame(now);
     else DroneCopies();
+    if (g_arena.host) {  // an enemy gone off far (300 m and more from every player: fell out of the place, flung off): in again
+        static uint64_t farCheckMs = 0;
+        if (now - farCheckMs > 2000) {
+            farCheckMs = now;
+            std::vector<CVector> players = PlayerSpots();
+            for (auto& [q, qe] : g_info) {
+                if (!IsPedValid(q) || q->Health() <= 0.0f || q->InVehicle() || players.empty()) continue;
+                float nearest = 1e9f;
+                for (const CVector& pl : players) nearest = std::min(nearest, (q->GetPosition() - pl).Length());
+                if (nearest < 300.0f) continue;
+                CVector at = SpawnSpot(Rand(0.0f, 6.2831853f), 3.2f, 6.0f);
+                Cmd(0x0687).I(GetPedRef(q)).Run();  // CLEAR_CHAR_TASKS
+                q->MoveSpeed() = CVector{};
+                SetEntityPosition(q, at);
+                Cmd(0x0860).I(GetPedRef(q)).I(kPlaces[g_arena.place].area).Run();  // SET_CHAR_AREA_VISIBLE
+                qe.routing = false, qe.setOnMs = 0, qe.lastMoveMs = now, qe.lastPos = at;
+                LOGI("Arena: an enemy %.0f m off the players brought back in", nearest);
+            }
+        }
+    }
     if (g_arena.host && g_minZ > -1e8f && GridUsable()) {  // an enemy that fell under the upper floors: back up, far from the players
         static uint64_t enemyCheckMs = 0;
         if (now - enemyCheckMs > 1000) {
@@ -7548,13 +7596,14 @@ public:
                            : a0 == "стена" || a0 == "wall"          ? "wall"
                            : a0 == "сброс" || a0 == "reset"         ? "reset"
                                                                     : nullptr;
-        if (spot && std::string(spot) == "soda" && args.size() > 1) {
+        std::string what = spot ? spot : "";
+        if (spot && what != "reset" && what != "wall" && args.size() > 1) {  // /arena газировка сброс: that kind alone
             std::string a1 = LowerRu(args[1]);
-            if (a1 == "сброс" || a1 == "reset") spot = "sodareset";
+            if (a1 == "сброс" || a1 == "reset") what += "reset";
         }
         if (spot) {
             if (!g_arena.on || !g_arena.taken) ui::TheChat().AddError(TR("Сначала начните арену в этом месте.", "Start an arena at that place first."));
-            else SaveSpot(spot);
+            else SaveSpot(what);
             return true;
         }
         if (g_arena.on) {
