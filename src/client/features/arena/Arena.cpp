@@ -6585,6 +6585,8 @@ float g_holoHeading = 0;
 uint64_t g_holoHeld = 0, g_holoLastMs = 0;  // ms held where it can go
 constexpr uint64_t kHoloMs = 1500;
 void HoloOff() {
+    // its see-through look is the model's own (every fence of that model shares it): back to whole before it goes
+    if (CObject* o = g_holoObj >= 0 ? GetObject(g_holoObj) : nullptr) CallMethod<0x5332C0>((void*)o, 255);
     DelObj(g_holoObj);
     g_holo = false;
     g_holoHeld = 0;
