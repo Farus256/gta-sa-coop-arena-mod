@@ -3000,7 +3000,62 @@ bool ReadVec(const std::string& v, CVector& p, float& h, int* extra = nullptr) {
     if (extra) *extra = e;
     return n == 4;
 }
-// host: the players' spot, the enemies' points and the zones of this place (its own file's)
+// Everyone's points of a place, the mod's own (made by the host of the first games: its arena-spots.ini): a kind of
+// them in one's own file (spawn, enemy, zone, build) takes the place of these
+struct DefaultSpot {
+    const char* sec;
+    const char* key;
+    const char* value;
+};
+const DefaultSpot kDefaultSpots[] = {
+    {"crack", "spawn", "2560.89 -1301.99 1030.42 91.0"},
+    {"crack", "zone1", "2540.39 -1295.04 1030.42 -80.1"},
+    {"crack", "zone2", "2526.53 -1288.99 1030.42 -22.2"},
+    {"crack", "zone3", "2570.26 -1285.57 1036.77 -34.2"},
+    {"crack", "zone4", "2550.58 -1289.94 1043.12 -104.6"},
+    {"crack", "build1", "2546.17 -1294.86 1030.42 -88.5"},
+    {"crack", "build2", "2541.34 -1299.21 1030.42 -175.9"},
+    {"crack", "build3", "2525.73 -1290.01 1030.42 -172.6"},
+    {"crack", "build4", "2570.87 -1298.43 1036.77 175.4"},
+    {"crack", "build5", "2568.98 -1298.72 1036.78 173.1"},
+    {"crack", "build6", "2553.70 -1297.20 1043.12 -93.1"},
+    {"crack", "build7", "2553.87 -1289.62 1043.12 -87.4"},
+    {"crack", "build8", "2552.75 -1287.90 1043.12 -27.3"},
+    {"crack", "build9", "2552.81 -1298.59 1043.12 -164.1"},
+    {"crack", "build10", "2570.57 -1294.35 1036.77 -177.5"},
+    {"motel", "spawn", "2244.32 -1190.78 1028.80 45.1"},
+    {"motel", "enemy1", "2241.32 -1162.16 1028.80 -178.7"},
+    {"motel", "enemy2", "2208.51 -1188.46 1028.80 -90.9"},
+};
+// a kind's points: the file's, or (none of that kind there) the mod's own
+std::vector<std::string> SpotLines(const Ini* ini, const std::string& sec, const char* kind, int most) {
+    std::vector<std::string> out;
+    bool single = most == 0;
+    for (int k = 1; k <= std::max(1, most); ++k) {
+        std::string key = single ? std::string(kind) : Format("%s%d", kind, k);
+        if (ini) {
+            std::string v = ini->Get(sec, key);
+            if (!v.empty()) out.push_back(v);
+        }
+    }
+    if (!out.empty()) return out;
+    for (int k = 1; k <= std::max(1, most); ++k) {
+        std::string key = single ? std::string(kind) : Format("%s%d", kind, k);
+        for (const DefaultSpot& d : kDefaultSpots)
+            if (sec == d.sec && key == d.key) out.push_back(d.value);
+    }
+    return out;
+}
+// the players' own spot of a place (the host's file's, or the mod's): true when there is one
+bool OwnSpawnOf(int place, CVector& at) {
+    Ini ini;
+    bool have = ini.Load(SpotsPath());
+    float h = 0;
+    for (const std::string& v : SpotLines(have ? &ini : nullptr, kPlaces[place].keys[0][1], "spawn", 0))
+        if (ReadVec(v, at, h)) return true;
+    return false;
+}
+// host: the players' spot, the enemies' points and the zones of this place (its own file's, or the mod's own)
 void LoadOwnPoints() {
     g_hasOwnSpawn = false;
     g_enemyPts.clear();
@@ -3008,17 +3063,19 @@ void LoadOwnPoints() {
     g_radioSpots.clear(), g_sodaSpots.clear();
     g_buildSpots.clear();
     Ini ini;
-    if (!ini.Load(SpotsPath())) return;
+    bool have = ini.Load(SpotsPath());
+    const Ini* file = have ? &ini : nullptr;
     std::string sec = PlaceSection();
     CVector p;
     float h = 0;
-    if (ReadVec(ini.Get(sec, "spawn"), p, h)) g_hasOwnSpawn = true, g_ownSpawn = p;
-    for (int k = 1; k <= 8; ++k)
-        if (ReadVec(ini.Get(sec, Format("enemy%d", k)), p, h)) g_enemyPts.push_back(p);
-    for (int k = 1; k <= 4; ++k)
-        if (ReadVec(ini.Get(sec, Format("zone%d", k)), p, h)) g_zones.push_back(p);
-    for (int k = 1; k <= kMaxBuildSpots; ++k)
-        if (ReadVec(ini.Get(sec, Format("build%d", k)), p, h)) g_buildSpots.push_back({p, h});
+    for (const std::string& v : SpotLines(file, sec, "spawn", 0))
+        if (ReadVec(v, p, h)) g_hasOwnSpawn = true, g_ownSpawn = p;
+    for (const std::string& v : SpotLines(file, sec, "enemy", 8))
+        if (ReadVec(v, p, h)) g_enemyPts.push_back(p);
+    for (const std::string& v : SpotLines(file, sec, "zone", 4))
+        if (ReadVec(v, p, h)) g_zones.push_back(p);
+    for (const std::string& v : SpotLines(file, sec, "build", kMaxBuildSpots))
+        if (ReadVec(v, p, h)) g_buildSpots.push_back({p, h});
     for (int k = 1; k <= 4; ++k) {
         Prop pr;
         if (ReadVec(ini.Get(sec, Format("radio%d", k)), p, h)) pr.pos = p, pr.heading = h, g_radioSpots.push_back(pr);
@@ -5958,7 +6015,7 @@ void End(bool tell) {
     g_arena = Arena{};
 }
 
-void Start(int faction, int place, int waves) {
+void Start(int faction, int place, int waves, const CVector* spawn) {
     g_arena = Arena{};
     g_arena.on = true;
     g_arena.host = Hosting();
@@ -5976,6 +6033,10 @@ void Start(int faction, int place, int waves) {
     }
     ResetCod();
     ForgetSpot();
+    if (spawn) {  // the players' own spot: in there straight away (TakeIn), not to the middle first
+        g_spotOwn = true, g_spotAt = *spawn;
+        g_spotApplied = true;  // nobody taken there a second time when the floor is known
+    }
     g_station = -1;
     g_bossUgl = g_bossKatana = false;
     g_radioSpots.clear(), g_sodaSpots.clear();
@@ -6186,9 +6247,13 @@ void Handle(uint8_t from, Reader& r) {
         if (!r.Ok() || f >= kFactionCount || p >= kPlaceCount || w > 10) return;  // 0: no end
         uint8_t mode = r.U8();
         if (r.Ok() && mode) g_modeOn = true;
+        uint8_t own = r.U8();
+        Vec3 sp = r.Vec();
+        CVector spawn{sp.x, sp.y, sp.z};
+        bool hasSpawn = r.Ok() && own;
         if (g_arena.on) End(false);
         if (g_lobby) OpenLobby(false);
-        Start(f, p, w);
+        Start(f, p, w, hasSpawn ? &spawn : nullptr);
     } else if (!g_arena.on) {
         return;
     } else if (op == A_WAVE) {
@@ -7124,8 +7189,14 @@ void Launch(int faction, int place, int waves) {
         w.U8((uint8_t)place);
         w.U8((uint8_t)waves);
         w.U8(g_modeOn);  // the mode: a partner that missed A_STAGE plays it too (from nothing)
+        CVector sp;
+        bool own = OwnSpawnOf(place, sp);
+        w.U8(own);  // the players' own spot: everyone straight there, not first to the middle
+        w.Vec({sp.x, sp.y, sp.z});
     });
-    Start(faction, place, waves);
+    CVector sp;
+    bool own = OwnSpawnOf(place, sp);
+    Start(faction, place, waves, own ? &sp : nullptr);
     LOGI("Arena started: faction %d, place %d, %d waves", faction, place, waves);
 }
 
