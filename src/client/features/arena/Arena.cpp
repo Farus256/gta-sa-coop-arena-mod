@@ -3762,7 +3762,7 @@ void SpawnWave() {
     if (MiniBoss(w) == 2) count = std::max(2, count * 6 / 10);  // the Butcher's wave: fewer of the others
     // squads of 3-4, spread evenly round the players; the first comes straight on, the others go round; the knifemen
     // (1 from 6 enemies, 2 from 11) alone, from elsewhere
-    int knives = count >= 11 ? 2 : count >= 6 ? 1 : 0;
+    int knives = placeKey == "motel" ? 0 : count >= 11 ? 2 : count >= 6 ? 1 : 0;  // no knifemen at the motel
     count -= knives;
     int squads = std::max(1, (count + 3) / 4);
     float base = Rand(0.0f, 6.2831853f), half = 3.14159265f / (float)squads;
