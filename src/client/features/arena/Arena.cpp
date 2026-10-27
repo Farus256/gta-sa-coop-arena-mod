@@ -5720,6 +5720,13 @@ void Start(int faction, int place, int waves) {
     g_arena.waves = waves;
     g_arena.startMs = NowMs();
     g_arena.nextWaveMs = NowMs() + PrepMs(true);
+    {
+        MEMORYSTATUSEX ms{};
+        ms.dwLength = sizeof ms;
+        if (GlobalMemoryStatusEx(&ms))
+            LOGI("Arena start: %u MB of the address space free, the models %u of %u MB", (uint32_t)(ms.ullAvailVirtual >> 20),
+                 Ref<uint32_t>(0x8E4CB4) >> 20, Ref<uint32_t>(0x8A5A80) >> 20);
+    }
     ResetCod();
     ForgetSpot();
     g_station = -1;
@@ -6262,15 +6269,6 @@ void Update() {
         g_fewSince = 0;
     }
     if (g_arena.host) KatanaFrame(now);
-    static uint64_t blocksMs = 0;  // every animation block in memory now is held for good while the arena is on: one
-    if (now - blocksMs > 1000) {   // the streaming let go mid-animation crashed (0x72F4DE, CAnimManager::BlendAnimation)
-        blocksMs = now;
-        static bool held[180] = {};
-        for (int i = 0; i < 180; ++i) {
-            uintptr_t b = 0xB5D4A0 + (uintptr_t)i * 0x20;  // CAnimManager::ms_aAnimBlocks
-            if (!held[i] && Ref<char>(b) && Ref<uint8_t>(b + 0x10)) held[i] = true, ++Ref<uint16_t>(b + 0x12);
-        }
-    }
     static uint64_t scoreMs = 0;  // the score now and then too: one that came in late has everyone's
     if (now - scoreMs > 3000) {
         scoreMs = now, SendScore();
