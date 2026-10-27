@@ -3074,7 +3074,7 @@ void AddDrop(const Drop& from) {
     Drop d = from;
     d.born = NowMs();
     d.until = d.born + (d.type == D_GUN ? 90000 : d.type == D_CASH ? 3600000 : 30000);  // money lies till the arena ends
-    ShowDrop(d);
+    if (d.type != D_SCRAP || g_gadget == 3) ShowDrop(d);  // the scrap: only for one with the Shahed's remote
     g_drops.push_back(d);
 }
 void WriteDrop(Writer& w, const Drop& d) {
@@ -3168,6 +3168,15 @@ void UpdateDrops(uint64_t now) {
             DelObj(d.handle);
             g_drops.erase(g_drops.begin() + (long)i);
             continue;
+        }
+        if (d.type == D_SCRAP) {  // the scrap is seen and taken only by one with the Shahed's remote
+            bool see = g_gadget == 3;
+            if (!see && d.handle >= 0) DelObj(d.handle), d.handle = -1;
+            if (see && d.handle < 0) ShowDrop(d);
+            if (!see) {
+                ++i;
+                continue;
+            }
         }
         if (d.handle >= 0 && GetObject(d.handle)) {
             CVector at = d.pos + CVector{0, 0, 0.15f * std::sin((float)(now % 3000) / 3000.0f * 6.2831853f)};
