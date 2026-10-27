@@ -35,8 +35,8 @@ void LobbyStart();  // host
 bool Running();     // an arena is on now
 bool IsArenaEnemy(game::CPed* p);
 void BarricadeBlast(const game::CVector& at);
-// host: a hit on one of the arena's men that its gear takes (a shield man's shield from the front): true, no damage
-bool EnemyHitBlocked(game::CPed* victim, game::CEntity* by, int weapon);  // a blast of this game's: the builders' barricades near it break  // one of the arena's enemies (the host's, or a copy)
+// a hit by this player: its damage as the arena makes it (the rage's harder blows)
+int OutgoingDamage(game::CEntity* creator, int weapon, int damage);  // a blast of this game's: the builders' barricades near it break  // one of the arena's enemies (the host's, or a copy)
 void StartNow();    // host: the next arena now (F9)
 int FactionCount();
 std::string FactionTitle(int i);

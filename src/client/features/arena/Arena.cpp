@@ -197,7 +197,7 @@ enum ArenaOp : uint8_t {
     A_START = 1, A_WAVE, A_LEFT, A_BOSS, A_END, A_ITEMS, A_PREP, A_MARK, A_SKIP,
     A_SCORE, A_BARS, A_BOARD, A_REPAIR, A_BOX, A_BOXUSE, A_BOXROLL, A_PERKS, A_PSPAWN, A_GRAB, A_POWER, A_TWINS,
     A_WALLS, A_DROP, A_TAKE, A_TAKEN, A_BUILD, A_LOBBY, A_FLAMER, A_STAGE, A_VOTE, A_VOTES, A_GIVE, A_MAPVOTE, A_MOVE,
-    A_HEALGAS, A_BOSSNAME, A_HIT, A_SHELL, A_SPEC, A_BOXTAKEN, A_SPOT, A_DRONEHIT, A_ALERT /* not used any more */, A_GUARDNAME, A_GUARDREQ, A_ZONE, A_EBAR, A_SAWHIT, A_HALVE, A_PROPS, A_EBARHIT, A_EBARGONE, A_OPERATOR /* not used any more */, A_MVP, A_MAGNET, A_EVENT, A_NEXTBOSS, A_SAWWIND, A_GEAR, A_IGNITE
+    A_HEALGAS, A_BOSSNAME, A_HIT, A_SHELL, A_SPEC, A_BOXTAKEN, A_SPOT, A_DRONEHIT, A_ALERT /* not used any more */, A_GUARDNAME, A_GUARDREQ, A_ZONE, A_EBAR, A_SAWHIT, A_HALVE, A_PROPS, A_EBARHIT, A_EBARGONE, A_OPERATOR /* not used any more */, A_MVP, A_MAGNET, A_EVENT, A_NEXTBOSS, A_SAWWIND, A_GEAR /* not used any more */, A_IGNITE /* not used any more */, A_MERCHANT, A_BAYONET
 };
 struct Arena {
     bool on = false, host = false;
@@ -316,12 +316,67 @@ void SawKill(game::CPed* p);
 void DashFrame(uint64_t now);
 void HoloFrame(uint64_t now);
 extern uint64_t g_fewSince;
-void ShotAt(const game::CVector& hit);
-void GearOn(game::CPed* p, bool shield, bool tank, int belt);
-void ClearGear();
 void ShowStatBox();
 void HoldWorld(bool on);
 extern int g_dashCharges;
+// ======================================================================= block 3: the merchant, his armours, gadgets, mods
+// After the 5th wave, then the 15th, 25th...: as the break ends nobody comes ("Но никто не пришел."), a man walks in
+// to the boxes and sells (E by him): one armour kind, one gadget (X), weapon mods (N). The next wave once the minute
+// is over or everyone voted (Y). What a player buys is its own (its game keeps it for the arena).
+constexpr int MODEL_MERCHANT = 179;  // the Ammu-Nation clerk
+struct MerchantState {
+    bool on = false;       // every game: the trade's minute
+    uint16_t id = 0;       // his net id (the partners find their copy by it)
+    CPed* ped = nullptr;   // host: the man; partners: their copy
+    uint64_t textUntil = 0, walkUntil = 0;
+    int wave = 0;          // host: the wave he came after
+} g_merchant;
+bool MerchantWave(int w) { return w == 5 || (w > 5 && (w - 5) % 10 == 0); }
+// what this player bought: the armour's kind (0 none, 1 the Juggernaut's, 2 the Firestarter's, 3 the Soldier's), the
+// gadget (0 none, 1 the cop's visor, 2 the rage dose, 3 the Shahed's remote), the mods
+int g_armourKind = 0, g_gadget = 0;
+bool g_modUgl = false, g_modBayonet = false, g_modSpark = false;
+float g_visorCharge = 100.0f;
+bool g_visorOn = false;
+int g_rageReadyWave = 0;  // the rage dose: once in 2 waves
+uint64_t g_rageStunUntil = 0, g_rageUntil = 0, g_rageTextUntil = 0;
+int g_shahedCharges = 0, g_scrap = 0;
+uint64_t g_shahedSince = 0;
+bool g_shopOpen = false;
+struct ShopItem {
+    int kind;  // 0 armour, 1 gadget, 2 mod
+    int which;
+    int price;
+    const char* name[2];
+    const char* what[2];
+};
+const ShopItem kShop[] = {
+    {0, 1, 2500, TRP("Броня Джаггернаута", "The Juggernaut's armour"), TRP("броня держит на 50% больше, обоймы больше, чуть медленнее", "armour takes 50% more, bigger clips, a little slower")},
+    {0, 2, 2000, TRP("Броня Поджигателя", "The Firestarter's armour"), TRP("огонь не жжёт, +2 молотова и +200 к огнемёту каждую волну, медленнее", "fire does not burn, +2 molotovs and +200 flamethrower ammo a wave, slower")},
+    {0, 3, 2000, TRP("Броня Солдата", "The Soldier's armour"), TRP("быстрее, оружие точнее и дальше, броня держит на 25% меньше", "faster, guns more accurate and farther, armour takes 25% less")},
+    {1, 1, 1500, TRP("Визор копа", "The cop's visor"), TRP("[X] враги видны сквозь стены, заряд 3%/с, +3% за убийство", "[X] enemies seen through walls, 3% charge a second, +3% a kill")},
+    {1, 2, 2000, TRP("Рейдж-доза", "The rage dose"), TRP("[X] укол, 3 с судорог, потом RAMPAGE: 200 HP, быстрее, точнее, сильнее; раз в 2 волны, и лёжа раненым", "[X] a shot, 3 s of fits, then RAMPAGE: 200 HP, faster, more accurate, harder; once in 2 waves, wounded too")},
+    {1, 3, 2500, TRP("Пульт «Shahed»", "The Shahed's remote"), TRP("[X] свой вертолётик-камикадзе; новый заряд из 2 груд хлама со сбитых дронов", "[X] your own kamikaze helicopter; a new charge from 2 heaps of scrap off downed drones")},
+    {2, 1, 2000, TRP("Подствольный гранатомёт", "An underbarrel launcher"), TRP("[N] на любом оружии, заряжается гранатой", "[N] on any gun, loads with a grenade")},
+    {2, 2, 1200, TRP("Штык-нож", "A bayonet"), TRP("[N] удар вперёд: урон и враг на полу", "[N] a thrust: damage and the enemy down")},
+    {2, 3, 1000, TRP("Магазины «Спарка»", "Twin mags"), TRP("каждая вторая перезарядка быстрая (первая тоже)", "every second reload fast (the first too)")},
+};
+constexpr int kShopCount = (int)(sizeof(kShop) / sizeof(kShop[0]));
+bool Owned(const ShopItem& it) {
+    return it.kind == 0 ? g_armourKind == it.which : it.kind == 1 ? g_gadget == it.which
+           : it.which == 1 ? g_modUgl : it.which == 2 ? g_modBayonet : g_modSpark;
+}
+void ResetShop() {  // a new arena: nothing bought
+    g_armourKind = g_gadget = 0;
+    g_modUgl = g_modBayonet = g_modSpark = false;
+    g_visorCharge = 100.0f, g_visorOn = false;
+    g_rageReadyWave = 0, g_rageStunUntil = g_rageUntil = g_rageTextUntil = 0;
+    g_shahedCharges = g_scrap = 0, g_shahedSince = 0;
+    g_shopOpen = false;
+}
+void PlayerGuns(bool bigClips, bool sharp);
+void BayonetHit(game::CPed* p);
+void Label(const game::CVector& at, const std::string& text, uint32_t color, float maxDist, bool throughWalls);
 int MountQuad(int h);
 bool RcPlace() { return std::string(kPlaces[g_arena.place].keys[0][1]) == "rc"; }
 int g_dronesLeft = 0;  // host: the RC helicopters still to come this wave
@@ -745,7 +800,7 @@ constexpr int kEmptyDecisionMaker = 65542;  // SET_CHAR_DECISION_MAKER "Empty": 
 // and gets the fallen up; R_TWIN: one of the Twins, the mini-boss (two sawn-offs / two desert eagles)
 // R_SAW: the chainsaw mini-boss (winds up, then charges straight on till a wall); R_OFFICER: the mini-boss with a
 // katana who keeps to the back, calls 4 men every 30 s, falls back and heals
-enum Role : uint8_t { R_GUN, R_GRENADIER, R_KNIFE, R_BOSS, R_SNIPER, R_FLAMER, R_MEDIC, R_TWIN, R_SAW, R_OFFICER, R_BUILDER, R_SHIELD };
+enum Role : uint8_t { R_GUN, R_GRENADIER, R_KNIFE, R_BOSS, R_SNIPER, R_FLAMER, R_MEDIC, R_TWIN, R_SAW, R_OFFICER, R_BUILDER };
 // what one does now: fights as the game has it, goes round to a back, runs to cover, holds it (down, up and shooting,
 // down), pushes on at the players, (a knifeman) steals up to a back out of the player's sight, (a sniper) moves to
 // another spot it sees the players from
@@ -2334,9 +2389,11 @@ void OutfitPerks(bool on) {  // the perks that stay on while worn
     }
 }
 float MaxHealth() { return std::max<float>(PlayerInfos()[0].maxHealth, 100.0f); }
+void ArmourWave();
 void OutfitWaveStart() {  // at each wave: the armour, the health, the grenades and the clips
     CPlayerPed* me = FindPlayerPed(0);
     if (!me || g_spectating) return;
+    ArmourWave();
     int h = GetPedRef(me);
     float armour = 25.0f * (float)PerkCount(O_ARMOUR25) + 50.0f * (float)PerkCount(O_ARMOUR50);
     if (armour > 0) me->Armour() = std::min(100.0f, me->Armour() + armour);
@@ -2785,7 +2842,7 @@ void BuyWall(int i) {
 // health for everyone; whoever comes up to it takes it (the host decides who was first)
 // D_SMALL: a few clips for the one who takes it (now and then off a dead enemy); D_GUN: a weapon a player put down (J)
 // with its ammo, for a team mate
-enum DropType : uint8_t { D_AMMO, D_HEALTH, D_SMALL, D_GUN, D_CASH };  // D_CASH: money off a dead enemy (its sum in ammo)
+enum DropType : uint8_t { D_AMMO, D_HEALTH, D_SMALL, D_GUN, D_CASH, D_SCRAP };  // D_SCRAP: a downed drone's scrap (2: a Shahed)  // D_CASH: money off a dead enemy (its sum in ammo)
 struct Drop {
     uint8_t id = 0, type = 0;
     uint8_t weapon = 0, owner = 0xFF;  // D_GUN: what it is, who put it down (not its to take back for 2 s)
@@ -2815,6 +2872,7 @@ std::string DropName(const Drop& d) {
         case D_HEALTH: return TR("Пополнение здоровья", "Health refill");
         case D_SMALL: return TR("Патроны", "Ammo");
         case D_CASH: return Format("$%d", (int)d.ammo);
+        case D_SCRAP: return TR("Груда хлама", "A heap of scrap");
         default:
             if (d.special == 1) return Format(TR("АК-47 с подствольником · %d", "AK-47 with a grenade launcher · %d"), (int)d.ammo);
             return Format("%s · %d", WeaponName(d.weapon), (int)d.ammo);
@@ -2824,6 +2882,7 @@ void ShowDrop(Drop& d) {
     int model = d.type == D_AMMO || d.type == D_SMALL ? PickModel({2358, 2969, 2040})  // an ammo box
                 : d.type == D_HEALTH                  ? PickModel({1240, 1580})        // the heart
                 : d.type == D_CASH                    ? PickModel({1212, 1550})        // a wad of money, a money bag
+                : d.type == D_SCRAP                   ? PickModel({2908, 1265, 1264})  // scrap
                                                       : WeaponModel(d.weapon);
     if (model > 0 && !IsModelLoaded(model)) LoadModelNow(model);
     d.handle = MakeFloating(model, d.pos, 0.0f);
@@ -2881,6 +2940,9 @@ void ApplyDrop(const Drop& d, uint8_t by) {
         MoreAmmo(me, 1.0f);
     } else if (d.type == D_SMALL && mine) {
         MoreAmmo(me, 0.35f);
+    } else if (d.type == D_SCRAP && mine) {
+        if (++g_scrap >= 2) g_scrap -= 2, ++g_shahedCharges;
+        ui::TheChat().AddSystem(Format(TR("Груда хлама: %d/2 (зарядов Shahed: %d).", "Scrap: %d/2 (Shahed charges: %d)."), g_scrap, g_shahedCharges));
     } else if (d.type == D_CASH && mine) {
         AddPoints((int)((float)d.ammo * g_cashMult));
         CallMethod<0x506EA0>((void*)0xB6BC90, 7 /* AE_FRONTEND_PICKUP_MONEY */, 0.0f, 1.0f);
@@ -3517,6 +3579,7 @@ void ResetCod() {
     g_scores.clear();
     g_popups.clear();
     g_nextBoss = -1;
+    ResetShop();
     g_mvp = Mvp{};
     g_hitMs.clear();
     g_killed.clear();
@@ -3621,18 +3684,6 @@ void ShowEvent(uint8_t kind) {  // every game
         ui::TheChat().AddSystem(TR("СОБЫТИЕ: бейсбольная ярость! Все враги с битами бегут с обеих сторон.",
                                    "EVENT: baseball fury! Every enemy with a bat, running in from both sides."));
 }
-// The SWAT shield man: a pistol in one hand, the shield in the other; no grenades; he comes straight on
-void MakeShield(int wave) {
-    const Faction& f = kFactions[g_arena.faction];
-    g_squads.push_back(Squad{});
-    int h = MakeEnemy(f.models[(size_t)RandInt(0, 3)], WEAPON_PISTOL, 120 + 15 * wave, 0, 55, SpawnSpot(Rand(0.0f, 6.2831853f), 3.2f, 6.0f),
-                      (int)g_squads.size() - 1, R_SHIELD, false);
-    if (CPed* p = h >= 0 ? GetPed(h) : nullptr) {
-        Enemy& e = g_info[p];
-        e.mode = M_PUSH, e.modeUntil = ~0ull;
-        GearOn(p, true, false, 0);
-    }
-}
 void MakeFlamer(int wave) {
     const Faction& f = kFactions[g_arena.faction];
     g_squads.push_back(Squad{});
@@ -3641,7 +3692,6 @@ void MakeFlamer(int wave) {
                       (int)g_squads.size() - 1, R_FLAMER, true);
     if (CPed* p = h >= 0 ? GetPed(h) : nullptr) {
         g_flamers.push_back(p);
-        GearOn(p, false, true, 2);  // the tank on his back, two molotovs on the belt
         AddVest(p);
         if (NetPed* np = Peds::Instance().Find(p)) {  // the other games put one on their copy of it
             uint16_t id = np->netId;
@@ -3836,10 +3886,6 @@ void SpawnWave() {
         for (int k = 0; k < medics; ++k) MakeMedic(w);
     }
     if (fac.flamers && w >= 3 && RandInt(0, 99) < 35) MakeFlamer(w);  // now and then one, from the 3rd wave
-    if (g_arena.faction == 9 && w >= 2) {  // SWAT: shield men (one, two with many enemies)
-        int shields = count >= 9 ? 2 : 1;
-        for (int k = 0; k < shields; ++k) MakeShield(w);
-    }
     if (TwinsWave(w)) MakeTwins(w);
     if (MiniBoss(w) == 2) MakeSaw(w);
     if (MiniBoss(w) == 3) MakeOfficer(w);
@@ -4289,6 +4335,10 @@ void DronesFrame(uint64_t now) {  // host, every frame
         }
         if (v->Health() < 1000.0f) d.hp -= 1000.0f - v->Health(), v->Health() = 1000.0f;  // a hit here
         if (d.hp <= 0.0f) {
+            float fz = 0;
+            CVector at = v->GetPosition();
+            if (FloorNoBars(at.x, at.y, at.z, fz)) at.z = fz + 0.3f;
+            SpawnDrop(D_SCRAP, at);  // its scrap: two of them make a Shahed
             Boom(d, true);
             continue;
         }
@@ -4860,7 +4910,6 @@ void EBarFrame(uint64_t now) {
         if (Call<0x56BA00, bool>(&a, &b, &cp, &hit, true, true, false, true, false, false, true, false)) {  // ProcessLineOfSight
             int i = EBarOf(hit);
             if (i >= 0) HitEBar(i, ShotDamage(type)), countedMs = now;
-            ShotAt(cp.point);  // into a flamer's fuel on the floor
         }
     }
     // blows: fists and melee weapons, the fire button, a barricade just in front
@@ -5629,8 +5678,10 @@ void PlayerUgl() {
     uint64_t now = NowMs();
     if (g_uglReadyMs && now >= g_uglReadyMs) g_uglReadyMs = 0, g_uglLoaded = true;
     if (g_uglReadyMs) return;  // loading
-    if (me->ActiveWeapon().type != 30) {
-        ui::TheChat().AddError(TR("Возьмите АК-47 в руки.", "Take the AK-47 in hand."));
+    int gun = me->ActiveWeapon().type;
+    bool fits = gun == 30 ? (g_hasUgl || g_modUgl) : g_modUgl && gun >= 22 && gun <= 34;  // the bought one: on any gun
+    if (!fits) {
+        ui::TheChat().AddError(g_modUgl ? TR("Возьмите оружие в руки.", "Take a gun in hand.") : TR("Возьмите АК-47 в руки.", "Take the AK-47 in hand."));
         return;
     }
     if (g_uglLoaded) {
@@ -5649,7 +5700,7 @@ void PlayerUgl() {
         w.ammoInClip = std::min(w.ammoInClip, w.ammoTotal);
         if (w.ammoTotal <= 0) Cmd(0x0555).I(GetPedRef(me)).I(WEAPON_GRENADE).Run();  // the last one went in
         g_uglReadyMs = now + 1500;
-        Cmd(0x01B9).I(GetPedRef(me)).I(30).Run();
+        Cmd(0x01B9).I(GetPedRef(me)).I(gun).Run();
         if (EnsureBlock("RIFLE")) Cmd(0x0A1A).I(GetPedRef(me)).S("RIFLE_load").S("RIFLE").F(4.0f).I(0).I(0).I(0).I(0).I(1500).Run();
         return;
     }
@@ -5994,7 +6045,6 @@ void Clear() {
     if (g_arena.host) ReleaseDead();
     ForgetSpot();
     ClearEBars();
-    ClearGear();
     g_zoneNow = -1;
     ClearDrones();
     ClearQuads();
@@ -6058,7 +6108,6 @@ void Relocate(int place) {
     ForgetSpot();
     g_radioSpots.clear(), g_sodaSpots.clear();
     ClearEBars();
-    ClearGear();
     g_zoneNow = -1;
     g_arena.place = place;
     CPlayerPed* me = FindPlayerPed(0);
@@ -6135,6 +6184,12 @@ void End(bool tell) {
     CancelDown();
     StopOwnMoves();
     HoldWorld(false);
+    PlayerGuns(false, false);
+    Cmd(0x055D).I(0).I(0).Run();  // MAKE_PLAYER_FIRE_PROOF off
+    if (Ref<CVehicle*>((uintptr_t)&PlayerInfos()[0] + 0xB0)) Call<0x45AE80>(false);  // a Shahed in the air: gone
+    if (g_arena.host && g_merchant.ped && IsPedValid(g_merchant.ped)) Cmd(0x009B).I(GetPedRef(g_merchant.ped)).Run();
+    g_merchant = MerchantState{};
+    ResetShop();
     g_station = -1;
     g_spectators.clear();
     HideSaves(false);
@@ -6254,257 +6309,395 @@ void TwinCopies() {
     EagleModel(g_arena.host ? g_twinPeds[1] : g_twinCopies[1]);
 }
 
-// ======================================================================= block 2: the shield man's shield, the flamer's tank
-// Every game keeps the same gear on the same men (by their net id): the host decides its state (A_GEAR) and sends it
-// whenever it changes. The shield man (SWAT): a shield in front (a door made small: the game has no riot shield), shots
-// and blows from the front go into it, a blast breaks it. The flamethrower man: a fuel tank on his back and two
-// molotovs on his belt (one fewer each throw); a shot into the tank from behind holes it (a trail of fuel after him: a
-// shot into the trail sets it alight), a second one blows it up with him.
-struct Gear {
-    uint16_t id = 0;
-    CPed* ped = nullptr;
-    bool shield = false, shieldOn = false;
-    bool tank = false;
-    int tankState = 0;  // 0 whole, 1 leaking, 2 blown
-    int belt = 0;       // molotovs on the belt
-    bool blown = false;  // host: its blast done
-    int shieldObj = -1, tankObj = -1, beltObj[2] = {-1, -1};
-    std::vector<CVector> trail;  // the fuel on the floor behind a leaking man
-    uint64_t trailMs = 0;
-};
-std::map<uint16_t, Gear> g_gear;
-float g_gearTune[2][4] = {{-0.28f, 0.45f, -0.95f, 0.55f},   // the shield: right, forward, up from the torso; its size
-                          {0.0f, -0.24f, -0.10f, 1.5f}};    // the tank
-std::vector<CVector> g_igniteQueue;  // host: the fuel's spots to set alight, a few a frame
-uint64_t g_igniteMs = 0;
-constexpr int MODEL_SHIELD = 1499, MODEL_TANK = 366, MODEL_MOLOTOV = 344;  // a door made small, the fire extinguisher, the molotov
-
-uint16_t NetIdOf(CPed* p) {
-    NetPed* np = p ? Peds::Instance().Find(p) : nullptr;
-    return np ? np->netId : 0;
-}
-void SendGear(const Gear& g) {  // host
-    Send(A_GEAR, [&](Writer& w) {
-        w.U16(g.id);
-        w.U8((uint8_t)((g.shield ? 1 : 0) | (g.shieldOn ? 2 : 0) | (g.tank ? 4 : 0)));
-        w.U8((uint8_t)g.tankState);
-        w.U8((uint8_t)g.belt);
-    });
-}
-Gear* GearOf(CPed* p) {
-    for (auto& [id, g] : g_gear)
-        if (g.ped == p) return &g;
-    return nullptr;
-}
-struct GearWait {
-    CPed* ped;
-    bool shield, tank;
-    int belt;
-};
-std::vector<GearWait> g_gearWait;  // host: men made this frame, their net ids not given yet (Peds shares them a little later)
-void GearOn(CPed* p, bool shield, bool tank, int belt) {  // host, as the man is made
-    static uint16_t offlineId = 0xF000;
-    uint16_t id = Net().Online() ? NetIdOf(p) : ++offlineId;  // alone: an id of its own (no one to send it to)
-    if (!id) {
-        g_gearWait.push_back({p, shield, tank, belt});
+void ShowHelp(const std::string& text, uint64_t ms);
+void Buy(int i) {
+    if (i < 0 || i >= kShopCount) return;
+    const ShopItem& it = kShop[i];
+    if (Owned(it)) return;
+    if (Cash() < it.price) {
+        ui::TheChat().AddError(Format(TR("Нужно $%d.", "You need $%d."), it.price));
         return;
     }
-    Gear& g = g_gear[id];
-    g.id = id, g.ped = p, g.shield = shield, g.shieldOn = shield, g.tank = tank, g.belt = belt;
-    SendGear(g);
+    AddPoints(-it.price);
+    if (it.kind == 0) g_armourKind = it.which;
+    else if (it.kind == 1) g_gadget = it.which, g_shahedCharges = it.which == 3 ? 1 : g_shahedCharges;
+    else (it.which == 1 ? g_modUgl : it.which == 2 ? g_modBayonet : g_modSpark) = true;
+    if (it.kind == 2 && it.which == 1) g_uglLoaded = true;
+    CallMethod<0x506EA0>((void*)0xB6BC90, 40 /* AE_FRONTEND_PURCHASE_WEAPON */, 0.0f, 1.0f);
+    ShowHelp(Format("%s: %s", kShop[i].name[Lang()], kShop[i].what[Lang()]), 6000);
 }
-void GearObjsOff(Gear& g) {
-    DelObj(g.shieldObj), DelObj(g.tankObj), DelObj(g.beltObj[0]), DelObj(g.beltObj[1]);
+
+// ---- the merchant comes (host) and goes; every game shows the words and knows him
+void ShowMerchant(bool on, uint16_t id) {  // every game
+    g_merchant.on = on, g_merchant.id = id;
+    if (on) g_merchant.textUntil = NowMs() + 4500;
+    else g_shopOpen = false, g_merchant.ped = nullptr;
 }
-void ClearGear() {
-    for (auto& [id, g] : g_gear) GearObjsOff(g);
-    g_gear.clear();
-    g_gearWait.clear();
-    g_igniteQueue.clear();
-}
-int GearObj(int model, CPed* p, float scale) {
-    float lift = 0, height = 0;
-    int h = MakeObj(model, p->GetPosition(), 0.0f, lift, height);  // its model streamed in first (LoadModelNow)
-    if (h < 0) {
-        static uint64_t logMs = 0;
-        if (NowMs() - logMs > 5000) logMs = NowMs(), LOGI("Arena: gear model %d not made", model);
-        return -1;
+void StartMerchant() {  // host
+    if (!LoadModelNow(MODEL_MERCHANT)) return;
+    CVector at = SpawnSpot(Rand(0.0f, 6.2831853f), 3.2f, 6.0f);
+    int h = -1;
+    Cmd(0x009A).I(4 /* PED_TYPE_CIVMALE */).I(MODEL_MERCHANT).F(at.x).F(at.y).F(at.z - 1.0f).Out(&h).Run();  // CREATE_CHAR
+    CPed* p = h >= 0 ? GetPed(h) : nullptr;
+    if (!p) return;
+    Peds::Instance().Share(p);
+    Cmd(0x0860).I(h).I(kPlaces[g_arena.place].area).Run();     // SET_CHAR_AREA_VISIBLE
+    Cmd(0x02AB).I(h).I(1).I(1).I(1).I(1).I(1).Run();             // SET_CHAR_PROOFS: nothing hurts him
+    Cmd(0x0223).I(h).I(1000).Run();
+    Cmd(0x060B).I(h).I(kEmptyDecisionMaker).Run();              // no fear, no fight
+    Cmd(0x087E).I(h).I(0).Run();
+    g_merchant.ped = p, g_merchant.wave = g_arena.wave, g_merchant.id = 0;
+    // to the boxes: beside the weapon box, on the players' side of it
+    CVector to = g_box.placed ? g_box.pos + CVector{0, 0, 0} : kPlaces[g_arena.place].pos - CVector{0, 0, 1.0f};
+    if (g_box.placed) {
+        float r = g_box.heading / 57.29578f;
+        to = to + CVector{-std::sin(r), std::cos(r), 0.0f} * 1.8f;
     }
-    Cmd(0x0382).I(h).I(0).Run();  // SET_OBJECT_COLLISION: none
-    Cmd(0x0550).I(h).I(1).Run();  // FREEZE_OBJECT_POSITION
-    if (CObject* o = GetObject(h)) Field<float>(o, 0x15C) = scale;
-    return h;
+    Cmd(0x05D3).I(h).F(to.x).F(to.y).F(to.z + 1.0f).I(4).I(20000).Run();  // TASK_GO_STRAIGHT_TO_COORD, walking
+    g_merchant.walkUntil = NowMs() + 20000;
+    g_merchant.textUntil = NowMs() + 4500;
+    g_merchant.on = true;
+    LOGI("Arena: the merchant comes after wave %d", g_arena.wave);
 }
-bool BoneAt(CPed* p, int node, CVector& at);
-// the man's frame at his chest: the spine up (bent as he is), the way he faces, his right
-bool ChestFrame(CPed* p, CVector& torso, CVector& right, CVector& fwd, CVector& up) {
-    CMatrix* pm = IsPedValid(p) ? p->Matrix() : nullptr;
-    CVector head;
-    if (!pm || !BoneAt(p, 1, torso) || !BoneAt(p, 2, head)) return false;
-    up = head - torso;
-    float l = up.Length();
-    up = l > 0.01f ? up * (1.0f / l) : pm->up;
-    fwd = pm->forward - up * pm->forward.Dot(up);
-    float fl = fwd.Length();
-    fwd = fl > 0.01f ? fwd * (1.0f / fl) : pm->forward;
-    right = CVector{fwd.y * up.z - fwd.z * up.y, fwd.z * up.x - fwd.x * up.z, fwd.x * up.y - fwd.y * up.x};
-    return true;
+void EndMerchant() {  // host
+    if (g_merchant.ped && IsPedValid(g_merchant.ped)) Cmd(0x009B).I(GetPedRef(g_merchant.ped)).Run();  // DELETE_CHAR
+    g_merchant.ped = nullptr;
+    Send(A_MERCHANT, [](Writer& w) {
+        w.U8(0);
+        w.U16(0);
+    });
+    ShowMerchant(false, 0);
 }
-void PutAt(int h, const CVector& pos, const CVector& right, const CVector& fwd, const CVector& up, float scale) {
-    CObject* o = h >= 0 ? GetObject(h) : nullptr;
-    CMatrix* m = o ? o->Matrix() : nullptr;
-    if (!m) return;
-    WorldRemove(o);
-    m->right = right, m->forward = fwd, m->up = up, m->pos = pos;
-    Field<float>(o, 0x15C) = scale;
-    CallMethod<0x446F90>(o);  // CEntity::UpdateRW
-    CallMethod<0x532B00>(o);  // CEntity::UpdateRwFrame
-    WorldAdd(o);
-}
-// every frame (every game): the men found, their objects made, kept and put on them; the fuel's trail laid
-void GearFrame(uint64_t now) {
-    if (g_arena.host && !g_gearWait.empty()) {  // the waiting ones: their ids now
-        std::vector<GearWait> wait;
-        wait.swap(g_gearWait);
-        for (const GearWait& w : wait)
-            if (IsPedValid(w.ped) && w.ped->Health() > 0.0f) {
-                if (NetIdOf(w.ped)) GearOn(w.ped, w.shield, w.tank, w.belt);
-                else g_gearWait.push_back(w);
+void MerchantFrame(uint64_t now) {  // every game
+    if (!g_merchant.on) return;
+    if (g_arena.host) {
+        CPed* p = g_merchant.ped;
+        if (p && IsPedValid(p)) {
+            uint16_t id = 0;
+            if (NetPed* np = Peds::Instance().Find(p)) id = np->netId;
+            if (id != g_merchant.id) {  // its id at last: the partners told
+                g_merchant.id = id;
+                Send(A_MERCHANT, [id](Writer& w) {
+                    w.U8(1);
+                    w.U16(id);
+                });
             }
-    }
-    for (auto it = g_gear.begin(); it != g_gear.end();) {
-        Gear& g = it->second;
-        if (!g.ped || !IsPedValid(g.ped)) {
-            int h = Peds::Instance().HandleOf(g.id);
-            g.ped = h >= 0 ? GetPed(h) : nullptr;
-        }
-        bool alive = g.ped && IsPedValid(g.ped) && g.ped->Health() > 0.0f;
-        if (!alive) {
-            GearObjsOff(g);
-            if (g.ped || g.trail.empty()) {  // gone (its fuel stays a while for a shot)
-                it = g_gear.erase(it);
-                continue;
+            if (g_merchant.walkUntil && now > g_merchant.walkUntil && g_box.placed) {  // stuck on the way: there
+                g_merchant.walkUntil = 0;
+                SetEntityPosition(p, g_box.pos + CVector{1.8f, 0, 1.0f});
             }
-            ++it;
-            continue;
         }
-        CPed* p = g.ped;
-        if (g_arena.host && g.tank && g.tankState == 2 && !g.blown) {  // the tank goes up, and he with it
-            g.blown = true;
-            CMatrix* pm = p->Matrix();
-            CVector at = p->GetPosition() - (pm ? pm->forward * 0.3f : CVector{});
-            Call<0x736A50>((CEntity*)nullptr, (CEntity*)nullptr, 0 /* EXPLOSION_GRENADE */, at, (uint32_t)0, (uint8_t)1, -1.0f, (uint8_t)0);  // AddExplosion
-            Cmd(0x0223).I(GetPedRef(p)).I(0).Run();  // SET_CHAR_HEALTH 0
-            LOGI("Arena: a flamer's tank blew up");
-        }
-        if (g.shield && g.shieldOn && (g.shieldObj < 0 || !GetObject(g.shieldObj))) g.shieldObj = GearObj(MODEL_SHIELD, p, g_gearTune[0][3]);
-        if (!(g.shield && g.shieldOn)) DelObj(g.shieldObj);
-        if (g.tank && g.tankState < 2 && (g.tankObj < 0 || !GetObject(g.tankObj))) g.tankObj = GearObj(MODEL_TANK, p, g_gearTune[1][3]);
-        if (!g.tank || g.tankState >= 2) DelObj(g.tankObj);
-        for (int k = 0; k < 2; ++k) {
-            bool want = g.tank && k < g.belt;
-            if (want && (g.beltObj[k] < 0 || !GetObject(g.beltObj[k]))) g.beltObj[k] = GearObj(MODEL_MOLOTOV, p, 1.0f);
-            if (!want) DelObj(g.beltObj[k]);
-        }
-        if (g.tankState == 1 && now - g.trailMs > 450 && g.trail.size() < 40) {  // leaking: the fuel behind him
-            g.trailMs = now;
-            CVector at = p->GetPosition();
-            float z = 0;
-            if (FloorNoBars(at.x, at.y, at.z, z) && (g.trail.empty() || (g.trail.back() - CVector{at.x, at.y, z}).Length() > 0.6f))
-                g.trail.push_back({at.x, at.y, z + 0.03f});
-        }
-        ++it;
+    } else if (!g_merchant.ped || !IsPedValid(g_merchant.ped)) {
+        int h = g_merchant.id ? Peds::Instance().HandleOf(g_merchant.id) : -1;
+        g_merchant.ped = h >= 0 ? GetPed(h) : nullptr;
     }
-    // host: the fuel burning, a few spots a frame (the fires go out by themselves, ShortFires)
-    if (g_arena.host && !g_igniteQueue.empty() && now - g_igniteMs > 90) {
-        g_igniteMs = now;
-        CVector at = g_igniteQueue.front();
-        g_igniteQueue.erase(g_igniteQueue.begin());
-        int fire = -1;
-        Cmd(0x02CF).F(at.x).F(at.y).F(at.z).I(0).I(1).Out(&fire).Run();  // START_SCRIPT_FIRE: no spreading, size 1
-    }
+    CPlayerPed* me = FindPlayerPed(0);
+    if (g_shopOpen && (!me || !g_merchant.ped || (me->GetPosition() - g_merchant.ped->GetPosition()).Length() > 3.5f)) g_shopOpen = false;
 }
-// as it is drawn: the objects on the men
-void GearOnBodies() {
-    for (auto& [id, g] : g_gear) {
-        CVector torso, right, fwd, up;
-        if (!g.ped || !IsPedValid(g.ped) || g.ped->Health() <= 0.0f || !ChestFrame(g.ped, torso, right, fwd, up)) continue;
-        const float* s = g_gearTune[0];
-        if (g.shieldObj >= 0) PutAt(g.shieldObj, torso + right * s[0] + fwd * s[1] + up * s[2], right, fwd, up, s[3]);
-        const float* t = g_gearTune[1];
-        if (g.tankObj >= 0) PutAt(g.tankObj, torso + right * t[0] + fwd * t[1] + up * t[2], right, fwd, up, t[3]);
-        for (int k = 0; k < 2; ++k)
-            if (g.beltObj[k] >= 0) PutAt(g.beltObj[k], torso + right * (k ? 0.2f : -0.2f) + fwd * 0.06f - up * 0.45f, right, fwd, up, 1.0f);
-    }
+bool NearMerchant() {
+    CPlayerPed* me = FindPlayerPed(0);
+    return g_merchant.on && g_merchant.ped && IsPedValid(g_merchant.ped) && me &&
+           (me->GetPosition() - g_merchant.ped->GetPosition()).Length() < 2.6f;
 }
-// the fuel on the floor: dark puddles
-void DrawFuel() {
+void DrawShop() {
     auto& g = ui::Gfx();
     float s = g.Scale();
-    for (auto& [id, gr] : g_gear)
-        for (const CVector& at : gr.trail) {
-            float x, y, depth;
-            if (!WorldToScreen(at, x, y, depth) || depth < 0.3f || depth > 60.0f) continue;
-            float r = std::clamp(140.0f / depth, 4.0f, 60.0f) * s;
-            g.Ellipse(x, y, r, r * 0.35f, 0x9A201408);
-        }
-}
-// a shot of this player's went into the floor there: a fuel trail near it catches fire
-void ShotAt(const CVector& hit) {
-    for (auto& [id, g] : g_gear) {
-        if (g.trail.empty()) continue;
-        bool close = false;
-        for (const CVector& at : g.trail) close |= (at - hit).Length() < 1.0f;
-        if (!close) continue;
-        if (g_arena.host) {
-            g_igniteQueue.insert(g_igniteQueue.end(), g.trail.begin(), g.trail.end());
-            g.trail.clear();
-            if (g.tankState == 1) g.tankState = 3, SendGear(g);  // 3: leaking no more (its fuel burnt)
-        } else {
-            uint16_t gid = id;
-            Send(A_IGNITE, [gid](Writer& w) { w.U16(gid); });
-            g.trail.clear();
-        }
-        LOGI("Arena: a flamer's fuel trail set alight");
-        return;
+    uint64_t now = NowMs();
+    if (g_merchant.on && now < g_merchant.textUntil) {  // "nobody came", over the whole screen
+        float a = std::min(1.0f, (float)(g_merchant.textUntil - now) / 800.0f);
+        g.Rect(0, 0, g.Width(), g.Height(), ui::WithAlpha(0xA0000000, a));
+        g.Text(ui::FONT_BIG, g.Width() * 0.5f, g.Height() * 0.45f, TR("Но никто не пришел.", "But nobody came."), ui::WithAlpha(0xFFE0E0E0, a),
+               ui::TEXT_CENTER | ui::TEXT_OUTLINE);
     }
-}
-bool Blast(int weapon) { return weapon == 16 || weapon == 19 || weapon == 35 || weapon == 36 || weapon == 39 || weapon == 51; }
-// host: a hit on one of the arena's men (this game's own, or a partner's): true when the shield took it
-bool GearHit(CPed* victim, CEntity* by, int weapon) {
-    Gear* g = GearOf(victim);
-    if (!g) return false;
-    CVector to = by ? by->GetPosition() - victim->GetPosition() : CVector{};
-    to.z = 0;
-    float l = to.Length();
-    CMatrix* pm = victim->Matrix();
-    float front = l > 0.1f && pm ? (to.x * pm->forward.x + to.y * pm->forward.y) / l : 0.0f;
-    if (g->shield && g->shieldOn) {
-        if (Blast(weapon)) {  // a blast breaks it
-            g->shieldOn = false;
-            SendGear(*g);
-            LOGI("Arena: a shield man's shield blown away");
-            return false;
-        }
-        if (by && front > 0.2f && weapon != 37 && weapon != 18) return true;  // from the front: into the shield
+    if (g_merchant.on && g_merchant.ped && IsPedValid(g_merchant.ped))
+        Label(g_merchant.ped->GetPosition() + CVector{0, 0, 1.2f}, TR("Торговец  [E]", "Merchant  [E]"), 0xFFE1C35A, 40.0f, true);
+    if (!g_shopOpen) return;
+    float w = 760 * s, row = g.LineHeight(ui::FONT_NORMAL) + g.LineHeight(ui::FONT_SMALL) + 10 * s;
+    float h = row * kShopCount + 90 * s;
+    float x = (g.Width() - w) * 0.5f, y = (g.Height() - h) * 0.5f;
+    g.Rect(x, y, w, h, 0xE0000000);
+    g.RectOutline(x, y, w, h, 0xFF26303B, std::max(1.0f, s));
+    g.Text(ui::FONT_MENU, x + w * 0.5f, y + 12 * s, TR("ТОРГОВЕЦ", "MERCHANT"), 0xFFACCBF1, ui::TEXT_CENTER | ui::TEXT_SHADOW);
+    float ty = y + 20 * s + g.LineHeight(ui::FONT_MENU);
+    for (int i = 0; i < kShopCount; ++i) {
+        const ShopItem& it = kShop[i];
+        bool own = Owned(it), can = Cash() >= it.price;
+        uint32_t c = own ? 0xFF5FA04E : can ? 0xFFFFFFFF : 0xFF8D9CAD;
+        g.Text(ui::FONT_NORMAL, x + 24 * s, ty, Format("%d  %s", i + 1, it.name[Lang()]), c, ui::TEXT_SHADOW);
+        g.Text(ui::FONT_NORMAL, x + w - 24 * s, ty, own ? std::string(TR("куплено", "bought")) : Format("$%d", it.price), c, ui::TEXT_RIGHT | ui::TEXT_SHADOW);
+        g.Text(ui::FONT_SMALL, x + 52 * s, ty + g.LineHeight(ui::FONT_NORMAL), it.what[Lang()], 0xFF8D9CAD, ui::TEXT_SHADOW);
+        ty += row;
     }
-    if (g->tank && g->tankState < 2 && by && front < -0.3f && weapon >= 22 && weapon <= 38) {  // a shot into the tank on his back
-        if (g->tankState == 0) {
-            g->tankState = 1;
-            SendGear(*g);
-            LOGI("Arena: a flamer's tank holed");
-        } else {
-            g->tankState = 2;  // the blast in the next frame (GearFrame), not inside the game's damage
-            SendGear(*g);
-        }
-    }
-    return false;
-}
-void BlastGear(const CVector& at) {  // host: a blast near a shield breaks it
-    for (auto& [id, g] : g_gear)
-        if (g.shield && g.shieldOn && g.ped && IsPedValid(g.ped) && (g.ped->GetPosition() - at).Length() < 5.0f) g.shieldOn = false, SendGear(g);
+    g.Text(ui::FONT_SMALL, x + w * 0.5f, y + h - 28 * s,
+           TR("1-9 — купить   E — закрыть   (одна броня и один гаджет: новые заменяют прежние)", "1-9 buy   E close   (one armour, one gadget: a new one takes the old one's place)"),
+           0xFF8D9CAD, ui::TEXT_CENTER | ui::TEXT_SHADOW);
 }
 
+// ---- the armours (while there is armour on): the damage it takes, speed, clips, fire, the gifts each wave
+uint32_t ArmourColour() { return g_armourKind == 1 ? 0xFF3B2A8C : g_armourKind == 2 ? 0xFFC8282D : g_armourKind == 3 ? 0xFF3C9A3C : 0xFFE1E1E1; }
+const char* ArmourName() {
+    return g_armourKind == 1 ? TR("Броня Джаггернаута", "Juggernaut armour") : g_armourKind == 2 ? TR("Броня Поджигателя", "Firestarter armour")
+           : g_armourKind == 3 ? TR("Броня Солдата", "Soldier armour") : "";
+}
+bool ArmourOn() {
+    CPlayerPed* me = FindPlayerPed(0);
+    return g_armourKind && me && me->Armour() >= 1.0f;
+}
+// the player's own weapon kinds (the poor and the hitman skill: the enemies use the middle one): clips, accuracy, range
+struct InfoBackup {
+    void* info;
+    uint16_t clip;
+    float acc, range;
+};
+std::vector<InfoBackup> g_infoBackup;
+void PlayerGuns(bool bigClips, bool sharp) {
+    for (InfoBackup& b : g_infoBackup) Field<uint16_t>(b.info, 0x20) = b.clip, Field<float>(b.info, 0x38) = b.acc, Field<float>(b.info, 0x08) = b.range;
+    g_infoBackup.clear();
+    if (!bigClips && !sharp) return;
+    for (int w = 22; w <= 34; ++w)
+        for (uint8_t skill : {(uint8_t)0, (uint8_t)2}) {
+            void* info = Call<0x743C60, void*>(w, skill);  // CWeaponInfo::GetWeaponInfo
+            if (!info) continue;
+            InfoBackup b{info, Field<uint16_t>(info, 0x20), Field<float>(info, 0x38), Field<float>(info, 0x08)};
+            g_infoBackup.push_back(b);
+            if (bigClips && b.clip > 1) Field<uint16_t>(info, 0x20) = (uint16_t)(b.clip * 3 / 2);
+            if (sharp) Field<float>(info, 0x38) = b.acc * 1.6f, Field<float>(info, 0x08) = b.range * 1.3f;
+        }
+}
+void SpeedFactor(float f) {  // the running's animations: faster or slower (the body moves with them)
+    CPlayerPed* me = FindPlayerPed(0);
+    void* clump = me ? me->RwObject() : nullptr;
+    static float last = 1.0f;
+    if (!clump || (std::fabs(f - 1.0f) < 0.01f && std::fabs(last - 1.0f) < 0.01f)) return;  // as the game has it
+    last = f;
+    for (uint32_t anim : {0u, 1u, 2u})  // ANIM_ID_WALK, RUN, SPRINT
+        if (void* assoc = Call<0x4D68B0, void*>(clump, anim)) Ref<float>((uintptr_t)assoc + 0x24) = f;
+}
+int OutgoingDamageArena(int weapon, int damage) {
+    if (g_rageUntil && NowMs() < g_rageUntil && weapon <= 15) return damage * 2;  // the rage: blows twice as hard
+    return damage;
+}
+int ArmourDamage(int weapon, int damage) {  // the damage to this player while its armour is on
+    if (!ArmourOn()) return damage;
+    if (g_armourKind == 2 && (weapon == 37 || weapon == 18)) return 0;  // fire does not burn
+    if (g_armourKind == 1) return std::max(1, damage * 2 / 3);         // the armour lasts half as long again
+    if (g_armourKind == 3) return damage * 4 / 3;                       // a quarter less
+    return damage;
+}
+void ArmourWave() {  // each wave: the Firestarter's gifts
+    CPlayerPed* me = FindPlayerPed(0);
+    if (!me || g_armourKind != 2) return;
+    int h = GetPedRef(me);
+    if (!SlotTaken(me, WEAPON_GRENADE) || SlotTaken(me, WEAPON_MOLOTOV)) Give(h, WEAPON_MOLOTOV, 2);
+    if (!SlotTaken(me, 38) && !SlotTaken(me, 35) && !SlotTaken(me, 36)) Give(h, 37, 200);  // not over a heavier gun
+}
+void DrawArmourBar() {
+    if (!g_armourKind) return;
+    CPlayerPed* me = FindPlayerPed(0);
+    if (!me) return;
+    auto& g = ui::Gfx();
+    float s = g.Scale();
+    float w = 200 * s, h = 10 * s, x = g.Width() - w - 40 * s, y = g.Height() * 0.205f;
+    float k = std::clamp(me->Armour() / 100.0f, 0.0f, 1.0f);
+    g.Rect(x - 2 * s, y - 2 * s, w + 4 * s, h + 4 * s, 0xFF000000);
+    g.Rect(x, y, w * k, h, ArmourColour());
+    g.Text(ui::FONT_SMALL, x + w, y + h + 2 * s, ArmourName(), ArmourColour() | 0xFF000000, ui::TEXT_RIGHT | ui::TEXT_OUTLINE);
+}
+
+// ---- the gadgets (X)
+void RampageOn() {
+    CPlayerPed* me = FindPlayerPed(0);
+    if (!me) return;
+    g_rageStunUntil = 0;
+    g_rageUntil = NowMs() + 25000;
+    g_rageTextUntil = NowMs() + 2500;
+    me->Health() = 200.0f;
+    Cmd(0x01B4).I(0).I(1).Run();  // SET_PLAYER_CONTROL: back
+    Cmd(0x0687).I(GetPedRef(me)).Run();
+    CallMethod<0x506EA0>((void*)0xB6BC90, 32 /* a frontend sting */, 0.0f, 1.0f);
+}
+void UseGadget() {
+    CPlayerPed* me = FindPlayerPed(0);
+    if (!me || !g_gadget) return;
+    uint64_t now = NowMs();
+    int h = GetPedRef(me);
+    if (g_gadget == 1) {  // the visor on and off
+        if (!g_visorOn && (g_break || now - g_arena.waveMs < 3000)) {
+            ShowHelp(TR("Визор включается через 3 с после начала волны.", "The visor comes on 3 s into a wave."), 3000);
+            return;
+        }
+        if (!g_visorOn && g_visorCharge <= 0.5f) {
+            ShowHelp(TR("Визор разряжен: убийства заряжают его.", "The visor is flat: kills charge it."), 3000);
+            return;
+        }
+        g_visorOn = !g_visorOn;
+        CallMethod<0x506EA0>((void*)0xB6BC90, 1, 0.0f, 1.0f);
+        return;
+    }
+    if (g_gadget == 2) {  // the rage dose
+        if (g_arena.wave < g_rageReadyWave || g_rageStunUntil || (g_rageUntil && now < g_rageUntil)) {
+            ShowHelp(Format(TR("Рейдж-доза снова с волны %d.", "The rage dose again from wave %d."), g_rageReadyWave), 3000);
+            return;
+        }
+        g_rageReadyWave = g_arena.wave + 2;
+        if (Players::Instance().LocalDowned()) CancelDown();  // wounded on the floor: it gets him up
+        Cmd(0x01B4).I(0).I(0).Run();  // SET_PLAYER_CONTROL off: the fits
+        if (EnsureBlock("CRACK")) Cmd(0x0605).I(h).S("crckdeth2").S("CRACK").F(4.0f).I(1).I(0).I(0).I(0).I(3000).Run();  // on the floor, shaking
+        g_rageStunUntil = now + 3000;
+        return;
+    }
+    if (g_gadget == 3) {  // the Shahed
+        if (Ref<CVehicle*>((uintptr_t)&PlayerInfos()[0] + 0xB0)) return;  // one flying already
+        if (g_shahedCharges <= 0) {
+            ShowHelp(TR("Нет заряда: нужно 2 груды хлама со сбитых дронов.", "No charge: 2 heaps of scrap off downed drones are needed."), 3500);
+            return;
+        }
+        --g_shahedCharges;
+        CVector at = me->GetPosition() + CVector{0, 0, 4.0f};
+        LoadModelNow(501);  // the RC Goblin
+        Cmd(0x046E).I(0).F(at.x).F(at.y).F(at.z).F(me->CurrentRotation() * 57.29578f).I(501).Run();  // GIVE_REMOTE_CONTROLLED_MODEL_TO_PLAYER
+        if (CVehicle* rc = Ref<CVehicle*>((uintptr_t)&PlayerInfos()[0] + 0xB0))
+            Cmd(0x0840).I(GetVehicleRef(rc)).I(kPlaces[g_arena.place].area).Run();  // SET_VEHICLE_AREA_VISIBLE
+        g_shahedSince = now;
+    }
+}
+void ShahedBoom(CVehicle* rc) {
+    CVector at = rc->GetPosition();
+    Call<0x45AE80>(false);  // CRemote::TakeRemoteControlledCarFromPlayer: the control back to CJ
+    Call<0x736A50>((CEntity*)nullptr, (CEntity*)FindPlayerPed(0), 2 /* EXPLOSION_ROCKET */, at, (uint32_t)0, (uint8_t)1, -1.0f, (uint8_t)0);  // AddExplosion: his
+    g_shahedSince = 0;
+}
+void GadgetFrame(uint64_t now) {
+    CPlayerPed* me = FindPlayerPed(0);
+    static uint64_t last = now;
+    float dt = (float)std::min<uint64_t>(now - last, 200) / 1000.0f;
+    last = now;
+    if (!me) return;
+    if (g_visorOn) {
+        g_visorCharge -= 3.0f * dt;
+        if (g_visorCharge <= 0.0f || g_break) g_visorCharge = std::max(0.0f, g_visorCharge), g_visorOn = false;
+    }
+    if (g_rageStunUntil && now >= g_rageStunUntil) RampageOn();
+    if (g_rageUntil && now >= g_rageUntil) {
+        g_rageUntil = 0;
+        if (me->Health() > MaxHealth()) me->Health() = MaxHealth();
+    }
+    if (CVehicle* rc = Ref<CVehicle*>((uintptr_t)&PlayerInfos()[0] + 0xB0)) {  // the Shahed: into a man, onto the floor, or 25 s
+        bool hit = now - g_shahedSince > 25000;
+        CVector at = rc->GetPosition();
+        float z = 0;
+        if (FloorNoBars(at.x, at.y, at.z + 0.2f, z) && at.z - z < 0.7f && now - g_shahedSince > 1500) hit = true;
+        CPoolHeader* pool = PedPool();
+        for (int i = 0; pool && i < pool->size && !hit; ++i) {
+            if (pool->byteMap[i] < 0) continue;
+            auto* q = (CPed*)(pool->objects + (size_t)i * kPedPoolElemSize);
+            if (q->IsPlayer() || q->Health() <= 0.0f || !arena::IsEnemy(q) || q == g_merchant.ped) continue;
+            if ((q->GetPosition() - at).Length() < 2.2f) hit = true;
+        }
+        if (hit) ShahedBoom(rc);
+    }
+    // the armour's effects while it is on (and the rage's)
+    bool on = ArmourOn();
+    bool rage = g_rageUntil && now < g_rageUntil;
+    static int applied = -1;
+    int want = (on && g_armourKind == 1 ? 1 : 0) | ((on && g_armourKind == 3) || rage ? 2 : 0);
+    if (want != applied) applied = want, PlayerGuns(want & 1, (want & 2) != 0);
+    static bool fireproof = false;
+    bool fp = on && g_armourKind == 2;
+    if (fp != fireproof) fireproof = fp, Cmd(0x055D).I(0).I(fp ? 1 : 0).Run();  // MAKE_PLAYER_FIRE_PROOF
+    float speed = rage ? 1.25f : !on ? 1.0f : g_armourKind == 1 ? 0.9f : g_armourKind == 2 ? 0.85f : 1.07f;
+    SpeedFactor(speed);
+    // the twin mags: every second reload fast (the first one after the buying too)
+    static bool reloading = false;
+    static int reloads = 0;
+    CWeapon& w = me->ActiveWeapon();
+    bool now2 = w.state == 2;  // WEAPONSTATE_RELOADING
+    if (g_modSpark && now2 && !reloading) {
+        ++reloads;
+        if (reloads % 2 == 1) {
+            uint32_t t = TimeMs();
+            if (w.timeForNextShot > t) w.timeForNextShot = t + (w.timeForNextShot - t) / 2;
+        }
+    }
+    if (g_modSpark && now2 && reloads % 2 == 1)
+        if (void* clump = me->RwObject())
+            for (int anim : {226, 227})
+                if (void* assoc = Call<0x4D68B0, void*>(clump, (uint32_t)anim)) Ref<float>((uintptr_t)assoc + 0x24) = 2.0f;
+    reloading = now2;
+}
+void DrawGadgets(uint64_t now) {
+    auto& g = ui::Gfx();
+    float s = g.Scale();
+    if (g_visorOn) {  // the night-vision's green and the men through the walls
+        g.Rect(0, 0, g.Width(), g.Height(), 0x3020FF40);
+        std::vector<CVector> at;
+        CPoolHeader* pool = PedPool();
+        for (int i = 0; pool && i < pool->size; ++i) {
+            if (pool->byteMap[i] < 0) continue;
+            auto* q = (CPed*)(pool->objects + (size_t)i * kPedPoolElemSize);
+            if (!q->IsPlayer() && q->Health() > 0.0f && arena::IsEnemy(q) && q != g_merchant.ped) at.push_back(q->GetPosition());
+        }
+        ui::DrawWorldMarks(at, 0xE060FF60);
+    }
+    if (g_rageStunUntil) g.Rect(0, 0, g.Width(), g.Height(), 0x40FF0000);
+    if (now < g_rageTextUntil) {  // RAMPAGE over the whole screen
+        float k = (float)(g_rageTextUntil - now) / 2500.0f;
+        float hgt = (150.0f + 60.0f * k) * s;
+        g.GameText(ui::GAME_FONT_PRICEDOWN, g.Width() * 0.5f, g.Height() * 0.4f, "RAMPAGE", hgt, ui::WithAlpha(0xFFC8282D, std::min(1.0f, k * 2)), ui::TEXT_CENTER);
+    }
+    if (g_gadget) {  // the gadget's state under the armour's bar
+        std::string t = g_gadget == 1   ? Format(TR("Визор: %.0f%%%s", "Visor: %.0f%%%s"), g_visorCharge, g_visorOn ? TR(" (вкл)", " (on)") : "")
+                        : g_gadget == 2 ? (g_arena.wave >= g_rageReadyWave ? std::string(TR("Рейдж-доза: готова", "Rage dose: ready"))
+                                                                           : Format(TR("Рейдж-доза: с волны %d", "Rage dose: from wave %d"), g_rageReadyWave))
+                                        : Format(TR("Shahed: %d  (хлам %d/2)", "Shahed: %d  (scrap %d/2)"), g_shahedCharges, g_scrap);
+        g.Text(ui::FONT_SMALL, g.Width() - 40 * s, g.Height() * 0.245f, t, 0xFFFFFFFF, ui::TEXT_RIGHT | ui::TEXT_OUTLINE);
+    }
+}
+
+// ---- the mods (N): the bayonet's thrust; the launcher on any gun goes through PlayerUgl
+bool Bayonet() {
+    CPlayerPed* me = FindPlayerPed(0);
+    if (!me || !g_modBayonet) return false;
+    int w = me->ActiveWeapon().type;
+    if (w < 22 || w > 34) return false;
+    float hd = me->CurrentRotation();
+    CVector f{-std::sin(hd), std::cos(hd), 0.0f};
+    CPed* best = nullptr;
+    float bestD = 2.4f;
+    CPoolHeader* pool = PedPool();
+    for (int i = 0; pool && i < pool->size; ++i) {
+        if (pool->byteMap[i] < 0) continue;
+        auto* q = (CPed*)(pool->objects + (size_t)i * kPedPoolElemSize);
+        if (q->IsPlayer() || q->Health() <= 0.0f || !arena::IsEnemy(q) || q == g_merchant.ped) continue;
+        CVector d = q->GetPosition() - me->GetPosition();
+        if (std::fabs(d.z) > 1.2f) continue;
+        d.z = 0;
+        float l = d.Length();
+        if (l < bestD && (l < 0.4f || (d.x * f.x + d.y * f.y) / l > 0.5f)) bestD = l, best = q;
+    }
+    if (!best) return false;
+    if (EnsureBlock("KNIFE")) Cmd(0x0605).I(GetPedRef(me)).S("knife_1").S("KNIFE").F(8.0f).I(0).I(0).I(0).I(0).I(-1).Run();  // the thrust
+    uint16_t id = 0;
+    if (NetPed* np = Peds::Instance().Find(best)) id = np->netId;
+    if (g_arena.host) BayonetHit(best);
+    else if (id) Send(A_BAYONET, [id](Writer& wr) { wr.U16(id); });
+    return true;
+}
+
+void BayonetHit(CPed* p) {  // host: the thrust got to him: hurt, and down on the floor a moment
+    auto it = g_info.find(p);
+    if (it == g_info.end() || p->Health() <= 0.0f) return;
+    Field<int8_t>(p, 0x760) = 4;  // CPed::m_nLastWeaponDamage: the knife (a melee kill: double money)
+    int h = GetPedRef(p);
+    if (p->Health() <= 45.0f) {
+        Cmd(0x0223).I(h).I(0).Run();
+        return;
+    }
+    p->Health() -= 45.0f;
+    Cmd(0x0687).I(h).Run();
+    Cmd(0x0605).I(h).S("KO_skid_back").S("PED").F(8.0f).I(0).I(0).I(0).I(1).I(-1).Run();  // knocked onto his back
+    it->second.getUpUntil = NowMs() + 2200;
+}
 void Handle(uint8_t from, Reader& r) {
     uint8_t op = r.U8();
     if (r.Ok() && op == A_SKIP) {  // a player asks the host to start the next wave now
@@ -6545,13 +6738,10 @@ void Handle(uint8_t from, Reader& r) {
         if (CPed* p = h >= 0 ? GetPed(h) : nullptr) Magnet(p, from);
         return;
     }
-    if (r.Ok() && op == A_IGNITE) {  // host: a partner's shot set a flamer's fuel alight
+    if (r.Ok() && op == A_BAYONET) {  // host: a partner's bayonet
         uint16_t id = r.U16();
-        auto it = r.Ok() && g_arena.host ? g_gear.find(id) : g_gear.end();
-        if (it != g_gear.end() && !it->second.trail.empty()) {
-            g_igniteQueue.insert(g_igniteQueue.end(), it->second.trail.begin(), it->second.trail.end());
-            it->second.trail.clear();
-        }
+        int h = r.Ok() && g_arena.host ? Peds::Instance().HandleOf(id) : -1;
+        if (CPed* p = h >= 0 ? GetPed(h) : nullptr) BayonetHit(p);
         return;
     }
     if (r.Ok() && op == A_EBARHIT) {  // host: a partner hit a builder's barricade
@@ -6713,13 +6903,12 @@ void Handle(uint8_t from, Reader& r) {
         int8_t idx = r.I8();
         Vec3 v = r.Vec();
         if (r.Ok()) ShowZone(idx, {v.x, v.y, v.z});
-    } else if (op == A_GEAR) {  // the host's word on a man's gear
+    } else if (op == A_MERCHANT) {  // the merchant comes (his id once it is known) or goes
+        uint8_t on = r.U8();
         uint16_t id = r.U16();
-        uint8_t flags = r.U8(), tank = r.U8(), belt = r.U8();
         if (!r.Ok()) return;
-        Gear& g = g_gear[id];
-        g.id = id, g.shield = flags & 1, g.shieldOn = (flags & 2) != 0, g.tank = (flags & 4) != 0, g.tankState = tank, g.belt = belt;
-        if (tank >= 3) g.trail.clear();
+        if (on && !g_merchant.on) g_iVoted = false;
+        ShowMerchant(on != 0, id);
     } else if (op == A_SAWWIND) {  // the Butcher winds up (his copy here roars too)
         uint16_t id = r.U16();
         int h = r.Ok() ? Peds::Instance().HandleOf(id) : -1;
@@ -6832,7 +7021,7 @@ void Handle(uint8_t from, Reader& r) {
         d.ammo = r.U16();
         d.owner = r.U8();
         d.special = r.U8();
-        if (r.Ok() && d.type <= D_CASH && d.weapon <= 46) AddDrop(d);
+        if (r.Ok() && d.type <= D_SCRAP && d.weapon <= 46) AddDrop(d);
     } else if (op == A_TAKEN) {
         uint8_t id = r.U8(), by = r.U8();
         if (!r.Ok()) return;
@@ -7005,7 +7194,11 @@ void DrawKeys() {
                            {"Y", TR("Пропустить паузу", "Skip the break")}, {"Tab", TR("Счёт", "Score")},
                            {"J", TR("Положить оружие", "Put the gun down")}, {"R", TR("Перезарядка", "Reload")}};
     if (me && me->ActiveWeapon().type == 9) keys.push_back({"N", TR("Рывок бензопилой", "Chainsaw dash")});
-    else if (me && me->ActiveWeapon().type == 30 && g_hasUgl) keys.push_back({"N", TR("Подствольник", "Launcher")});
+    else if (me && ((me->ActiveWeapon().type == 30 && g_hasUgl) || g_modUgl || g_modBayonet))
+        keys.push_back({"N", g_modBayonet && !g_modUgl && !g_hasUgl ? TR("Штык-нож", "Bayonet")
+                             : g_modBayonet                         ? TR("Подствольник / штык", "Launcher / bayonet")
+                                                                    : TR("Подствольник", "Launcher")});
+    if (g_gadget) keys.push_back({"X", g_gadget == 1 ? TR("Визор", "Visor") : g_gadget == 2 ? TR("Рейдж-доза", "Rage dose") : TR("Shahed", "Shahed")});
     auto& g = ui::Gfx();
     float s = g.Scale();
     float lh = g.LineHeight(ui::FONT_SMALL), right = g.Width() - 24 * s, y = g.Height() * 0.70f;
@@ -7134,11 +7327,8 @@ void Update() {
     if (now - savesMs > 1000) savesMs = now, HideSaves(true);
     game::challenge::Tick();
     if (g_arena.taken) HoldWorld(true);
-    GearFrame(now);
-    if (g_arena.host)  // the flamers' belts: one molotov fewer each throw
-        for (auto& [q, qe] : g_info)
-            if (qe.role == R_FLAMER && IsPedValid(q))
-                if (Gear* gr = GearOf(q); gr && gr->belt != std::clamp(qe.grenades, 0, 2)) gr->belt = std::clamp(qe.grenades, 0, 2), SendGear(*gr);
+    MerchantFrame(now);
+    GadgetFrame(now);
     MeleeHint();
     if (g_arena.endAt) {
         if (now >= g_arena.endAt) End(false);
@@ -7415,6 +7605,22 @@ void Update() {
             if (g_arena.wave > 0) PickMvp();
         }
         if (now >= g_arena.nextWaveMs) {
+            if (g_merchant.on) {
+                EndMerchant();  // the trade is over: the next wave
+            } else if (MerchantWave(g_arena.wave) && g_merchant.wave != g_arena.wave) {
+                StartMerchant();  // nobody comes: the merchant does
+                if (g_merchant.on) {
+                    g_arena.nextWaveMs = now + 60000;
+                    g_votes.clear(), g_voteCount = 0, g_iVoted = false;
+                    SendVotes();
+                    Send(A_PREP, [](Writer& w) { w.U8(60); });
+                    Send(A_MERCHANT, [](Writer& w) {
+                        w.U8(1);
+                        w.U16(0);
+                    });
+                    return;
+                }
+            }
             g_arena.nextWaveMs = 0;
             SpawnWave();
         }
@@ -7788,10 +7994,11 @@ void DrawCod() {
     DrawHolo(now);
     DrawArrows(now);
     DrawMvp(now);
+    DrawArmourBar();
+    DrawGadgets(now);
+    DrawShop();
     DrawHelpBox(now);
     DrawKeys();
-    GearOnBodies();
-    DrawFuel();
     if (g_zoneNow >= 0)
         Label(g_zoneAt + CVector{0, 0, 1.3f}, Format(TR("ЗОНА %d", "ZONE %d"), g_zoneNow + 1), 0xFFFFA040, 300.0f, true);
     for (auto& [h, name] : g_guardNames)  // the homies' names
@@ -8145,12 +8352,6 @@ public:
     }
     bool OnCommand(const std::string& cmd, const std::vector<std::string>& args) override {
         std::string c = LowerRu(cmd);
-        if (c == "gearpos" && !args.empty()) {  // /gearpos shield|tank x y z scale: the gear's place, tried in the game
-            int k = LowerRu(args[0]) == "tank" ? 1 : 0;
-            for (size_t i = 1; i < args.size() && i < 5; ++i) g_gearTune[k][i - 1] = (float)std::atof(args[i].c_str());
-            ui::TheChat().AddSystem(Format("gearpos %s %.2f %.2f %.2f %.2f", k ? "tank" : "shield", g_gearTune[k][0], g_gearTune[k][1], g_gearTune[k][2], g_gearTune[k][3]));
-            return true;
-        }
         if (c == "подсказки" || c == "tips") {  // the arena's hints on and off (F9 too)
             Cfg().tips = !Cfg().tips;
             flow::SaveConnectSettings();
@@ -8279,13 +8480,9 @@ struct Reg {
 
 namespace arena {
 
+int OutgoingDamage(CEntity* creator, int weapon, int damage) { return On() ? OutgoingDamageArena(weapon, damage) : damage; }
 void BarricadeBlast(const CVector& at) {
     if (g_arena.on && g_arena.taken && !g_ebars.empty()) EBarBlast(at);
-    if (g_arena.on && g_arena.host) BlastGear(at);
-}
-bool EnemyHitBlocked(CPed* victim, CEntity* by, int weapon) {
-    if (!g_arena.on || !g_arena.host || !victim || victim->IsPlayer()) return false;
-    return GearHit(victim, by, weapon);
 }
 bool On() {
     CPlayerPed* me = core::IsPlayerReady() ? FindPlayerPed(0) : nullptr;
@@ -8305,6 +8502,8 @@ int IncomingDamage(CEntity* creator, int weapon, int damage) {
     // the Twin with two "eagles": two pistols at the pro skill, each shot as hard as an eagle's (70 to the pistol's 25)
     else if (weapon == WEAPON_PISTOL && creator && creator->IsPed() && IsEnemy((CPed*)creator) && ((CPed*)creator)->WeaponSkill() == 2)
         out = damage * 14 / 5;
+    out = ArmourDamage(weapon, out);  // the merchant's armours
+    if (out <= 0) return 0;
     // the clothes
     float f = 1.0f;
     for (int n = PerkCount(O_TOUGH); n > 0; --n) f *= 0.85f;
@@ -8371,6 +8570,7 @@ void OnLocalKill(CPed* victim, int weapon, bool headshot) {
     if (!On() || !IsEnemy(victim) || g_killed.count(victim)) return;
     g_killed.insert(victim);
     ++g_kills;
+    if (g_gadget == 1) g_visorCharge = std::min(100.0f, g_visorCharge + 3.0f);  // the visor: +3% a kill
     SendScore();  // at once: the host counts the wave's best player by it
     GrowSkill(weapon, headshot);
     if (CPlayerPed* me = FindPlayerPed(0); me && me->Health() > 0.0f) {  // the clothes: health, armour a kill
@@ -8417,12 +8617,31 @@ std::string PlaceTitle(int i) { return i >= 0 && i < kPlaceCount ? PlaceName(i) 
 
 bool KeyDown(int vk, bool repeat) {
     std::string hint;
+    if (On() && vk == 'X' && g_gadget) {  // the gadget (the rage dose wounded on the floor too)
+        if (!repeat) UseGadget();
+        return true;
+    }
     if (!On() || !ReviveText(hint).empty()) return false;
+    if (g_shopOpen) {  // the merchant's list: 1-9 buy, E closes
+        if (vk >= '1' && vk <= '9') {
+            if (!repeat) Buy(vk - '1');
+            return true;
+        }
+        if (vk == 'E') {
+            if (!repeat) g_shopOpen = false;
+            return true;
+        }
+    }
+    if (vk == 'E' && NearMerchant()) {
+        if (!repeat) g_shopOpen = true;
+        return true;
+    }
     if (vk == 'H') return repeat ? g_holo : HoloKey();  // held: the hologram (HoloFrame)
     if (vk == 'J') return !repeat && (PutDownGun(), true);
     if (vk == 'N') {  // T-Bone's launcher, the chainsaw's dash (DashFrame); without them N goes on (a side activity's "no")
         if (CPlayerPed* me = FindPlayerPed(0); me && me->ActiveWeapon().type == WEAPON_CHAINSAW) return true;
-        if (!g_hasUgl) return false;
+        if (!repeat && g_modBayonet && Bayonet()) return true;  // an enemy right before him: the bayonet
+        if (!g_hasUgl && !g_modUgl) return g_modBayonet;
         if (!repeat) PlayerUgl();
         return true;
     }

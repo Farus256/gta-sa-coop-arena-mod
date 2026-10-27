@@ -173,8 +173,8 @@ GenerateDamageFn g_origGenerateDamage = nullptr;
 // (bullets, melee, explosions, fire, vehicle hits) goes through it. It tells whether the hit counts (blood, a fight
 // hit): one decided in the other game still does here.
 bool __cdecl HookGenerateDamageEvent(CPed* victim, CEntity* creator, int weapon, int damage, int piece, int dir) {
-    if (victim && core::IsPlayerReady() && victim != FindPlayerPed(0) && arena::EnemyHitBlocked(victim, creator, weapon))
-        return true;  // the arena: a shield took it
+    if (victim && creator && core::IsPlayerReady() && IsLocalPlayerEntity(creator) && victim != FindPlayerPed(0))
+        damage = arena::OutgoingDamage(creator, weapon, damage);  // the arena's rage: harder blows
     if (victim && creator && core::IsPlayerReady() && IsLocalPlayerEntity(creator) && victim != FindPlayerPed(0))
         arena::OnLocalHit(victim, weapon, damage, piece);  // the arena's points for a hit
     if (victim && victim == FindPlayerPed(0) && core::IsPlayerReady()) {
@@ -347,8 +347,7 @@ void HandleDamage(uint8_t from, Reader& r) {
                 AsPlayersHit player(ped);
                 CVehicle* car = rp && rp->ped && rp->ped->InVehicle() ? rp->ped->Vehicle() : nullptr;
                 if (weapon == WEAPON_RAMMEDBYCAR && car) g_origKillWithCar(ped, nullptr, car, damage, 0);
-                else if (weapon != WEAPON_RAMMEDBYCAR && !arena::EnemyHitBlocked(ped, attacker, weapon))
-                    g_origGenerateDamage(ped, attacker, weapon, (int)damage, piece, dir);
+                else if (weapon != WEAPON_RAMMEDBYCAR) g_origGenerateDamage(ped, attacker, weapon, (int)damage, piece, dir);
             }
             LOGI("Player %d hit our ped %04X: weapon %d, damage %.0f, health now %.0f", from, netId, weapon, damage, ped->Health());
             if (ped->Health() <= 0.0f) {  // the loot falls in the killer's game
