@@ -6847,7 +6847,8 @@ bool Bayonet() {
         if (l < bestD && (l < 0.4f || (d.x * f.x + d.y * f.y) / l > 0.5f)) bestD = l, best = q;
     }
     if (!best) return false;
-    if (EnsureBlock("KNIFE")) Cmd(0x0605).I(GetPedRef(me)).S("knife_1").S("KNIFE").F(8.0f).I(0).I(0).I(0).I(0).I(-1).Run();  // the thrust
+    // the thrust: CJ's own punch (the fist fighting's first blow) over the upper body, the gun staying in his hand
+    Cmd(0x0A1A).I(GetPedRef(me)).S("FIGHTA_1").S("PED").F(8.0f).I(0).I(0).I(0).I(0).I(-1).Run();  // TASK_PLAY_ANIM_SECONDARY
     uint16_t id = 0;
     if (NetPed* np = Peds::Instance().Find(best)) id = np->netId;
     if (g_arena.host) BayonetHit(best);
