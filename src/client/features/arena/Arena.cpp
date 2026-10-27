@@ -2254,6 +2254,15 @@ struct StatBox {  // the skills box ($600), beside the weapon box
     int handle = -1;
 } g_statBox;
 int g_worn[8] = {-1, -1, -1, -1, -1, -1, -1, -1};  // the piece worn on each kParts' part, -1: none
+int g_wornRare[8] = {};  // its rarity: 0 blue, 1 pink, 2 red
+// the merchant's discount: 5% a pink piece worn, 10% a red one, 25% the most
+int ShopDiscount() {
+    int d = 0;
+    for (int i = 0; i < 8; ++i)
+        if (g_worn[i] >= 0) d += g_wornRare[i] == 2 ? 10 : g_wornRare[i] == 1 ? 5 : 0;
+    return std::min(25, d);
+}
+int ShopPrice(int price) { return price * (100 - ShopDiscount()) / 100; }
 uint8_t g_maxHealthBefore = 0;
 CPedClothesDesc g_clothesBefore;   // CJ's clothes before the first accessory
 bool g_clothesSaved = false;
@@ -2430,6 +2439,7 @@ void OutfitWaveStart() {  // at each wave: the armour, the health, the grenades 
         if (add > 0) AddPoints(add);
     }
 }
+void ShowHelp(const std::string& text, uint64_t ms);
 void BuyOutfit() {
     CPlayerPed* me = FindPlayerPed(0);
     if (!me) return;
@@ -2455,12 +2465,19 @@ void BuyOutfit() {
     CallMethod<0x506EA0>((void*)0xB6BC90, 40 /* AE_FRONTEND_PURCHASE_WEAPON */, 0.0f, 1.0f);
     // its rarity, only a colour for its name: blue (60%), pink (30%), red (10%); the rest of the line as the system's
     int roll = RandInt(0, 99);
-    const char* tint = roll < 10 ? "{FF3B3B}" : roll < 40 ? "{FF6EC7}" : "{4DA6FF}";
+    int rare = roll < 10 ? 2 : roll < 40 ? 1 : 0;
+    g_wornRare[pi] = rare;
+    const char* tint = rare == 2 ? "{FF3B3B}" : rare == 1 ? "{FF6EC7}" : "{4DA6FF}";
     ui::TheChat().AddSystem(Format("%s%s{FFC864}: %s", tint, ClothTitle(k), kPerkText[PerkOf(k)][Lang()]));
+    // over the subtitles, as the skills box's word
+    const char* rareName = rare == 2 ? TR("красная", "red") : rare == 1 ? TR("розовая", "pink") : TR("синяя", "blue");
+    ShowHelp(Format(TR("Одежда (%s): %s — %s", "Clothes (%s): %s - %s"), rareName, ClothTitle(k), kPerkText[PerkOf(k)][Lang()]), 6000);
+    g_popups.push_back({ClothTitle(k), NowMs(), rare == 2 ? 0xFFFF3B3B : rare == 1 ? 0xFFFF6EC7 : 0xFF4DA6FF});
 }
 void TakeOffOutfit() {  // the arena is over: the perks go, CJ's clothes from before it come back
     OutfitPerks(false);
     for (int& w : g_worn) w = -1;
+    for (int& r : g_wornRare) r = 0;
     g_cashMult = 1.0f;
     CPlayerPed* me = FindPlayerPed(0);
     if (g_clothesSaved && me && me->ModelIndex() == 0 && me->ClothesDesc()) {
@@ -2662,6 +2679,8 @@ void UpdateBox(uint64_t now) {
             DelObj(g_box.handle2);
             if (g_arena.host) g_box.moveAt = now + 6000;
         } else {  // the weapon waits over the box: anyone takes it with E (8 s), or not
+            int w = kBoxGuns[(size_t)g_box.gun % (sizeof(kBoxGuns) / sizeof(kBoxGuns[0]))].weapon;
+            if (w == 35 || w == 36 || w == 38) Cmd(0x0394).I(1).Run();  // a launcher or the minigun: PLAY_MISSION_PASSED_TUNE
             g_box.offered = true;
             g_box.offerUntil = now + 8000;
         }
@@ -3073,8 +3092,8 @@ void ClearDrops() {
     g_magnets.clear();
 }
 
-// ---- barricades the players build: H with 300 (B is the voice) points puts one up in front of the player (12 in all at most)
-constexpr int kBuildCost = 300, kMaxBars = 12;
+// ---- barricades the players build: H with $150 (B is the voice) puts one up in front of the player (12 in all at most)
+constexpr int kBuildCost = 150, kMaxBars = 12;
 void BuildBar(const CVector& at, float heading, uint8_t by) {  // host
     if ((int)g_bars.size() >= kMaxBars) return;
     Bar b;
@@ -3444,7 +3463,7 @@ void SodaFrame(uint64_t now) {
     if (!g_sodaHealAt || now < g_sodaHealAt) return;
     g_sodaHealAt = 0;
     CPlayerPed* me = FindPlayerPed(0);
-    if (me && me->Health() > 0.0f) me->Health() = std::min(MaxHealth(), me->Health() + MaxHealth() * 0.2f);
+    if (me && me->Health() > 0.0f) me->Health() = std::min(MaxHealth(), me->Health() + 20.0f);  // 20 units, not a share
 }
 int SodaWait() {  // seconds till the next drink, 0: now
     uint64_t now = NowMs();
@@ -6399,11 +6418,12 @@ void Buy(int i) {
     if (i < 0 || i >= kShopCount) return;
     const ShopItem& it = kShop[i];
     if (Owned(it)) return;
-    if (Cash() < it.price) {
-        ui::TheChat().AddError(Format(TR("Нужно $%d.", "You need $%d."), it.price));
+    int price = ShopPrice(it.price);  // the rare clothes' discount
+    if (Cash() < price) {
+        ui::TheChat().AddError(Format(TR("Нужно $%d.", "You need $%d."), price));
         return;
     }
-    AddPoints(-it.price);
+    AddPoints(-price);
     if (it.kind == 0) g_armourKind = it.which;
     else if (it.kind == 1) g_gadget = it.which, g_shahedCharges = it.which == 3 ? 1 : g_shahedCharges;
     else (it.which == 1 ? g_modUgl : it.which == 2 ? g_modBayonet : g_modSpark) = true;
@@ -6579,6 +6599,8 @@ void DrawShop() {
     g.RectOutline(x, y, W, H, 0xFF26303B, std::max(1.0f, s));
     g.GameText(ui::GAME_FONT_GOTHIC, x + 40 * s, y + 14 * s, "Merchant", 56 * s, 0xFFACCBF1);  // the menus' own title
     g.GameText(ui::GAME_FONT_PRICEDOWN, x + W - 40 * s, y + 24 * s, Format("$%d", Cash()), 40 * s, 0xFF36682C, ui::TEXT_RIGHT);
+    if (int d = ShopDiscount())  // the rare clothes' discount
+        g.Text(ui::FONT_MENU, x + W - 40 * s, y + 66 * s, Format(TR("Скидка за одежду: %d%%", "Clothes discount: %d%%"), d), 0xFFFF6EC7, ui::TEXT_RIGHT | ui::TEXT_SHADOW);
     auto hover = [&](float hx, float hy, float hw, float hh) { return st.mouseX >= hx && st.mouseX < hx + hw && st.mouseY >= hy && st.mouseY < hy + hh; };
     // the tabs
     const char* tabs[3] = {TR("[ БРОНЯ ]", "[ ARMOUR ]"), TR("[ ГАДЖЕТЫ ]", "[ GADGETS ]"), TR("[ МОДИФИКАЦИИ ]", "[ MODS ]")};
@@ -6600,7 +6622,7 @@ void DrawShop() {
         bool hv = hover(cx, cy, cw, chh);
         if (hv && (st.mouseX != g_shopMouseX || st.mouseY != g_shopMouseY)) g_shopSel = (int)k;  // the mouse moved onto it
         bool sel = g_shopSel == (int)k;
-        bool own = Owned(it), can = Cash() >= it.price;
+        bool own = Owned(it), can = Cash() >= ShopPrice(it.price);
         g.Rect(cx, cy, cw, chh, sel ? 0xE0182230 : 0xC0101418);
         g.RectOutline(cx, cy, cw, chh, sel ? 0xFFACCBF1 : 0xFF26303B, std::max(1.0f, s) * (sel ? 2.5f : 1.0f));
         float py = cy + 16 * s;
@@ -6610,7 +6632,7 @@ void DrawShop() {
         }
         py += 10 * s;
         if (own) g.Text(ui::FONT_MENU, cx + cw * 0.5f, py, it.kind == 0 ? TR("НАДЕТО", "WORN") : TR("КУПЛЕНО", "BOUGHT"), 0xFF5FA04E, ui::TEXT_CENTER | ui::TEXT_SHADOW);
-        else g.GameText(ui::GAME_FONT_PRICEDOWN, cx + cw * 0.5f, py, Format("$%d", it.price), 34 * s, can ? 0xFF36682C : 0xFFB4191D, ui::TEXT_CENTER);
+        else g.GameText(ui::GAME_FONT_PRICEDOWN, cx + cw * 0.5f, py, Format("$%d", ShopPrice(it.price)), 34 * s, can ? 0xFF36682C : 0xFFB4191D, ui::TEXT_CENTER);
         py += 46 * s;
         for (auto& line : g.Wrap(ui::FONT_SMALL, ui::Widen(it.what[Lang()]), cw - 32 * s)) {
             g.TextW(ui::FONT_SMALL, cx + 16 * s, py, line, 0xFFC8C8C8, ui::TEXT_SHADOW);
@@ -7711,7 +7733,8 @@ void Update() {
         bool alive = me->Health() > 0.0f && PlayerInfos()[0].playerState == 0;
         if (!alive) g_aliveSince = 0;
         else if (!g_aliveSince) g_aliveSince = now;
-        if (g_dead && g_arena.wave > g_deadWave) Rejoin();  // a new wave since its death: back in
+        if (g_dead && (g_arena.wave > g_deadWave || (g_break && !g_arena.endAt))) Rejoin();  // a new wave or the break: back in
+        if (g_spectating && g_break && !g_arena.endAt) Rejoin();  // out till the break: back in at it
         if (me->Health() <= 0.0f && !g_dead) {
             g_dead = true;
             g_hasUgl = g_uglLoaded = false;  // the AK goes with the death
@@ -7838,6 +7861,10 @@ void Update() {
             Send(A_PREP, [secs](Writer& w) { w.U8((uint8_t)secs); });
             if (g_arena.wave > 0) PickMvp();
         }
+        if (g_merchant.on && (int)g_votes.size() < Voters()) {  // the merchant here: the wave only when everyone voted
+            if (g_arena.nextWaveMs < now + 1000) g_arena.nextWaveMs = now + 1000;
+            return;
+        }
         if (now >= g_arena.nextWaveMs) {
             if (g_merchant.on) {
                 EndMerchant();  // the trade is over: the next wave
@@ -7861,6 +7888,10 @@ void Update() {
 // /skip: the wait before the next wave ends now (the host's game decides; another player asks it)
 void Skip(uint8_t by) {
     if (!g_arena.on || g_arena.endAt || !g_arena.nextWaveMs || NowMs() >= g_arena.nextWaveMs) return;
+    if (g_merchant.on && (int)g_votes.size() < Voters()) {  // the merchant here: only everyone's votes start the wave
+        if (by == Net().MyId() || !Net().Online()) ui::TheChat().AddError(TR("Торговец здесь: волна начнётся, когда все нажмут [Y].", "The merchant is here: the wave begins when everyone presses [Y]."));
+        return;
+    }
     g_arena.nextWaveMs = NowMs();
     std::string who = by == Net().MyId() || !Net().Online() ? std::string(TR("Вы", "You")) : Net().PeerName(by);
     std::string line = Format(TR("%s: ожидание пропущено, волна начинается.", "%s skipped the wait: the wave begins."), who.c_str());
@@ -7927,6 +7958,34 @@ void DrawScoreboard() {
         g.Text(ui::FONT_NORMAL, c3, ty, Format("%d", r.sc.kills), c, ui::TEXT_SHADOW);
         g.Text(ui::FONT_NORMAL, c4, ty, Format("%d", r.sc.falls), c, ui::TEXT_SHADOW);
         ty += lh;
+    }
+    // under it: CJ's own stats (the body on the left, the weapon skills on the right)
+    auto stat = [](uint16_t id) { return Call<0x558E40, float>(id); };  // CStats::GetStatValue
+    auto pct = [&](uint16_t id) { return Format("%d%%", (int)(stat(id) / 10.0f + 0.5f)); };
+    std::vector<std::pair<std::string, std::string>> body = {
+        {TR("Здоровье", "Health"), Format("%d", (int)MaxHealth())},
+        {TR("Жир", "Fat"), pct(21)},
+        {TR("Мускулы", "Muscle"), pct(23)},
+        {TR("Выносливость", "Stamina"), pct(22)},
+        {TR("Скидка у торговца", "Merchant discount"), Format("%d%%", ShopDiscount())},
+    };
+    static const int kSkillWeapon[] = {22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 34};  // stats 69..79
+    std::vector<std::pair<std::string, std::string>> skills;
+    for (int i = 0; i < 11; ++i) skills.push_back({WeaponName(kSkillWeapon[i]), pct((uint16_t)(69 + i))});
+    float sl = g.LineHeight(ui::FONT_SMALL) + 4 * s;
+    float sy = y + h + 12 * s, sh = sl * (float)(skills.size() + 1) + 20 * s;
+    g.Rect(x, sy, w, sh, 0xD0000000);
+    float ly = sy + 10 * s;
+    g.Text(ui::FONT_SMALL, x + 20 * s, ly, TR("Сиджей", "CJ"), head, ui::TEXT_SHADOW);
+    g.Text(ui::FONT_SMALL, x + w * 0.5f + 10 * s, ly, TR("Навыки оружия", "Weapon skills"), head, ui::TEXT_SHADOW);
+    ly += sl;
+    for (size_t i = 0; i < body.size(); ++i) {
+        g.Text(ui::FONT_SMALL, x + 20 * s, ly + sl * (float)i, body[i].first, 0xFFFFFFFF, ui::TEXT_SHADOW);
+        g.Text(ui::FONT_SMALL, x + w * 0.5f - 20 * s, ly + sl * (float)i, body[i].second, 0xFFFFE060, ui::TEXT_RIGHT | ui::TEXT_SHADOW);
+    }
+    for (size_t i = 0; i < skills.size(); ++i) {
+        g.Text(ui::FONT_SMALL, x + w * 0.5f + 10 * s, ly + sl * (float)i, skills[i].first, 0xFFFFFFFF, ui::TEXT_SHADOW);
+        g.Text(ui::FONT_SMALL, x + w - 20 * s, ly + sl * (float)i, skills[i].second, 0xFFFFE060, ui::TEXT_RIGHT | ui::TEXT_SHADOW);
     }
 }
 
@@ -8235,8 +8294,9 @@ void DrawCod() {
     for (auto& [h, name] : g_guardNames)  // the homies' names
         if (CPed* gp = GetPed(h); gp && gp->Health() > 0.0f) Label(gp->GetPosition() + CVector{0, 0, 1.15f}, kGuardNames[name][Lang()], 0xFF80FF80, 30.0f);
     if (g_break && !g_arena.endAt && g_breakEndMs > now) {  // the break: one line on the right
-        std::string t1 = Format(TR("Пауза %d с", "Break %d s"), (int)((g_breakEndMs - now + 999) / 1000));
-        std::string t2 = Format(TR("[Y] пропустить %d/%d", "[Y] skip %d/%d"), g_voteCount, g_voteNeed);
+        std::string t1 = g_merchant.on ? std::string(TR("Торговец: ждём всех", "The merchant: waiting for all"))
+                                       : Format(TR("Пауза %d с", "Break %d s"), (int)((g_breakEndMs - now + 999) / 1000));
+        std::string t2 = Format(g_merchant.on ? TR("[Y] готов %d/%d", "[Y] ready %d/%d") : TR("[Y] пропустить %d/%d", "[Y] skip %d/%d"), g_voteCount, g_voteNeed);
         float lh = g.LineHeight(ui::FONT_NORMAL);
         float tw = std::max(g.TextWidth(ui::FONT_NORMAL, t1), g.TextWidth(ui::FONT_NORMAL, t2)) + 36 * s;
         float px = g.Width() - tw - 24 * s, py = g.Height() * 0.36f;
@@ -9026,7 +9086,7 @@ std::string PromptText(std::string& hint) {
     if (g_nearKind == N_SODA) {
         int wait = SodaWait();
         hint = wait ? Format(TR("Подождите %d с", "Wait %d s"), wait) : Format(TR("[E] Выпить  $%d", "[E] Drink  $%d"), kSodaCost);
-        return TR("Газировка: +20% здоровья", "Soda: +20% health");
+        return TR("Газировка: +20 здоровья", "Soda: +20 health");
     }
     if (g_nearKind == N_GUN) {
         const Drop& d = g_drops[(size_t)g_nearIdx];
