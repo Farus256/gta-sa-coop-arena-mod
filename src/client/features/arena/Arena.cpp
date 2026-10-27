@@ -197,7 +197,7 @@ enum ArenaOp : uint8_t {
     A_START = 1, A_WAVE, A_LEFT, A_BOSS, A_END, A_ITEMS, A_PREP, A_MARK, A_SKIP,
     A_SCORE, A_BARS, A_BOARD, A_REPAIR, A_BOX, A_BOXUSE, A_BOXROLL, A_PERKS, A_PSPAWN, A_GRAB, A_POWER, A_TWINS,
     A_WALLS, A_DROP, A_TAKE, A_TAKEN, A_BUILD, A_LOBBY, A_FLAMER, A_STAGE, A_VOTE, A_VOTES, A_GIVE, A_MAPVOTE, A_MOVE,
-    A_HEALGAS, A_BOSSNAME, A_HIT, A_SHELL, A_SPEC, A_BOXTAKEN, A_SPOT, A_DRONEHIT, A_ALERT /* not used any more */, A_GUARDNAME, A_GUARDREQ, A_ZONE, A_EBAR, A_SAWHIT, A_HALVE, A_PROPS, A_EBARHIT, A_EBARGONE, A_OPERATOR
+    A_HEALGAS, A_BOSSNAME, A_HIT, A_SHELL, A_SPEC, A_BOXTAKEN, A_SPOT, A_DRONEHIT, A_ALERT /* not used any more */, A_GUARDNAME, A_GUARDREQ, A_ZONE, A_EBAR, A_SAWHIT, A_HALVE, A_PROPS, A_EBARHIT, A_EBARGONE, A_OPERATOR, A_MVP
 };
 struct Arena {
     bool on = false, host = false;
@@ -1462,8 +1462,84 @@ void SendScore() {
         w.U16((uint16_t)std::min(g_falls, 65000));
     });
 }
+// The wave's best player (Titanfall 2's "top player"): the host counts everyone's kills of the wave as it ends; the
+// card on the right of every screen, and that player gets a quarter of its health back and $100
+std::map<uint8_t, std::pair<int, int>> g_waveStart;  // host: everyone's kills and falls as the wave began
+struct Mvp {
+    std::string name;
+    int kills = 0;
+    bool me = false;
+    uint64_t at = 0;
+} g_mvp;
+constexpr uint64_t kMvpMs = 6500;
+void MarkWaveStart() {  // host, as a wave begins
+    g_waveStart.clear();
+    g_waveStart[Net().Online() ? Net().MyId() : 0] = {g_kills, g_falls};
+    for (auto& [id, sc] : g_scores) g_waveStart[id] = {sc.kills, sc.falls};
+}
+void AddPoints(int n, uint32_t color = 0xFF70E070);
+float MaxHealth();
+void ShowMvp(uint8_t id, int kills) {  // every game
+    bool me = !Net().Online() || id == Net().MyId();
+    g_mvp.name = me ? (Net().Online() ? Cfg().nickname : std::string(TR("Вы", "You"))) : Net().PeerName(id);
+    g_mvp.kills = kills, g_mvp.me = me, g_mvp.at = NowMs();
+    if (!me) return;
+    if (CPlayerPed* p = FindPlayerPed(0); p && p->Health() > 0.0f) p->Health() = std::min(MaxHealth(), p->Health() + MaxHealth() * 0.25f);
+    AddPoints(100, 0xFFFFD040);
+}
+void PickMvp() {  // host, the wave over
+    struct Cand {
+        uint8_t id;
+        int kills, falls;
+    };
+    std::vector<Cand> c;
+    uint8_t myId = Net().Online() ? Net().MyId() : 0;
+    auto add = [&](uint8_t id, int kills, int falls) {
+        auto it = g_waveStart.find(id);
+        int k0 = it != g_waveStart.end() ? it->second.first : 0, f0 = it != g_waveStart.end() ? it->second.second : 0;
+        c.push_back({id, kills - k0, falls - f0});
+    };
+    add(myId, g_kills, g_falls);
+    if (Net().Online())
+        for (auto& [id, peer] : Net().Peers())
+            if (id != myId)
+                if (auto it = g_scores.find(id); it != g_scores.end()) add(id, it->second.kills, it->second.falls);
+    const Cand* best = nullptr;
+    for (const Cand& x : c)
+        if (x.kills > 0 && (!best || x.kills > best->kills || (x.kills == best->kills && x.falls < best->falls))) best = &x;
+    if (!best) return;
+    uint8_t id = best->id;
+    int kills = best->kills;
+    Send(A_MVP, [&](Writer& w) {
+        w.U8(id);
+        w.U16((uint16_t)std::min(kills, 65000));
+    });
+    ShowMvp(id, kills);
+    LOGI("Arena: the wave's best player %u with %d kills", id, kills);
+}
+void DrawMvp(uint64_t now) {
+    if (!g_mvp.at || now - g_mvp.at > kMvpMs) return;
+    auto& g = ui::Gfx();
+    float s = g.Scale();
+    float t = (float)(now - g_mvp.at);
+    // slides in from the right, holds, slides out
+    float in = std::clamp(t / 300.0f, 0.0f, 1.0f), out = std::clamp(((float)kMvpMs - t) / 300.0f, 0.0f, 1.0f);
+    float k = std::min(in, out);
+    k = 1.0f - (1.0f - k) * (1.0f - k);
+    float w = 380 * s, h = 132 * s;
+    float x = g.Width() - (w + 24 * s) * k, y = g.Height() * 0.30f;
+    uint32_t accent = 0xFFFFC23A;
+    g.Rect(x, y, w, h, 0xC8101418);
+    g.Rect(x, y, 6 * s, h, accent);
+    g.Rect(x + 6 * s, y, w - 6 * s, 30 * s, 0xE0202830);
+    float lx = x + 20 * s;
+    g.Text(ui::FONT_SMALL, lx, y + 6 * s, TR("ЛУЧШИЙ ИГРОК ВОЛНЫ", "TOP PLAYER OF THE WAVE"), accent, ui::TEXT_SHADOW);
+    g.Text(ui::FONT_BIG, lx, y + 36 * s, g_mvp.name, g_mvp.me ? 0xFFFFE070 : 0xFFFFFFFF, ui::TEXT_SHADOW);
+    g.Text(ui::FONT_NORMAL, lx, y + 76 * s, Format(TR("Убийств за волну: %d", "Kills this wave: %d"), g_mvp.kills), 0xFFD0D0D0, ui::TEXT_SHADOW);
+    g.Text(ui::FONT_SMALL, lx, y + 104 * s, TR("+25% здоровья   +$100", "+25% health   +$100"), 0xFF70E070, ui::TEXT_SHADOW);
+}
 // the arena's money (the game's): what the enemies drop, spent at the box, the accessories, the barricades
-void AddPoints(int n, uint32_t color = 0xFF70E070) {
+void AddPoints(int n, uint32_t color) {
     if (n == 0) return;
     Cash() = std::max(0, Cash() + n);
     g_popups.push_back({Format(n > 0 ? "+$%d" : "-$%d", n > 0 ? n : -n), NowMs(), n > 0 ? color : 0xFFFF5050});
@@ -3257,6 +3333,7 @@ void ResetCod() {
     g_kills = g_falls = 0;
     g_scores.clear();
     g_popups.clear();
+    g_mvp = Mvp{};
     g_hitMs.clear();
     g_killed.clear();
     g_placed = false;
@@ -3455,6 +3532,7 @@ void MakeOfficer(int wave) {
 void SpawnWave() {
     ReleaseDead();
     ++g_arena.wave;
+    MarkWaveStart();
     g_bossPed = nullptr;
     g_twinPeds[0] = g_twinPeds[1] = nullptr;
     g_flamers.clear();
@@ -6036,6 +6114,10 @@ void Handle(uint8_t from, Reader& r) {
         int8_t idx = r.I8();
         Vec3 v = r.Vec();
         if (r.Ok()) ShowZone(idx, {v.x, v.y, v.z});
+    } else if (op == A_MVP) {
+        uint8_t id = r.U8();
+        uint16_t kills = r.U16();
+        if (r.Ok()) ShowMvp(id, kills);
     } else if (op == A_OPERATOR) {
         uint16_t id = r.U16();
         if (r.Ok()) g_remoteId = id, g_remoteIdUntil = NowMs() + 15000, g_remoteFor = nullptr;
@@ -6466,6 +6548,7 @@ void Update() {
     }
     if (g_arena.wave == 0 || left == 0) {
         if (!Endless() && g_arena.wave >= g_arena.waves) {
+            if (g_arena.wave > 0) PickMvp();
             Finish(true);
             Send(A_END, [](Writer& w) { w.U8(1); });
             return;
@@ -6475,6 +6558,7 @@ void Update() {
             g_arena.nextWaveMs = now + PrepMs(false);
             g_arena.itemsFor = g_arena.wave + 1;
             Send(A_PREP, [secs](Writer& w) { w.U8((uint8_t)secs); });
+            if (g_arena.wave > 0) PickMvp();
         }
         if (now >= g_arena.nextWaveMs) {
             g_arena.nextWaveMs = 0;
@@ -6841,6 +6925,7 @@ void DrawCod() {
     DrawDash();
     DrawHolo(now);
     DrawArrows(now);
+    DrawMvp(now);
     if (g_zoneNow >= 0)
         Label(g_zoneAt + CVector{0, 0, 1.3f}, Format(TR("ЗОНА %d", "ZONE %d"), g_zoneNow + 1), 0xFFFFA040, 300.0f, true);
     for (auto& [h, name] : g_guardNames)  // the homies' names
@@ -7370,6 +7455,7 @@ void OnLocalKill(CPed* victim, int weapon, bool headshot) {
     if (!On() || !IsEnemy(victim) || g_killed.count(victim)) return;
     g_killed.insert(victim);
     ++g_kills;
+    SendScore();  // at once: the host counts the wave's best player by it
     GrowSkill(weapon, headshot);
     if (CPlayerPed* me = FindPlayerPed(0); me && me->Health() > 0.0f) {  // the clothes: health, armour a kill
         if (int n = PerkCount(O_KILLHEAL)) me->Health() = std::min(MaxHealth(), me->Health() + 5.0f * (float)n);
