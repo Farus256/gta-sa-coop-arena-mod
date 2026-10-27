@@ -5671,14 +5671,14 @@ void RebuildBody() {
 void ResetSkills(bool keep) {
     for (int i = 0; i < kResetCount; ++i) {
         if (keep) g_skillsBefore[i] = Call<0x558E40, float>(kResetStats[i]);  // CStats::GetStatValue
-        Call<0x55C180>(kResetStats[i], 0.0f);                                  // CStats::SetStatValue
+        Call<0x55A070>(kResetStats[i], 0.0f);                                  // CStats::SetStatValue
     }
     if (keep) g_skillsKept = true;
     RebuildBody();
 }
 void RestoreSkills() {
     if (!g_skillsKept) return;
-    for (int i = 0; i < kResetCount; ++i) Call<0x55C180>(kResetStats[i], g_skillsBefore[i]);
+    for (int i = 0; i < kResetCount; ++i) Call<0x55A070>(kResetStats[i], g_skillsBefore[i]);
     g_skillsKept = false;
     RebuildBody();
 }
@@ -7307,7 +7307,7 @@ void GrowSkill(int weapon, bool headshot) {
     if (stat < 0) return;
     float was = Call<0x558E40, float>((uint16_t)stat);  // CStats::GetStatValue
     float now = std::min(1000.0f, was + (headshot ? 4.0f : 2.5f) * (float)(1 + PerkCount(O_SKILL)));  // a hitman after some 350-400 kills
-    Call<0x55C180>((uint16_t)stat, now);                 // CStats::SetStatValue
+    Call<0x55A070>((uint16_t)stat, now);                 // CStats::SetStatValue
     if ((was < 200.0f && now >= 200.0f) || (was < 999.0f && now >= 999.0f))
         g_popups.push_back({Format("%s: %s", WeaponName(weapon), SkillName(now)), NowMs(), 0xFF80C0FF});
 }
