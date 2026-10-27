@@ -1023,7 +1023,7 @@ int MakeEnemy(int model, int weapon, int health, int armour, int accuracy, const
         Give(h, WEAPON_KNIFE, 1);
         weapon = WEAPON_KNIFE;
     } else if (role == R_FLAMER) {
-        Give(h, WEAPON_MOLOTOV, 5);  // the bottles it throws (in hand only for the throw)
+        Give(h, WEAPON_MOLOTOV, 2);  // the bottles it throws (in hand only for the throw)
         Give(h, WEAPON_FLAMETHROWER, 5000);
         weapon = GunFor(WEAPON_FLAMETHROWER);
         Cmd(0x0245).I(h).S8("fatman").Run();                       // SET_ANIM_GROUP_FOR_CHAR: heavy and slow
@@ -1053,7 +1053,7 @@ int MakeEnemy(int model, int weapon, int health, int armour, int accuracy, const
     e.accuracy = accuracy;
     e.armour = armour;
     e.silent = silent;
-    e.grenades = role == R_GRENADIER ? 3 : role == R_FLAMER ? 5 : 0;  // 3 grenades a man, the flamethrower man's 5 molotovs
+    e.grenades = role == R_GRENADIER ? 3 : role == R_FLAMER ? 2 : 0;  // 3 grenades a man, the flamethrower man's 2 molotovs
     e.throwWeapon = role == R_FLAMER ? WEAPON_MOLOTOV : WEAPON_GRENADE;
     e.nextThrowMs = NowMs() + (uint64_t)(role == R_FLAMER ? RandInt(2000, 4000) : RandInt(5000, 8000));
     e.mode = role == R_KNIFE ? M_SNEAK : role == R_TWIN ? M_PUSH : g_squads[(size_t)squad].flank ? M_FLANK : M_FIGHT;
@@ -3020,7 +3020,7 @@ void LoadOwnPoints() {
     for (int k = 1; k <= 4; ++k) {
         Prop pr;
         if (ReadVec(ini.Get(sec, Format("radio%d", k)), p, h)) pr.pos = p, pr.heading = h, g_radioSpots.push_back(pr);
-        if (ReadVec(ini.Get(sec, Format("soda%d", k)), p, h)) pr.pos = p, pr.heading = h, g_sodaSpots.push_back(pr);
+        if (ReadVec(ini.Get(sec, Format("soda%d", k)), p, h) && g_sodaSpots.size() < 2) pr.pos = p, pr.heading = h, g_sodaSpots.push_back(pr);
     }
     if (g_hasOwnSpawn || !g_enemyPts.empty() || !g_zones.empty() || !g_buildSpots.empty())
         LOGI("Arena: own points here: spawn %d, %d enemy points, %d zones, %d builder spots", g_hasOwnSpawn ? 1 : 0, (int)g_enemyPts.size(),
@@ -3106,10 +3106,12 @@ void SaveSpot(const std::string& what) {
     } else if (what == "radio" || what == "soda") {
         bool radio = what == "radio";
         std::vector<Prop>& list = radio ? g_radioSpots : g_sodaSpots;
-        int k = 1;
-        while (k <= 4 && !ini.Get(sec, Format("%s%d", what.c_str(), k)).empty()) ++k;
-        if (k > 4) {
-            ui::TheChat().AddError(TR("Уже 4 для этого места.", "4 for this place already."));
+        int most = radio ? 4 : 2, k = 1;  // drinks machines: 2 a place at most
+        while (k <= most && !ini.Get(sec, Format("%s%d", what.c_str(), k)).empty()) ++k;
+        if (k > most) {
+            ui::TheChat().AddError(radio ? TR("Уже 4 для этого места.", "4 for this place already.")
+                                         : TR("Уже 2 автомата для этого места (сбросить: /arena газировка сброс).",
+                                              "2 machines for this place already (forget them: /arena soda reset)."));
             return;
         }
         ini.Set(sec, Format("%s%d", what.c_str(), k), line);
@@ -3120,6 +3122,13 @@ void SaveSpot(const std::string& what) {
         if (g_arena.host) SendProps();
         ui::TheChat().AddSystem(Format(radio ? TR("Радио %d поставлено здесь (сохранено для этого места).", "Radio %d put here (kept for this place).")
                                              : TR("Автомат %d поставлен здесь (сохранено для этого места).", "Machine %d put here (kept for this place)."), k));
+    } else if (what == "sodareset") {
+        for (int k = 1; k <= 4; ++k) ini.Set(sec, Format("soda%d", k), "");
+        g_sodaSpots.clear();
+        ShowProps();
+        if (g_arena.host) SendProps();
+        ui::TheChat().AddSystem(TR("Все автоматы с напитками этого места сброшены (снова один у ящика).",
+                                   "All the drinks machines of this place forgotten (one by the box again)."));
     } else if (what == "spawn") {
         ini.Set(sec, "spawn", line);
         ui::TheChat().AddSystem(TR("Точка появления игроков сохранена (со следующей арены).", "The players' spot to come in at is kept (from the next arena on)."));
@@ -4157,10 +4166,11 @@ void Sneak(CPed* p, Enemy& e, CPed* t, float d, uint64_t now) {
     bool seen = InView(t, view, body);
     bool behind = rel.x * view.x + rel.y * view.y < -0.2f * std::max(0.1f, rel.Length2D());
     if (d < 4.5f && (!seen || d < 2.5f)) {  // the last steps
-        if (e.routing || now - e.setOnMs > 3000) {
+        e.waitSince = 0;
+        if (e.routing || now - e.setOnMs > 900) {  // the player turns: its back again, often
             e.routing = false;
             e.setOnMs = now;
-            if (behind || !seen) Cmd(0x06A8).I(h).I(GetPedRef(t)).I(5000).F(0.8f).F(180.0f).Run();  // TASK_GOTO_CHAR_OFFSET: behind it
+            if (behind || !seen) Cmd(0x06A8).I(h).I(GetPedRef(t)).I(5000).F(0.6f).F(180.0f).Run();  // TASK_GOTO_CHAR_OFFSET: behind it
             else Cmd(0x05E2).I(h).I(GetPedRef(t)).Run();                                            // TASK_KILL_CHAR_ON_FOOT
         }
         return;
@@ -4228,7 +4238,7 @@ void Sneak(CPed* p, Enemy& e, CPed* t, float d, uint64_t now) {
     }
     if (!seen && visible(next) && (path.size() < 2 || visible(path[1]))) {  // one step on it would be seen: it waits
         if (!e.waitSince) e.waitSince = now;
-        if (now - e.waitSince < 6000) {
+        if (now - e.waitSince < 2500) {
             if (e.routing) Cmd(0x05BA).I(h).I(1000).Run(), e.routing = false;  // TASK_STAND_STILL
             return;
         }
@@ -4917,9 +4927,9 @@ bool Flame(CPed* p, Enemy& e, CPed* t, float d, bool sees, uint64_t now) {
         if (now > e.grenadeUntil && !e.throwAt) e.grenadeUntil = 0, e.setOnMs = 0;
         return true;
     }
-    // a molotov from 8.5 m to 26 m, over low cover too when the bottle's way is clear (StartThrow looks); when it is
+    // a molotov from 8.5 m to 15 m, over low cover too when the bottle's way is clear (StartThrow looks); when it is
     // not, it tries again half a second on
-    if ((sees || d < 18.0f) && d > 8.5f && d < 26.0f && e.grenades > 0 && now >= e.nextThrowMs && StartThrow(p, e, t)) {
+    if ((sees || d < 12.0f) && d > 8.5f && d < 15.0f && e.grenades > 0 && now >= e.nextThrowMs && StartThrow(p, e, t)) {
         e.nextThrowMs = now + (uint64_t)RandInt(6000, 9000);
         return true;
     }
@@ -7365,6 +7375,10 @@ public:
                            : a0 == "стена" || a0 == "wall"          ? "wall"
                            : a0 == "сброс" || a0 == "reset"         ? "reset"
                                                                     : nullptr;
+        if (spot && std::string(spot) == "soda" && args.size() > 1) {
+            std::string a1 = LowerRu(args[1]);
+            if (a1 == "сброс" || a1 == "reset") spot = "sodareset";
+        }
         if (spot) {
             if (!g_arena.on || !g_arena.taken) ui::TheChat().AddError(TR("Сначала начните арену в этом месте.", "Start an arena at that place first."));
             else SaveSpot(spot);

@@ -150,13 +150,14 @@ void Scan() {
         auto tryOn = [&](CPed* v) {
             if (!v || v->Health() <= 0.0f || v->InVehicle() || v->AreaCode() != p->AreaCode()) return false;
             CVector d = p->GetPosition() - v->GetPosition();
-            if (std::fabs(d.z) > 0.8f) return false;
+            if (std::fabs(d.z) > 1.0f) return false;
             d.z = 0;
             float dist = d.Length();
-            if (dist > 1.4f || dist < 0.05f) return false;
+            if (dist > 1.8f || dist < 0.05f) return false;
             CVector toKnifer = d * (1.0f / dist);
-            if (Forward(v).Dot(toKnifer) > -0.4f) return false;   // not behind it: the player would see
-            if (Forward(p).Dot(toKnifer * -1.0f) < 0.5f) return false;  // the knifeman faces the player's back
+            if (Forward(v).Dot(toKnifer) > -0.25f) return false;  // not behind it: the player would see
+            // which way the knifeman faces does not matter (it is turned for the stab): coming round, it often looked
+            // aside right at the player's back and never struck
             if (v == FindPlayerPed(0) ? now < g_victimSafeUntil : now < g_copySafeUntil[v]) return false;
             Strike(p, v);
             g_knifeReady[p] = now + 8000;
