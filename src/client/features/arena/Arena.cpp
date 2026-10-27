@@ -3273,6 +3273,14 @@ void SaveSpot(const std::string& what) {
 }
 
 // ---- E near a barricade or the box
+// the drinks machines: this player twice a minute at most
+std::vector<uint64_t> g_sodaUses;
+int SodaWait() {  // seconds till the next drink, 0: now
+    uint64_t now = NowMs();
+    g_sodaUses.erase(std::remove_if(g_sodaUses.begin(), g_sodaUses.end(), [now](uint64_t t) { return now - t >= 60000; }), g_sodaUses.end());
+    if (g_sodaUses.size() < 2) return 0;
+    return (int)((g_sodaUses.front() + 60000 - now + 999) / 1000);
+}
 enum NearKind : uint8_t { N_NONE, N_BAR, N_BOX, N_WALL, N_WARD, N_GUN, N_RADIO, N_SODA };
 NearKind g_nearKind = N_NONE;
 int g_nearIdx = -1;
@@ -7850,12 +7858,17 @@ bool KeyDown(int vk, bool repeat) {
         CPlayerPed* me = FindPlayerPed(0);
         float top = std::max<float>(PlayerInfos()[0].maxHealth, 100.0f);
         if (!me || me->Health() >= top) return true;
+        if (int wait = SodaWait()) {
+            ui::TheChat().AddError(Format(TR("Автомат: не больше 2 раз в минуту, ещё %d с.", "The machine: twice a minute at most, %d s more."), wait));
+            return true;
+        }
         if (Cash() < kSodaCost) {
             ui::TheChat().AddError(Format(TR("Нужно $%d.", "You need $%d."), kSodaCost));
             return true;
         }
         AddPoints(-kSodaCost);
         me->Health() = top;
+        g_sodaUses.push_back(NowMs());
         CallMethod<0x506EA0>((void*)0xB6BC90, 40 /* AE_FRONTEND_PURCHASE_WEAPON */, 0.0f, 1.0f);
         return true;
     }
@@ -7900,7 +7913,8 @@ std::string PromptText(std::string& hint) {
         return g_station < 0 ? std::string(TR("Радио (выключено)", "Radio (off)")) : std::string(kStations[g_station]);
     }
     if (g_nearKind == N_SODA) {
-        hint = Format(TR("[E] Выпить  $%d", "[E] Drink  $%d"), kSodaCost);
+        int wait = SodaWait();
+        hint = wait ? Format(TR("Подождите %d с", "Wait %d s"), wait) : Format(TR("[E] Выпить  $%d", "[E] Drink  $%d"), kSodaCost);
         return TR("Газировка: полное здоровье", "Soda: full health");
     }
     if (g_nearKind == N_GUN) {
