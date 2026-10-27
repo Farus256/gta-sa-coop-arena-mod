@@ -446,6 +446,12 @@ inline int ScreenWidth() { return Ref<int32_t>(0xC17044); }   // RsGlobal.maximu
 inline int ScreenHeight() { return Ref<int32_t>(0xC17048); }  // RsGlobal.maximumHeight
 
 // TheCamera (CCamera @0xB6F028) and its active CCam (0x238 bytes each, array at +0x174)
+// the last CClothes::RebuildPlayer (any ped): two of them close together (this player's new clothes, a partner's new
+// look) crashed in the clothes' textures (0x7F3737); each waits 2 s after the one before
+inline uint64_t& LastClothesRebuildMs() {
+    static uint64_t ms = 0;
+    return ms;
+}
 namespace cam {
 inline uint8_t& ActiveCamIndex() { return Ref<uint8_t>(addr::TheCamera + 0x59); }
 inline uintptr_t Active() { return addr::TheCamera + 0x174 + (uintptr_t)ActiveCamIndex() * 0x238; }

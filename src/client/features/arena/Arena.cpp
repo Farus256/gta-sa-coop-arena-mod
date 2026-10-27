@@ -306,8 +306,8 @@ void RebuildWhenSafe() {
     if (!me || me->Health() <= 0.0f || me->InVehicle() || game::MenuActive() || game::cam::WideScreenOn() || me->ModelIndex() != 0 ||
         !me->ClothesDesc())
         return;  // later
+    if (NowMs() - game::LastClothesRebuildMs() < 2000) return;  // another ped's rebuild just now (a partner's look): a little later
     g_rebuildAt = 0;
-    game::Call<0x40CF80>();              // CStreaming::RemoveAllUnusedModels: room for the clothes
     game::Call<0x5A82C0>(me, false);     // CClothes::RebuildPlayer
 }
 void StopOwnMoves();
@@ -315,6 +315,7 @@ void SawKill(game::CPed* p);
 void DashFrame(uint64_t now);
 void HoloFrame(uint64_t now);
 extern uint64_t g_fewSince;
+extern int g_dashCharges;
 int MountQuad(int h);
 bool RcPlace() { return std::string(kPlaces[g_arena.place].keys[0][1]) == "rc"; }
 int g_dronesLeft = 0;  // host: the RC helicopters still to come this wave
@@ -869,7 +870,9 @@ CVector SpawnSpot(float angle, float halfSector, float minApart) {
     std::vector<CVector> players = PlayerSpots();
     // the crack palace: they come in at the zone under attack (the one the players are told of)
     std::vector<CVector> zoneOnly;
-    if (CrackPlace() && g_zoneNow >= 0) zoneOnly.push_back(g_zoneAt);
+    // zone 1: they come in at the very start of the place (its door in) and run to it; the other zones: at the zone
+    if (CrackPlace() && g_zoneNow == 0) zoneOnly.push_back(kPlaces[g_arena.place].pos - CVector{0, 0, 1.0f});
+    else if (CrackPlace() && g_zoneNow >= 0) zoneOnly.push_back(g_zoneAt);
     const std::vector<CVector>& pts = !zoneOnly.empty() ? zoneOnly : g_enemyPts;
     if (!pts.empty()) {  // the host's own points (or the zones): one of them far from the players, beside it
         CVector best = pts[0];
@@ -1487,15 +1490,14 @@ void MarkWaveStart() {  // host, as a wave begins
     g_waveStart[Net().Online() ? Net().MyId() : 0] = {g_kills, g_falls};
     for (auto& [id, sc] : g_scores) g_waveStart[id] = {sc.kills, sc.falls};
 }
-void AddPoints(int n, uint32_t color = 0xFF70E070);
+constexpr uint32_t kGtaMoney = 0xFF36682C;  // the game's own money colour (its HUD's green)
+void AddPoints(int n, uint32_t color = kGtaMoney);
 float MaxHealth();
 void ShowMvp(uint8_t id, int kills) {  // every game
     bool me = !Net().Online() || id == Net().MyId();
     g_mvp.name = me ? (Net().Online() ? Cfg().nickname : std::string(TR("Вы", "You"))) : Net().PeerName(id);
     g_mvp.kills = kills, g_mvp.me = me, g_mvp.at = NowMs();
-    if (!me) return;
-    if (CPlayerPed* p = FindPlayerPed(0); p && p->Health() > 0.0f) p->Health() = std::min(MaxHealth(), p->Health() + MaxHealth() * 0.25f);
-    AddPoints(100, 0xFFFFD040);
+    (void)me;  // the title alone, no health nor money any more
 }
 void PickMvp() {  // host, the wave over
     struct Cand {
@@ -1527,27 +1529,30 @@ void PickMvp() {  // host, the wave over
     ShowMvp(id, kills);
     LOGI("Arena: the wave's best player %u with %d kills", id, kills);
 }
-void DrawMvp(uint64_t now) {
+void DrawMvp(uint64_t now) {  // as the game's own menu: its dark panel, the gothic title, the menu's blue and slate
     if (!g_mvp.at || now - g_mvp.at > kMvpMs) return;
     auto& g = ui::Gfx();
     float s = g.Scale();
     float t = (float)(now - g_mvp.at);
-    // slides in from the right, holds, slides out
-    float in = std::clamp(t / 300.0f, 0.0f, 1.0f), out = std::clamp(((float)kMvpMs - t) / 300.0f, 0.0f, 1.0f);
-    float k = std::min(in, out);
-    k = 1.0f - (1.0f - k) * (1.0f - k);
-    float w = 380 * s, h = 132 * s;
+    float a = std::min(std::clamp(t / 250.0f, 0.0f, 1.0f), std::clamp(((float)kMvpMs - t) / 400.0f, 0.0f, 1.0f));  // fades in and out
+    if (a <= 0.02f) return;
+    std::string sub = TR("Лучший игрок волны", "The wave's top player");
+    std::string kills = Format(TR("Убийств: %d", "Kills: %d"), g_mvp.kills);
+    float th = 54 * s;
+    float w = std::max({g.TextWidth(ui::FONT_BIG, g_mvp.name), g.TextWidth(ui::FONT_MENU, sub), g.GameTextWidth(ui::GAME_FONT_GOTHIC, "MVP", th)}) + 64 * s;
+    float h = th + g.LineHeight(ui::FONT_MENU) * 2 + g.LineHeight(ui::FONT_BIG) + 52 * s;
     // under the break's line on the right ("Пауза ... [Y] пропустить"), not over it
-    float x = g.Width() - (w + 24 * s) * k, y = g.Height() * 0.36f + g.LineHeight(ui::FONT_NORMAL) + 30 * s;
-    uint32_t accent = 0xFFFFC23A;
-    g.Rect(x, y, w, h, 0xC8101418);
-    g.Rect(x, y, 6 * s, h, accent);
-    g.Rect(x + 6 * s, y, w - 6 * s, 30 * s, 0xE0202830);
-    float lx = x + 20 * s;
-    g.Text(ui::FONT_SMALL, lx, y + 6 * s, TR("ЛУЧШИЙ ИГРОК ВОЛНЫ", "TOP PLAYER OF THE WAVE"), accent, ui::TEXT_SHADOW);
-    g.Text(ui::FONT_BIG, lx, y + 36 * s, g_mvp.name, g_mvp.me ? 0xFFFFE070 : 0xFFFFFFFF, ui::TEXT_SHADOW);
-    g.Text(ui::FONT_NORMAL, lx, y + 76 * s, Format(TR("Убийств за волну: %d", "Kills this wave: %d"), g_mvp.kills), 0xFFD0D0D0, ui::TEXT_SHADOW);
-    g.Text(ui::FONT_SMALL, lx, y + 104 * s, TR("+25% здоровья   +$100", "+25% health   +$100"), 0xFF70E070, ui::TEXT_SHADOW);
+    float x = g.Width() - w - 24 * s, y = g.Height() * 0.36f + g.LineHeight(ui::FONT_NORMAL) + 30 * s;
+    g.Rect(x, y, w, h, ui::WithAlpha(0xE0000000, a));
+    g.RectOutline(x, y, w, h, ui::WithAlpha(0xFF26303B, a), std::max(1.0f, s));
+    float cx = x + w * 0.5f, ty = y + 12 * s;
+    g.GameText(ui::GAME_FONT_GOTHIC, cx, ty, "MVP", th, ui::WithAlpha(0xFFACCBF1, a), ui::TEXT_CENTER);  // the menu's titles
+    ty += th + 8 * s;
+    g.Text(ui::FONT_MENU, cx, ty, sub, ui::WithAlpha(0xFF8D9CAD, a), ui::TEXT_CENTER | ui::TEXT_SHADOW);
+    ty += g.LineHeight(ui::FONT_MENU) + 8 * s;
+    g.Text(ui::FONT_BIG, cx, ty, g_mvp.name, ui::WithAlpha(g_mvp.me ? 0xFFACCBF1 : 0xFFFFFFFF, a), ui::TEXT_CENTER | ui::TEXT_SHADOW);
+    ty += g.LineHeight(ui::FONT_BIG) + 8 * s;
+    g.Text(ui::FONT_MENU, cx, ty, kills, ui::WithAlpha(0xFF5FA04E, a), ui::TEXT_CENTER | ui::TEXT_SHADOW);
 }
 // the arena's money (the game's): what the enemies drop, spent at the box, the accessories, the barricades
 void AddPoints(int n, uint32_t color) {
@@ -2346,7 +2351,7 @@ void OutfitWaveStart() {  // at each wave: the armour, the health, the grenades 
         }
     if (int n = PerkCount(O_INTEREST)) {  // Brotato's piggy bank
         int add = std::min(100 * n, Cash() * 5 * n / 100);
-        if (add > 0) AddPoints(add, 0xFFFFD040);
+        if (add > 0) AddPoints(add);
     }
 }
 void BuyOutfit() {
@@ -2882,6 +2887,10 @@ void ApplyDrop(const Drop& d, uint8_t by) {
         int w = GunFor(d.weapon);
         if (w) Cmd(0x01B2).I(h).I(w).I(std::max<int>(1, d.ammo)).Run(), Cmd(0x01B9).I(h).I(w).Run();
         ui::TheChat().AddSystem(Format(TR("Вы подобрали: %s.", "You picked up: %s."), DropName(d).c_str()));
+        if (d.weapon == 9) {
+            g_dashCharges = 6;
+            ui::TheChat().AddSystem(TR("[N] Рывок бензопилой: 6 рывков.", "[N] The chainsaw's dash: 6 dashes."));
+        }
         if (d.special == 1) {
             g_hasUgl = true;
             g_uglLoaded = true;
@@ -3289,8 +3298,16 @@ void SaveSpot(const std::string& what) {
 }
 
 // ---- E near a barricade or the box
-// the drinks machines: this player twice a minute at most
+// the drinks machines: this player twice a minute at most, 20% of its health a drink
 std::vector<uint64_t> g_sodaUses;
+uint64_t g_sodaHealAt = 0;
+float MaxHealth();
+void SodaFrame(uint64_t now) {
+    if (!g_sodaHealAt || now < g_sodaHealAt) return;
+    g_sodaHealAt = 0;
+    CPlayerPed* me = FindPlayerPed(0);
+    if (me && me->Health() > 0.0f) me->Health() = std::min(MaxHealth(), me->Health() + MaxHealth() * 0.2f);
+}
 int SodaWait() {  // seconds till the next drink, 0: now
     uint64_t now = NowMs();
     g_sodaUses.erase(std::remove_if(g_sodaUses.begin(), g_sodaUses.end(), [now](uint64_t t) { return now - t >= 60000; }), g_sodaUses.end());
@@ -3328,9 +3345,10 @@ void FindNear() {
         CVector d = pr.pos - at;
         if (pr.handle >= 0 && d.Length2D() < 1.8f && std::fabs(d.z) < 2.0f && d.Length2D() < best) best = d.Length2D(), g_nearKind = N_RADIO, g_nearIdx = 0;
     }
-    for (const Prop& pr : g_sodas) {
+    for (size_t i = 0; i < g_sodas.size(); ++i) {
+        const Prop& pr = g_sodas[i];
         CVector d = pr.pos - at;
-        if (pr.handle >= 0 && d.Length2D() < 1.8f && std::fabs(d.z) < 2.0f && d.Length2D() < best) best = d.Length2D(), g_nearKind = N_SODA, g_nearIdx = 0;
+        if (pr.handle >= 0 && d.Length2D() < 1.8f && std::fabs(d.z) < 2.0f && d.Length2D() < best) best = d.Length2D(), g_nearKind = N_SODA, g_nearIdx = (int)i;
     }
     for (size_t i = 0; i < g_drops.size(); ++i) {  // a team mate's weapon that would take the place of one this player holds
         const Drop& dr = g_drops[i];
@@ -6670,6 +6688,21 @@ void Update() {
     }
     if (g_arena.host) KatanaFrame(now);
     RemoteFrame();
+    SodaFrame(now);
+    {  // no enemy drops its gun (the game's own pickups) in any game: the copies too (the host made its own so); the
+       // flamethrower man, the Butcher and the bosses leave theirs as the arena's drops
+        static uint64_t dropsMs = 0;
+        if (now - dropsMs > 500) {
+            dropsMs = now;
+            CPoolHeader* pool = PedPool();
+            for (int i = 0; pool && i < pool->size; ++i) {
+                if (pool->byteMap[i] < 0) continue;
+                auto* q = (CPed*)(pool->objects + (size_t)i * kPedPoolElemSize);
+                if (q->IsPlayer() || q->Health() <= 0.0f || !arena::IsEnemy(q)) continue;
+                Cmd(0x087E).I(GetPedRef(q)).I(0).Run();  // SET_CHAR_DROPS_WEAPONS_WHEN_DEAD: none
+            }
+        }
+    }
     static uint64_t scoreMs = 0;  // the score now and then too: one that came in late has everyone's
     if (now - scoreMs > 3000) {
         scoreMs = now, SendScore();
@@ -6792,6 +6825,7 @@ void Update() {
         if (qe.role == R_BOSS && g_bossUgl) SpawnDrop(D_GUN, at + CVector{0, 0.7f, 0}, 30, 300, 0xFF, 1);  // his AK
         if (qe.role == R_BOSS && g_bossKatana) SpawnDrop(D_GUN, at + CVector{0, 0.7f, 0}, 8, 1);  // the katana
         if (qe.role == R_SAW) SpawnDrop(D_GUN, at + CVector{0.7f, 0, 0}, 9, 1);  // the Butcher's chainsaw: a dash of its own
+        if (qe.role == R_FLAMER) SpawnDrop(D_GUN, at + CVector{0, -0.7f, 0}, 37, 500);  // its flamethrower
         if (qe.role == R_BOSS) {
             SpawnDrop(D_AMMO, at + CVector{0.6f, 0, 0});
             SpawnDrop(D_HEALTH, at - CVector{0.6f, 0, 0});
@@ -6969,6 +7003,7 @@ bool g_dashAim = false, g_dashing = false;
 CVector g_dashDir, g_dashEnd;
 float g_dashLeft = 0;
 uint64_t g_dashReadyMs = 0;
+int g_dashCharges = 0;  // the Butcher's chainsaw: 6 dashes in it (a new one picked up: 6 again)
 std::set<CPed*> g_dashHit;
 bool g_fireHeld = false;  // we hold the game's own fire back (the dash aim, the barricade's hologram)
 uint8_t g_fireWas = 0;
@@ -7061,7 +7096,12 @@ void DashFrame(uint64_t now) {
     g_dashAim = held;
     static uint64_t aimLogMs = 0;
     if (held && now - aimLogMs > 2000) aimLogMs = now, LOGI("Chainsaw dash aimed: %.1f m clear, ready %d", (g_dashEnd - me->GetPosition()).Length(), now >= g_dashReadyMs ? 1 : 0);
+    if (release && g_dashCharges <= 0) {
+        ui::TheChat().AddError(TR("В бензопиле больше нет рывков.", "No dashes left in the chainsaw."));
+        return;
+    }
     if (release && way && now >= g_dashReadyMs) {
+        --g_dashCharges;
         LOGI("Chainsaw dash: %.1f m", (g_dashEnd - me->GetPosition()).Length());
         g_dashing = true;
         g_dashLeft = (g_dashEnd - me->GetPosition()).Length();
@@ -7091,6 +7131,8 @@ void DrawDash() {
     }
     float x, y, depth;
     if (WorldToScreen(to, x, y, depth) && depth > 0.2f) g.Ellipse(x, y, 7 * s, 4 * s, c);
+    g.Text(ui::FONT_NORMAL, g.Width() * 0.5f, g.Height() * 0.66f, Format(TR("Рывков: %d", "Dashes: %d"), g_dashCharges),
+           g_dashCharges > 0 ? 0xFFFFFFFF : 0xFFFF6060, ui::TEXT_CENTER | ui::TEXT_OUTLINE);
 }
 
 // The barricade's hologram: H pressed, a see-through fence in front of this player that only it sees, following its
@@ -7247,7 +7289,11 @@ void DrawCod() {
     float x = g.Width() - 40 * s, y = g.Height() * 0.24f;  // under the game's own money
     for (const Popup& p : g_popups) {
         float t = (float)(now - p.at) / 1500.0f;
-        g.Text(ui::FONT_NORMAL, x, y + t * 30 * s, p.text, ui::WithAlpha(p.color, 1.0f - t), ui::TEXT_RIGHT | ui::TEXT_OUTLINE);
+        bool money = p.text.size() > 1 && (p.text[0] == '+' || p.text[0] == '-') && p.text[1] == '$';
+        if (money)  // the money as the game's own: its Pricedown letters in its money green (red when spent)
+            g.GameText(ui::GAME_FONT_PRICEDOWN, x, y + t * 30 * s, p.text, 34 * s, ui::WithAlpha(p.text[0] == '+' ? kGtaMoney : 0xFFB4191D, 1.0f - t), ui::TEXT_RIGHT);
+        else
+            g.Text(ui::FONT_NORMAL, x, y + t * 30 * s, p.text, ui::WithAlpha(p.color, 1.0f - t), ui::TEXT_RIGHT | ui::TEXT_OUTLINE);
     }
     y = g.Height() * 0.62f;
     if (CPlayerPed* me = FindPlayerPed(0); g_hasUgl && me && me->ActiveWeapon().type == 30) {  // only with the AK in hand
@@ -7892,8 +7938,16 @@ bool KeyDown(int vk, bool repeat) {
             return true;
         }
         AddPoints(-kSodaCost);
-        me->Health() = top;
         g_sodaUses.push_back(NowMs());
+        // a drink as the game's own machines give it: turned to the machine, the can to the mouth; 20% of the health
+        // back once it is drunk
+        int h = GetPedRef(me);
+        if (g_nearIdx >= 0 && g_nearIdx < (int)g_sodas.size()) {
+            CVector to = g_sodas[(size_t)g_nearIdx].pos - me->GetPosition();
+            Cmd(0x0173).I(h).F(std::atan2(-to.x, to.y) * 57.29578f).Run();  // SET_CHAR_HEADING
+        }
+        if (EnsureBlock("VENDING")) Cmd(0x0605).I(h).S("VEND_Drink2_P").S("VENDING").F(4.0f).I(0).I(0).I(0).I(0).I(-1).Run();  // TASK_PLAY_ANIM
+        g_sodaHealAt = NowMs() + 1600;
         CallMethod<0x506EA0>((void*)0xB6BC90, 40 /* AE_FRONTEND_PURCHASE_WEAPON */, 0.0f, 1.0f);
         return true;
     }
@@ -7940,7 +7994,7 @@ std::string PromptText(std::string& hint) {
     if (g_nearKind == N_SODA) {
         int wait = SodaWait();
         hint = wait ? Format(TR("Подождите %d с", "Wait %d s"), wait) : Format(TR("[E] Выпить  $%d", "[E] Drink  $%d"), kSodaCost);
-        return TR("Газировка: полное здоровье", "Soda: full health");
+        return TR("Газировка: +20% здоровья", "Soda: +20% health");
     }
     if (g_nearKind == N_GUN) {
         const Drop& d = g_drops[(size_t)g_nearIdx];

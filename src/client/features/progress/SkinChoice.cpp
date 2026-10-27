@@ -39,6 +39,7 @@ RebuildFn g_origRebuild = nullptr;
 void __cdecl HookRebuildPlayer(CPlayerPed* ped, bool keep) {
     if (ped && ped == FindPlayerPed(0) && ped->ModelIndex() != 0) return;  // a Families member wears what he wears
     g_origRebuild(ped, keep);
+    LastClothesRebuildMs() = NowMs();
 }
 
 bool ClothesPlace(const char* name) {

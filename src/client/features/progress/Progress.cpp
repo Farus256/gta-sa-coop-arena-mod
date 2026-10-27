@@ -727,6 +727,7 @@ public:
             }
             bool skin = model != 0 && Players::SetModel(rp->ped, model);
             if (skin) Peds::Instance().SpecialWorn(model);
+            if (!skin && now - LastClothesRebuildMs() < 2000) continue;  // one rebuild at a time: this one a little later
             if (!skin) {
                 Players::SetModel(rp->ped, 0);
                 memcpy(rp->ped->ClothesDesc(), l.desc.data(), kClothesSize);
