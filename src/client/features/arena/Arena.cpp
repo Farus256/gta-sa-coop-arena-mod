@@ -364,7 +364,7 @@ const ShopItem kShop[] = {
     {0, 1, 1200, TRP("Броня Джаггернаута", "The Juggernaut's armour"), TRP("броня держит на 50% больше, обоймы больше, чуть медленнее", "armour takes 50% more, bigger clips, a little slower")},
     {0, 2, 1300, TRP("Броня Поджигателя", "The Firestarter's armour"), TRP("огонь не жжёт, +2 молотова и +200 к огнемёту каждую волну, медленнее", "fire does not burn, +2 molotovs and +200 flamethrower ammo a wave, slower")},
     {0, 3, 1000, TRP("Броня Солдата", "The Soldier's armour"), TRP("быстрее, оружие точнее и дальше, броня держит на 25% меньше", "faster, guns more accurate and farther, armour takes 25% less")},
-    {1, 1, 400, TRP("Визор копа", "The cop's visor"), TRP("[X] враги видны сквозь стены, заряд 3%/с, +3% за убийство", "[X] enemies seen through walls, 3% charge a second, +3% a kill")},
+    {1, 1, 3000, TRP("Визор копа", "The cop's visor"), TRP("[X] враги видны сквозь стены, все пули — в голову ближайшего; заряд 3%/с, +3% за убийство", "[X] enemies seen through walls, every bullet into the nearest one's head; 3% charge a second, +3% a kill")},
     {1, 2, 1300, TRP("Рейдж-доза", "The rage dose"), TRP("[X] укол, 3 с судорог, потом RAMPAGE: 200 HP, быстрее, точнее, сильнее; раз в 2 волны, и лёжа раненым", "[X] a shot, 3 s of fits, then RAMPAGE: 200 HP, faster, more accurate, harder; once in 2 waves, wounded too")},
     {1, 3, 700, TRP("Пульт «Shahed»", "The Shahed's remote"), TRP("[X] свой вертолётик-камикадзе; новый заряд из 2 груд хлама со сбитых дронов", "[X] your own kamikaze helicopter; a new charge from 2 heaps of scrap off downed drones")},
     {2, 1, 500, TRP("Подствольный гранатомёт", "An underbarrel launcher"), TRP("[N] на любом оружии, заряжается гранатой", "[N] on any gun, loads with a grenade")},
@@ -6707,7 +6707,34 @@ void ShahedBoom(CVehicle* rc) {
     Call<0x736A50>((CEntity*)nullptr, (CEntity*)FindPlayerPed(0), 2 /* EXPLOSION_ROCKET */, at, (uint32_t)0, (uint8_t)1, -1.0f, (uint8_t)0);  // AddExplosion: his
     g_shahedSince = 0;
 }
+// the visor on: each shot of this player's goes into the head of the nearest enemy it can see (the game's own damage
+// with the head as the piece hit: a headshot; the hit goes to the man's own game as any other)
+void VisorShots() {
+    static int lastType = -1, lastClip = 0;
+    CPlayerPed* me = FindPlayerPed(0);
+    if (!me || me->Health() <= 0.0f) return;
+    const CWeapon& w = me->ActiveWeapon();
+    bool shot = w.type == lastType && w.ammoInClip < lastClip && w.type >= 22 && w.type <= 38;
+    lastType = w.type, lastClip = w.ammoInClip;
+    if (!shot || !g_visorOn) return;
+    CVector eye = me->GetPosition() + CVector{0, 0, 0.6f};
+    CPed* best = nullptr;
+    float bestD = 80.0f;
+    CPoolHeader* pool = PedPool();
+    for (int i = 0; pool && i < pool->size; ++i) {
+        if (pool->byteMap[i] < 0) continue;
+        auto* q = (CPed*)(pool->objects + (size_t)i * kPedPoolElemSize);
+        if (q->IsPlayer() || q->Health() <= 0.0f || !arena::IsEnemy(q) || q == g_merchant.ped) continue;
+        float d = (q->GetPosition() - me->GetPosition()).Length();
+        if (d < bestD && Clear(eye, q->GetPosition() + CVector{0, 0, 0.65f})) bestD = d, best = q;
+    }
+    if (!best) return;
+    void* info = Call<0x743C60, void*>(w.type, (uint8_t)0);  // CWeaponInfo::GetWeaponInfo
+    int damage = info ? std::max<int>(1, Field<int16_t>(info, 0x22)) : 25;
+    Call<0x73A530, bool>(best, (CEntity*)me, w.type, damage, 9 /* PED_PIECE_HEAD */, 0);  // CWeapon::GenerateDamageEvent
+}
 void GadgetFrame(uint64_t now) {
+    VisorShots();
     CPlayerPed* me = FindPlayerPed(0);
     static uint64_t last = now;
     float dt = (float)std::min<uint64_t>(now - last, 200) / 1000.0f;
