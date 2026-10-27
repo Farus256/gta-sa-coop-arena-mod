@@ -2245,16 +2245,23 @@ bool BesideBox(float side, CVector& at) {  // on the floor beside the box: side 
     at.z = z;
     return Clear(g_box.pos + CVector{0, 0, 0.6f}, at + CVector{0, 0, 0.6f});
 }
+bool FloorNoBars(float x, float y, float fromZ, float& z);
 void ShowProps() {
     DelProps();
     float lift = 0, height = 0;
     int radio = PickModel({2226, 2103, 2102});  // a boombox, a hi-fi
     int soda = PickModel({955, 1775, 956});      // a Sprunk machine
-    auto make = [&](std::vector<Prop>& out, int model, const CVector& at, float heading) {
+    auto make = [&](std::vector<Prop>& out, int model, const CVector& spot, float heading) {
         Prop p;
+        CVector at = spot;
+        float fz = 0;  // on the floor itself (the spot is the player's feet, a little off it at times)
+        if (FloorNoBars(at.x, at.y, at.z + 0.6f, fz) && std::fabs(fz - at.z) < 1.2f) at.z = fz;
         p.pos = at, p.heading = heading;
+        lift = 0, height = 0;  // its own (a model whose collision is not known kept the last one's: it hung in the air)
         p.handle = MakeObj(model, at, heading, lift, height);
+        if (p.handle >= 0) Cmd(0x01BC).I(p.handle).F(at.x).F(at.y).F(at.z + lift).Run();  // SET_OBJECT_COORDINATES: its foot on the floor
         Anchor(p.handle);
+        LOGI("Arena: prop %d at %.2f %.2f %.2f (lift %.2f, height %.2f)", model, at.x, at.y, at.z, lift, height);
         out.push_back(p);
     };
     CVector at;
