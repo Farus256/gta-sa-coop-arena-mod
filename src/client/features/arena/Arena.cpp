@@ -4344,6 +4344,39 @@ struct EBar {
     bool gone = false;
 };
 std::vector<EBar> g_ebars;  // every game's own fences of the enemies' barricades (the same order everywhere)
+void ShowEBar(EBar& b) {  // its fence: nothing moves it, but shots smash it (its health then, EBarFrame)
+    DelObj(b.handle);
+    int model = PickModel({1418, 1408, 1424});
+    float lift = 0, height = 0;
+    if (model < 0) return;
+    b.handle = MakeObj(model, b.pos, b.heading, lift, height);
+    if (CObject* o = b.handle >= 0 ? GetObject(b.handle) : nullptr) {
+        o->PhysicalFlags() |= (1u << 4) | (1u << 5) | (1u << 6) | (1u << 13);  // no turn, no move, infinite mass, no speed
+        o->MoveSpeed() = CVector{};
+        o->TurnSpeed() = CVector{};
+    }
+}
+// the floor under a spot, not on top of a barricade (a fence's top was a "floor": barricades hung in the air)
+bool FloorNoBars(float x, float y, float fromZ, float& z) {
+    CVector a{x, y, fromZ};
+    for (int k = 0; k < 6; ++k) {
+        CVector b{x, y, fromZ - 3.5f};
+        ColPoint cp{};
+        CEntity* hit = nullptr;
+        if (!Call<0x56BA00, bool>(&a, &b, &cp, &hit, true, false, false, true, false, false, false, false)) return false;  // ProcessLineOfSight
+        bool fence = false;
+        for (const EBar& e : g_ebars)
+            if (!e.gone && e.handle >= 0 && (CEntity*)GetObject(e.handle) == hit) fence = true;
+        for (const Bar& e : g_bars)
+            if (e.handle >= 0 && (CEntity*)GetObject(e.handle) == hit) fence = true;
+        if (!fence) {
+            z = cp.point.z;
+            return true;
+        }
+        a = cp.point - CVector{0, 0, 0.05f};
+    }
+    return false;
+}
 int EBarsUp() {
     int n = 0;
     for (const EBar& b : g_ebars) n += b.gone ? 0 : 1;
@@ -4353,9 +4386,7 @@ void AddEBar(const CVector& at, float heading) {
     if (g_ebars.size() >= 40) return;
     EBar b;
     b.pos = at, b.heading = heading;
-    int model = PickModel({1418, 1408, 1424});
-    float lift = 0, height = 0;
-    if (model >= 0) b.handle = MakeObj(model, at, heading, lift, height), Anchor(b.handle);
+    ShowEBar(b);
     g_ebars.push_back(b);
 }
 void ClearEBars() {
@@ -4425,13 +4456,25 @@ void EBarFrame(uint64_t now) {
     int type = wpn.type, clip = wpn.ammoInClip;
     bool shot = type == lastType && clip < lastClip && ShotDamage(type) > 0;
     lastType = type, lastClip = clip;
+    static uint64_t shotMs = 0, countedMs = 0;
+    bool fireDown = IsForeground() && !ui::TheChat().IsOpen() && !MenuActive() && (GetAsyncKeyState(VK_LBUTTON) & 0x8000);
+    if (shot || fireDown) shotMs = now;
+    // a fence the game smashed (no drawing, no collision): up again at once; this player's doing, its health off
+    for (size_t i = 0; i < g_ebars.size(); ++i) {
+        EBar& b = g_ebars[i];
+        if (b.gone) continue;
+        CObject* o = b.handle >= 0 ? GetObject(b.handle) : nullptr;
+        if (o && o->IsVisible() && (o->Flags() & 1)) continue;
+        ShowEBar(b);
+        if (now - shotMs < 500 && now - countedMs > 150) HitEBar((int)i, std::max(ShotDamage(type), 40));
+    }
     if (shot) {  // where it went: along the aim
         CVector a = cam::Source(), b = a + cam::Front() * 120.0f;
         ColPoint cp{};
         CEntity* hit = nullptr;
         if (Call<0x56BA00, bool>(&a, &b, &cp, &hit, true, true, false, true, false, false, true, false)) {  // ProcessLineOfSight
             int i = EBarOf(hit);
-            if (i >= 0) HitEBar(i, ShotDamage(type));
+            if (i >= 0) HitEBar(i, ShotDamage(type)), countedMs = now;
         }
     }
     // blows: fists and melee weapons, the fire button, a barricade just in front
@@ -4562,13 +4605,13 @@ void Builder(CPed* p, Enemy& e, uint64_t now) {  // host, every round of tactics
         float side = to.x * nrm.x + to.y * nrm.y > 0 ? -1.0f : 1.0f;
         CVector st = bs.pos + nrm * (1.3f * side);
         float z = 0;
-        e.buildSpot = FloorBelow(st.x, st.y, bs.pos.z + 1.0f, z) && std::fabs(z - bs.pos.z) < 1.0f ? CVector{st.x, st.y, z} : bs.pos;
+        e.buildSpot = FloorNoBars(st.x, st.y, bs.pos.z + 1.0f, z) && std::fabs(z - bs.pos.z) < 1.0f ? CVector{st.x, st.y, z} : bs.pos;
         e.hasBuildSpot = true;
     }
     if (!e.hasBuildSpot) {
         float a = Rand(0.0f, 6.2831853f), r = Rand(1.0f, 4.0f), z = 0;
         CVector sp = g_zoneAt + CVector{std::cos(a) * r, std::sin(a) * r, 0.0f};
-        e.buildSpot = FloorBelow(sp.x, sp.y, g_zoneAt.z + 1.0f, z) && std::fabs(z - g_zoneAt.z) < 1.0f &&
+        e.buildSpot = FloorNoBars(sp.x, sp.y, g_zoneAt.z + 1.0f, z) && std::fabs(z - g_zoneAt.z) < 1.0f &&
                               Clear(g_zoneAt + CVector{0, 0, 0.6f}, CVector{sp.x, sp.y, z + 0.6f})
                           ? CVector{sp.x, sp.y, z}
                           : g_zoneAt;
@@ -4594,6 +4637,8 @@ void Builder(CPed* p, Enemy& e, uint64_t now) {  // host, every round of tactics
     if (e.buildIdx >= 0 && e.buildIdx < (int)g_buildSpots.size()) {  // the host's own spot: the fence just as it was kept
         BuildSpot bs = g_buildSpots[(size_t)e.buildIdx];
         e.buildIdx = -1;
+        float fz = 0;
+        if (FloorNoBars(bs.pos.x, bs.pos.y, bs.pos.z + 1.0f, fz) && std::fabs(fz - bs.pos.z) < 1.2f) bs.pos.z = fz;
         Send(A_EBAR, [&](Writer& w) {
             w.Vec({bs.pos.x, bs.pos.y, bs.pos.z});
             w.F32(bs.heading);
@@ -4608,7 +4653,7 @@ void Builder(CPed* p, Enemy& e, uint64_t now) {  // host, every round of tactics
     to = to * (1.0f / l);
     CVector at = p->GetPosition() - CVector{0, 0, 1.0f} + to * 1.0f;
     float z = 0;
-    if (!FloorBelow(at.x, at.y, at.z + 1.0f, z)) return;
+    if (!FloorNoBars(at.x, at.y, at.z + 1.0f, z) || std::fabs(z - at.z) > 1.2f) return;
     at.z = z;
     float heading = std::atan2(-to.x, to.y) * 57.29578f;
     Send(A_EBAR, [&](Writer& w) {
@@ -4620,12 +4665,15 @@ void Builder(CPed* p, Enemy& e, uint64_t now) {  // host, every round of tactics
 
 // ---- the RC battlefield's drone operator (host): a man with no weapon where the snipers sit, the RC helicopters
 // come from him (1 in the first wave, then up to 3 a wave, 3 at once at most); none once he is dead
+constexpr int WEAPON_DETONATOR_ARENA = 40;  // the operator's remote (only in his hand)
 void MakeOperator(int wave) {
     const Faction& f = kFactions[g_arena.faction];
     g_squads.push_back(Squad{});
     CVector at;
     if (!GridUsable() || !SniperSpot({}, nullptr, 0.0f, at)) at = SpawnSpot(Rand(0.0f, 6.2831853f), 3.2f, 8.0f);
-    int h = MakeEnemy(f.models[(size_t)RandInt(0, 3)], 0, 100 + 15 * wave, ArmourFor(wave, 0), 50, at, (int)g_squads.size() - 1, R_OPERATOR, true);
+    float fz = 0;
+    if (FloorNoBars(at.x, at.y, at.z + 0.5f, fz)) at.z = fz + 1.0f;  // on the floor
+    int h = MakeEnemy(f.models[(size_t)RandInt(0, 3)], GunFor(WEAPON_DETONATOR_ARENA) == WEAPON_DETONATOR_ARENA ? WEAPON_DETONATOR_ARENA : 0, 100 + 15 * wave, ArmourFor(wave, 0), 50, at, (int)g_squads.size() - 1, R_OPERATOR, true);
     g_operator = h >= 0 ? GetPed(h) : nullptr;
     g_dronesLeft = std::min(3, wave);
     g_nextDroneMs = NowMs() + 8000;
@@ -5263,7 +5311,15 @@ void Tactics() {
         CVector eye = p->GetPosition() + CVector{0, 0, 0.6f}, at = t->GetPosition() + CVector{0, 0, 0.4f};
         bool sees = Clear(eye, at);
         if (now < e.getUpUntil) continue;  // getting up
-        if (e.role == R_OPERATOR) continue;  // he sits there, sending his helicopters
+        if (e.role == R_OPERATOR) {  // he stands there with his remote, sending his helicopters; on the floor, not in the air
+            CVector pp = p->GetPosition();
+            float fz = 0;
+            if (!p->InVehicle() && FloorNoBars(pp.x, pp.y, pp.z, fz) ? pp.z - fz > 1.6f : FloorNoBars(pp.x, pp.y, pp.z - 3.0f, fz) && pp.z - fz > 1.6f) {
+                SetEntityPosition(p, {pp.x, pp.y, fz + 1.0f});
+                p->MoveSpeed() = CVector{};
+            }
+            continue;
+        }
         if (e.role == R_BUILDER) {
             Builder(p, e, now);
             continue;
@@ -6048,11 +6104,17 @@ void Handle(uint8_t from, Reader& r) {
         Vec3 v = r.Vec();
         float heading = r.F32();
         if (!r.Ok()) return;
+        CVector at{v.x, v.y, v.z};
+        bool same = g_box.placed == (placed != 0) && (g_box.pos - at).Length() < 0.05f && std::fabs(g_box.heading - heading) < 0.5f;
+        bool shown = !g_box.placed || (g_box.handle >= 0 && GetObject(g_box.handle));
+        if (same && shown) return;  // the host's word now and then (one who came back in has it): as it is
         g_box.placed = placed != 0;
-        g_box.pos = {v.x, v.y, v.z};
+        g_box.pos = at;
         g_box.heading = heading;
-        g_box.rolling = false;
+        g_box.rolling = g_box.offered = false;
+        g_box.moveAt = 0;
         ShowBox();
+        LOGI("Arena: the box %s", g_box.placed ? "shown" : "gone");
     } else if (op == A_BOXROLL) {
         uint8_t by = r.U8(), gun = r.U8(), teddy = r.U8();
         if (r.Ok() && gun < sizeof(kBoxGuns) / sizeof(kBoxGuns[0])) StartRoll(by, gun, teddy != 0);
@@ -6195,7 +6257,14 @@ void Update() {
     }
     if (g_arena.host) KatanaFrame(now);
     static uint64_t scoreMs = 0;  // the score now and then too: one that came in late has everyone's
-    if (now - scoreMs > 3000) scoreMs = now, SendScore();
+    if (now - scoreMs > 3000) {
+        scoreMs = now, SendScore();
+        if (g_arena.host && g_box.placed && !g_box.moveAt) SendBox();  // the box for one who came back in
+    }
+    if (g_box.placed && !g_box.moveAt && arena::On() && (g_box.handle < 0 || !GetObject(g_box.handle))) {  // lost here: made again
+        static uint64_t boxFixMs = 0;
+        if (now - boxFixMs > 2000) boxFixMs = now, ShowBox();
+    }
     if (g_arena.host) DronesFrame(now);
     else DroneCopies();
     if (g_arena.host && g_minZ > -1e8f && GridUsable()) {  // an enemy that fell under the upper floors: back up, far from the players
@@ -6492,6 +6561,12 @@ void DashFrame(uint64_t now) {
     bool can = me && me->Health() > 0.0f && !me->InVehicle() && !g_spectating && !Players::Instance().LocalDowned() &&
                me->ActiveWeapon().type == WEAPON_CHAINSAW && IsForeground() && !MenuActive() && !ui::TheChat().IsOpen();
     float dt = std::min(0.1f, TimeStep() / 50.0f);
+    if (g_dashing && (!me || me->Health() <= 0.0f || me->InVehicle() || g_spectating || Players::Instance().LocalDowned() ||
+                      PlayerInfos()[0].playerState != 0)) {  // killed or downed mid-dash: no more moving him (it crashed)
+        g_dashing = g_dashAim = false;
+        HoldFire(false);
+        return;
+    }
     if (g_dashing && me) {
         CVector pos = me->GetPosition(), next = pos + g_dashDir * std::min(g_dashLeft, 17.0f * dt), hit, n;
         EBarDash(pos + g_dashDir * 0.9f);  // the builders' barricades: through them

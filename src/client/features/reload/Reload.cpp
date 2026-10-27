@@ -68,7 +68,7 @@ void TryReload() {
     // with the gun down is it ours
     bool aiming = GetPad(0)->NewState.RightShoulder1 != 0;
     if (!aiming && a->block && EnsureBlock(a->block))
-        Cmd(0x0A1A).I(GetPedRef(me)).S(a->anim).S(a->block).F(4.0f).I(0).I(0).I(0).I(0).I((int)ms).Run();  // TASK_PLAY_ANIM_SECONDARY
+        Cmd(0x0A1A).I(GetPedRef(me)).S(a->anim).S(a->block).F(4.0f).I(0).I(0).I(0).I(0).I(-1).Run();  // TASK_PLAY_ANIM_SECONDARY: once, its own length (a set time replayed it: a double reload)
     LOGD("Reload by hand: weapon %d, %d of %d in the clip", w.type, w.ammoInClip, clip);
 }
 
