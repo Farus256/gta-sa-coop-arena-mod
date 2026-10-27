@@ -1114,7 +1114,10 @@ int MakeEnemy(int model, int weapon, int health, int armour, int accuracy, const
         Give(h, weapon, role == R_SNIPER ? 80 : 500);
         weapon = GunFor(weapon);
     }
-    if (role == R_TWIN) Cmd(0x081A).I(h).I(2).Run();  // SET_CHAR_WEAPON_SKILL pro: a gun in each hand
+    if (role == R_TWIN) {
+        Cmd(0x081A).I(h).I(2).Run();  // SET_CHAR_WEAPON_SKILL pro: a gun in each hand
+        Cmd(0x0946).I(h).I(1).Run();  // no stagger, no knocking back
+    }
     if (role == R_SAW || role == R_OFFICER) {
         Cmd(0x0946).I(h).I(1).Run();  // no stagger
         if (role == R_SAW) Cmd(0x0245).I(h).S8("player").Run();
@@ -3765,7 +3768,7 @@ void MakeFlamer(int wave) {
         }
     }
 }
-// The Twins, the mini-boss: two men of different looks, 190 health each; one with two sawn-offs, the other with two
+// The Twins, the mini-boss: two men of different looks, a plain enemy's health each, never knocked down; one with two sawn-offs, the other with two
 // desert eagles (both held in both hands: the weapon skill "pro", TwinEagles)
 void MakeTwins(int wave) {
     const Faction& f = kFactions[g_arena.faction];
@@ -3777,8 +3780,9 @@ void MakeTwins(int wave) {
     if (m1 == m0) m1 = m0 == 287 ? 285 : 287;  // the army has one look: the other twin is SWAT-clad
     float dir = Rand(0.0f, 6.2831853f);
     CVector at = SpawnSpot(dir, 1.0f, 8.0f);
-    int h0 = MakeEnemy(m0, WEAPON_SAWNOFF, 50, 0, 75, at, squad, R_TWIN, false);
-    int h1 = MakeEnemy(m1, WEAPON_PISTOL, 50, 0, 80, MemberSpot(at, 1), squad, R_TWIN, false);  // eagles (TwinEagles)
+    int hp = 100 + 15 * wave;  // a plain enemy's health
+    int h0 = MakeEnemy(m0, WEAPON_SAWNOFF, hp, 0, 75, at, squad, R_TWIN, false);
+    int h1 = MakeEnemy(m1, WEAPON_PISTOL, hp, 0, 80, MemberSpot(at, 1), squad, R_TWIN, false);  // eagles (TwinEagles)
     g_twinPeds[0] = h0 >= 0 ? GetPed(h0) : nullptr;
     g_twinPeds[1] = h1 >= 0 ? GetPed(h1) : nullptr;
     MountQuad(h0), MountQuad(h1);  // the RC battlefield: on quad bikes
@@ -6919,6 +6923,7 @@ void BayonetHit(CPed* p) {  // host: the thrust got to him: hurt, and down on th
         return;
     }
     p->Health() -= 45.0f;
+    if (it->second.role == R_TWIN) return;  // the Twins are not knocked down
     Cmd(0x0687).I(h).Run();
     Cmd(0x0605).I(h).S("KO_skid_back").S("PED").F(8.0f).I(0).I(0).I(0).I(1).I(-1).Run();  // knocked onto his back
     it->second.getUpUntil = NowMs() + 2200;
