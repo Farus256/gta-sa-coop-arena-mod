@@ -1200,7 +1200,7 @@ int MakeSquad(float dir, float halfSector, bool flank, float aroundDeg, int size
         CVector at = k == 0 ? anchor : scatter ? SpawnSpot(dir, halfSector * 1.3f, 6.0f) : MemberSpot(anchor, k);
         int weapon = f.weapons[std::clamp(gunTier - (k == 2 ? 1 : 0), 0, 3)][RandInt(0, 1)];
         int model = f.models[(size_t)RandInt(0, 3)];
-        int health = 100 + 15 * wave, armour = ArmourFor(wave, minions ? 50 : 0);
+        int health = 100, armour = ArmourFor(wave, minions ? 50 : 0);
         int accuracy = std::clamp(40 + 6 * wave + (minions ? 10 : 0), 40, 90);
         int h = MakeEnemy(model, weapon, health, armour, accuracy, at, squad, role, minions);
         made += h >= 0;
@@ -1258,7 +1258,7 @@ void MakeKnifeman(int wave) {
     if (found) {
         g_spawnsNow.push_back(at);
         int model = g_knifeModel >= 0 && IsModelLoaded(g_knifeModel) ? g_knifeModel : f.models[(size_t)RandInt(0, 3)];
-        MakeEnemy(model, WEAPON_KNIFE, 100 + 15 * wave, ArmourFor(wave, 0), 60, at, (int)g_squads.size() - 1, R_KNIFE, true);
+        MakeEnemy(model, WEAPON_KNIFE, 100, ArmourFor(wave, 0), 60, at, (int)g_squads.size() - 1, R_KNIFE, true);
         return;
     }
     // the far side of the place from the squads (from the middle of where they came from), never close to a player
@@ -1298,7 +1298,7 @@ void MakeKnifeman(int wave) {
     }
     g_spawnsNow.push_back(at);
     int model = g_knifeModel >= 0 && IsModelLoaded(g_knifeModel) ? g_knifeModel : f.models[(size_t)RandInt(0, 3)];
-    MakeEnemy(model, WEAPON_KNIFE, 100 + 15 * wave, ArmourFor(wave, 0), 60, at, (int)g_squads.size() - 1, R_KNIFE, true);
+    MakeEnemy(model, WEAPON_KNIFE, 100, ArmourFor(wave, 0), 60, at, (int)g_squads.size() - 1, R_KNIFE, true);
 }
 
 // Snipers (the last two waves): each alone on a spot far off that sees a player, staying there and shooting from
@@ -1335,7 +1335,7 @@ void MakeSniper(int wave) {
     CVector at;
     if (!GridUsable() || !SniperSpot({}, nullptr, 0.0f, at)) at = SpawnSpot(Rand(0.0f, 6.2831853f), 3.2f, 8.0f);
     else g_spawnsNow.push_back(at);
-    MakeEnemy(f.models[(size_t)RandInt(0, 3)], WEAPON_SNIPER, 100 + 15 * wave, ArmourFor(wave, 0) / 2, 80, at,
+    MakeEnemy(f.models[(size_t)RandInt(0, 3)], WEAPON_SNIPER, 100, ArmourFor(wave, 0) / 2, 80, at,
               (int)g_squads.size() - 1, R_SNIPER, false);
 }
 
@@ -1359,12 +1359,20 @@ void LoadBoss(int b) {
 }
 void UnloadBoss() { Cmd(0x0296).I(kBossSlot).Run(); }  // UNLOAD_SPECIAL_CHARACTER
 
+// every boss in turn: a shuffled bag of them all, a new bag once each has come; never the same twice in a row
+std::vector<int> g_bossBag;
+int g_lastBoss = -1;
 int PickBoss(int faction) {
-    std::vector<int> fit;
-    for (int b : kFactions[faction].boss)
-        if (b >= 0) fit.push_back(b);
-    if (!fit.empty() && RandInt(0, 3) != 0) return fit[(size_t)RandInt(0, (int)fit.size() - 1)];
-    return RandInt(0, kBossCount - 1);
+    (void)faction;
+    if (g_bossBag.empty()) {
+        for (int b = 0; b < kBossCount; ++b) g_bossBag.push_back(b);
+        for (size_t i = g_bossBag.size(); i > 1; --i) std::swap(g_bossBag[i - 1], g_bossBag[(size_t)RandInt(0, (int)i - 1)]);
+        if (g_bossBag.size() > 1 && g_bossBag.back() == g_lastBoss) std::swap(g_bossBag.front(), g_bossBag.back());
+    }
+    int b = g_bossBag.back();
+    g_bossBag.pop_back();
+    g_lastBoss = b;
+    return b;
 }
 
 int PlayersIn() {
@@ -3760,7 +3768,7 @@ void MakeMedic(int wave) {
     bool state = f.models[0] == 280 || f.models[0] == 285;
     int model = state ? 274 + RandInt(0, 2) : f.models[(size_t)RandInt(0, 3)];  // LAEMT1, LVEMT1, SFEMT1
     int weapon = state ? 29 : WEAPON_PISTOL;
-    MakeEnemy(model, weapon, 100 + 15 * wave, ArmourFor(wave, 0), 45, SpawnSpot(Rand(0.0f, 6.2831853f), 3.2f, 6.0f),
+    MakeEnemy(model, weapon, 100, ArmourFor(wave, 0), 45, SpawnSpot(Rand(0.0f, 6.2831853f), 3.2f, 6.0f),
               (int)g_squads.size() - 1, R_MEDIC, false);
 }
 // The flamethrower man (Bikers, Vagos): 250 health and 50 armour, slow, comes unannounced, a flamethrower close by and molotovs from afar
@@ -3799,7 +3807,7 @@ void MakeTwins(int wave) {
     if (m1 == m0) m1 = m0 == 287 ? 285 : 287;  // the army has one look: the other twin is SWAT-clad
     float dir = Rand(0.0f, 6.2831853f);
     CVector at = SpawnSpot(dir, 1.0f, 8.0f);
-    int hp = 100 + 15 * wave;  // a plain enemy's health
+    int hp = 100;  // a plain enemy's health (the same every wave)
     int h0 = MakeEnemy(m0, WEAPON_SAWNOFF, hp, 0, 75, at, squad, R_TWIN, false);
     int h1 = MakeEnemy(m1, WEAPON_PISTOL, hp, 0, 80, MemberSpot(at, 1), squad, R_TWIN, false);  // eagles (TwinEagles)
     g_twinPeds[0] = h0 >= 0 ? GetPed(h0) : nullptr;
@@ -3937,7 +3945,7 @@ void SpawnWave() {
         for (int k = 0; k < count; ++k) {
             g_squads.push_back(Squad{});
             CVector at = GridUsable() ? MemberSpot(pts[k % 2], k / 2 % 4) : pts[k % 2];
-            int h = MakeEnemy(ff.models[(size_t)RandInt(0, 3)], WEAPON_BAT_ARENA, 90 + 12 * w, 0, 60, at, (int)g_squads.size() - 1, R_GUN, k % 3 != 0);
+            int h = MakeEnemy(ff.models[(size_t)RandInt(0, 3)], WEAPON_BAT_ARENA, 90, 0, 60, at, (int)g_squads.size() - 1, R_GUN, k % 3 != 0);
             if (CPed* p = h >= 0 ? GetPed(h) : nullptr) {
                 Enemy& e = g_info[p];
                 e.rusher = true, e.mode = M_PUSH, e.modeUntil = ~0ull;
@@ -5105,7 +5113,7 @@ void ZoneWave(int wave) {  // host, as a wave of the crack palace begins
     int builders = wave >= 4 ? 2 : 1;
     for (int k = 0; k < builders; ++k) {
         g_squads.push_back(Squad{});
-        MakeEnemy(f.models[(size_t)RandInt(0, 3)], 0, 100 + 10 * wave, 0, 50, SpawnSpot(Rand(0.0f, 6.2831853f), 3.2f, 6.0f),
+        MakeEnemy(f.models[(size_t)RandInt(0, 3)], 0, 100, 0, 50, SpawnSpot(Rand(0.0f, 6.2831853f), 3.2f, 6.0f),
                   (int)g_squads.size() - 1, R_BUILDER, true);
     }
 }
@@ -5491,7 +5499,7 @@ void Officer(CPed* p, Enemy& e, CPed* t, float d, bool sees, uint64_t now) {
         int wave = std::max(1, g_arena.wave);
         int tier = std::clamp((int)std::lround(Progress(wave) * 3.0f), 0, 3);
         for (int k = 0; k < 4; ++k)
-            MakeEnemy(f.models[(size_t)RandInt(0, 3)], f.weapons[tier][RandInt(0, 1)], 100 + 15 * wave, ArmourFor(wave, 0),
+            MakeEnemy(f.models[(size_t)RandInt(0, 3)], f.weapons[tier][RandInt(0, 1)], 100, ArmourFor(wave, 0),
                       std::clamp(45 + 5 * wave, 45, 85), MemberSpot(p->GetPosition(), k), squad, k == 1 ? R_GRENADIER : R_GUN, false);
         ui::TheChat().AddSystem(TR("Офицер вызвал подкрепление!", "The Officer called for help!"));
     }
