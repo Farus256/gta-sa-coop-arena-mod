@@ -159,21 +159,36 @@ uint32_t StreamingMemoryCap() {
     auto* base = (uint8_t*)GetModuleHandleW(nullptr);
     auto* nt = (IMAGE_NT_HEADERS*)(base + ((IMAGE_DOS_HEADER*)base)->e_lfanew);
     bool laa = (nt->FileHeader.Characteristics & IMAGE_FILE_LARGE_ADDRESS_AWARE) != 0;
-    uint32_t cap = laa ? 1024u : 160u;
-    MEMORYSTATUSEX ms{};
-    ms.dwLength = sizeof ms;
-    // what is still free of the address space: a quarter of it at most goes to more models
-    if (GlobalMemoryStatusEx(&ms)) cap = std::min<uint32_t>(cap, (uint32_t)(ms.ullAvailVirtual / 4 / (1024 * 1024)));
-    return cap;
+    return laa ? 1024u : 160u;
 }
 
+// The models' memory is let grow only while the address space has room: some 450 MB of it are kept free for
+// everything else (the game's own allocations; out of it, CMemoryMgr::MallocAlign wrote to 0x3C: crash.log
+// 0x72F4DE as an animation began). Low on room, the limit comes down again (never under the game's own), the
+// streaming then lets models go.
+constexpr uintptr_t kStreamingUsed = 0x8E4CB4;  // CStreaming::ms_memoryUsed
+uint32_t g_gameOwn = 0;                         // the game's own limit (stream.ini), the first one seen
 void RaiseStreamingMemory() {
     uint32_t& have = Ref<uint32_t>(kStreamingMemory);
-    uint32_t wantMb = std::min<uint32_t>((uint32_t)Cfg().streamingMemoryMb, StreamingMemoryCap());
-    uint32_t want = wantMb * 1024u * 1024u;
-    if (want && have < want) {
-        LOGI("Streaming memory %u MB -> %u MB (draw distance)", have >> 20, want >> 20);
-        have = want;
+    if (!g_gameOwn) g_gameOwn = have;
+    uint64_t want = (uint64_t)std::min<uint32_t>((uint32_t)Cfg().streamingMemoryMb, StreamingMemoryCap()) * 1024u * 1024u;
+    MEMORYSTATUSEX ms{};
+    ms.dwLength = sizeof ms;
+    constexpr uint64_t kKeepFree = 450ull * 1024 * 1024;
+    if (GlobalMemoryStatusEx(&ms)) {
+        uint64_t used = Ref<uint32_t>(kStreamingUsed);
+        uint64_t room = ms.ullAvailVirtual > kKeepFree ? ms.ullAvailVirtual - kKeepFree : 0;
+        want = std::min<uint64_t>(want, used + room);
+        static uint64_t logMs = 0;
+        if (ms.ullAvailVirtual < 600ull * 1024 * 1024 && NowMs() - logMs > 30000) {
+            logMs = NowMs();
+            LOGI("Address space low: %u MB free, the models %u of %u MB", (uint32_t)(ms.ullAvailVirtual >> 20), (uint32_t)(used >> 20), have >> 20);
+        }
+    }
+    want = std::max<uint64_t>(want, g_gameOwn);
+    if (want && have != (uint32_t)want && (have < want || have > want + 16u * 1024 * 1024)) {
+        LOGI("Streaming memory %u MB -> %u MB", have >> 20, (uint32_t)(want >> 20));
+        have = (uint32_t)want;
     }
 }
 
@@ -193,7 +208,7 @@ public:
     }
     void OnPreProcess() override {
         static uint64_t last = 0;
-        if (NowMs() - last < 5000) return;
+        if (NowMs() - last < 1000) return;
         last = NowMs();
         RaiseStreamingMemory();  // CStreaming::Init and stream.ini set it on their own
         if (g_dropped || g_minAdapt < 0.99f)

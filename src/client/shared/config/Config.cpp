@@ -48,7 +48,10 @@ bool ClientConfig::Load(const std::wstring& coopDirectory) {
     friendlyFire = ini.GetBool("connect", "friendly_fire", friendlyFire);
     noCheats = ini.GetBool("connect", "no_cheats", noCheats);
     maxPlayers = std::clamp(ini.GetInt("connect", "max_players", maxPlayers), 2, 16);
-    gameMode = std::clamp(ini.GetInt("connect", "game_mode", gameMode), 0, 1);
+    gameMode = std::clamp(ini.GetInt("connect", "game_mode", gameMode), 0, 2);
+    arenaFaction = std::max(0, ini.GetInt("connect", "arena_enemies", arenaFaction));
+    arenaPlace = std::max(-1, ini.GetInt("connect", "arena_place", arenaPlace));
+    arenaWaves = std::clamp(ini.GetInt("connect", "arena_waves", arenaWaves), 0, 10);
 
     windowed = ini.GetBool("game", "windowed", windowed);
     borderless = ini.GetBool("game", "borderless", borderless);
