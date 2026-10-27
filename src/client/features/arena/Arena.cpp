@@ -197,7 +197,7 @@ enum ArenaOp : uint8_t {
     A_START = 1, A_WAVE, A_LEFT, A_BOSS, A_END, A_ITEMS, A_PREP, A_MARK, A_SKIP,
     A_SCORE, A_BARS, A_BOARD, A_REPAIR, A_BOX, A_BOXUSE, A_BOXROLL, A_PERKS, A_PSPAWN, A_GRAB, A_POWER, A_TWINS,
     A_WALLS, A_DROP, A_TAKE, A_TAKEN, A_BUILD, A_LOBBY, A_FLAMER, A_STAGE, A_VOTE, A_VOTES, A_GIVE, A_MAPVOTE, A_MOVE,
-    A_HEALGAS, A_BOSSNAME, A_HIT, A_SHELL, A_SPEC, A_BOXTAKEN, A_SPOT, A_DRONEHIT, A_ALERT /* not used any more */, A_GUARDNAME, A_GUARDREQ, A_ZONE, A_EBAR, A_SAWHIT, A_HALVE, A_PROPS, A_EBARHIT, A_EBARGONE, A_OPERATOR, A_MVP, A_MAGNET, A_EVENT, A_NEXTBOSS
+    A_HEALGAS, A_BOSSNAME, A_HIT, A_SHELL, A_SPEC, A_BOXTAKEN, A_SPOT, A_DRONEHIT, A_ALERT /* not used any more */, A_GUARDNAME, A_GUARDREQ, A_ZONE, A_EBAR, A_SAWHIT, A_HALVE, A_PROPS, A_EBARHIT, A_EBARGONE, A_OPERATOR /* not used any more */, A_MVP, A_MAGNET, A_EVENT, A_NEXTBOSS, A_SAWWIND, A_GEAR, A_IGNITE
 };
 struct Arena {
     bool on = false, host = false;
@@ -316,6 +316,9 @@ void SawKill(game::CPed* p);
 void DashFrame(uint64_t now);
 void HoloFrame(uint64_t now);
 extern uint64_t g_fewSince;
+void ShotAt(const game::CVector& hit);
+void GearOn(game::CPed* p, bool shield, bool tank, int belt);
+void ClearGear();
 void ShowStatBox();
 void HoldWorld(bool on);
 void ClearBodyVests();
@@ -338,17 +341,9 @@ std::vector<BuildSpot> g_buildSpots;  // host
 constexpr int kMaxBuildSpots = 16;
 int g_zoneNow = -1;                  // every game: the wave's zone (its number from 0), -1: none
 game::CVector g_zoneAt;
-game::CPed* g_operator = nullptr;  // host: the RC helicopters' man
-// his remote in every game: a phone held before him (an object fixed to the man; a detonator in his hand, the game's
-// own, crashed as he "used" it: its animations not in memory, 0x4D3FBC and 0x72F4DE from CAnimManager::BlendAnimation)
-game::CPed* g_remoteFor = nullptr;
-uint16_t g_remoteId = 0;       // a partner's: the man's id till its copy is there
-uint64_t g_remoteIdUntil = 0;
-int g_remoteObj = -1;
 // host: this arena's boss carries the AK-47 with the grenade launcher (T-Bone always, the others half the time) or a
 // katana (spins at the players, the bullets bounce off him meanwhile)
 bool g_bossUgl = false, g_bossKatana = false;
-void MakeOperator(int wave);
 void ZoneWave(int wave);
 bool CrackPlace() { return std::string(kPlaces[g_arena.place].keys[0][1]) == "crack"; }
 int BoxCost();
@@ -751,7 +746,7 @@ constexpr int kEmptyDecisionMaker = 65542;  // SET_CHAR_DECISION_MAKER "Empty": 
 // and gets the fallen up; R_TWIN: one of the Twins, the mini-boss (two sawn-offs / two desert eagles)
 // R_SAW: the chainsaw mini-boss (winds up, then charges straight on till a wall); R_OFFICER: the mini-boss with a
 // katana who keeps to the back, calls 4 men every 30 s, falls back and heals
-enum Role : uint8_t { R_GUN, R_GRENADIER, R_KNIFE, R_BOSS, R_SNIPER, R_FLAMER, R_MEDIC, R_TWIN, R_SAW, R_OFFICER, R_OPERATOR, R_BUILDER };
+enum Role : uint8_t { R_GUN, R_GRENADIER, R_KNIFE, R_BOSS, R_SNIPER, R_FLAMER, R_MEDIC, R_TWIN, R_SAW, R_OFFICER, R_BUILDER, R_SHIELD };
 // what one does now: fights as the game has it, goes round to a back, runs to cover, holds it (down, up and shooting,
 // down), pushes on at the players, (a knifeman) steals up to a back out of the player's sight, (a sniper) moves to
 // another spot it sees the players from
@@ -1024,6 +1019,7 @@ void GoTo(CPed* p, Enemy& e, const CVector& to, int move) {
 
 int MakeEnemy(int model, int weapon, int health, int armour, int accuracy, const CVector& at, int squad, Role role, bool silent) {
     if (!HasRoom(PedPool(), kKeepPeds + 2, "ped") || !LoadModelNow(model)) return -1;
+    health += armour, armour = 0;  // no armour bar on enemies: what was armour is health now
     int h = -1;
     Cmd(0x009A).I(PED_TYPE_MISSION1).I(model).F(at.x).F(at.y).F(at.z - 1.0f).Out(&h).Run();  // CREATE_CHAR (on the floor)
     if (h < 0) return -1;
@@ -1055,7 +1051,7 @@ int MakeEnemy(int model, int weapon, int health, int armour, int accuracy, const
         Cmd(0x0946).I(h).I(1).Run();  // no stagger
         if (role == R_SAW) Cmd(0x0245).I(h).S8("player").Run();
     }
-    if (role == R_SNIPER || role == R_OPERATOR) Cmd(0x0350).I(h).I(1).Run();  // SET_CHAR_STAY_IN_SAME_PLACE: it stays where it is
+    if (role == R_SNIPER) Cmd(0x0350).I(h).I(1).Run();  // SET_CHAR_STAY_IN_SAME_PLACE: it stays where it is
     if (weapon) Cmd(0x01B9).I(h).I(weapon).Run();  // SET_CURRENT_CHAR_WEAPON
     CPed* ped = GetPed(h);
     if (!ped) return h;
@@ -3626,6 +3622,18 @@ void ShowEvent(uint8_t kind) {  // every game
         ui::TheChat().AddSystem(TR("СОБЫТИЕ: бейсбольная ярость! Все враги с битами бегут с обеих сторон.",
                                    "EVENT: baseball fury! Every enemy with a bat, running in from both sides."));
 }
+// The SWAT shield man: a pistol in one hand, the shield in the other; no grenades; he comes straight on
+void MakeShield(int wave) {
+    const Faction& f = kFactions[g_arena.faction];
+    g_squads.push_back(Squad{});
+    int h = MakeEnemy(f.models[(size_t)RandInt(0, 3)], WEAPON_PISTOL, 120 + 15 * wave, 0, 55, SpawnSpot(Rand(0.0f, 6.2831853f), 3.2f, 6.0f),
+                      (int)g_squads.size() - 1, R_SHIELD, false);
+    if (CPed* p = h >= 0 ? GetPed(h) : nullptr) {
+        Enemy& e = g_info[p];
+        e.mode = M_PUSH, e.modeUntil = ~0ull;
+        GearOn(p, true, false, 0);
+    }
+}
 void MakeFlamer(int wave) {
     const Faction& f = kFactions[g_arena.faction];
     g_squads.push_back(Squad{});
@@ -3634,6 +3642,7 @@ void MakeFlamer(int wave) {
                       (int)g_squads.size() - 1, R_FLAMER, true);
     if (CPed* p = h >= 0 ? GetPed(h) : nullptr) {
         g_flamers.push_back(p);
+        GearOn(p, false, true, 2);  // the tank on his back, two molotovs on the belt
         AddVest(p);
         if (NetPed* np = Peds::Instance().Find(p)) {  // the other games put one on their copy of it
             uint16_t id = np->netId;
@@ -3748,9 +3757,6 @@ void SpawnWave() {
     if (g_hasSpot) SendSpot();  // for whoever came in late
     SendProps();
     int w = g_arena.wave;
-    g_operator = nullptr;
-    g_remoteFor = nullptr, g_remoteId = 0;
-    DelObj(g_remoteObj);
     g_dronesLeft = 0;
     const Faction& fac = kFactions[g_arena.faction];
     g_sawPed = g_officerPed = nullptr;
@@ -3831,6 +3837,10 @@ void SpawnWave() {
         for (int k = 0; k < medics; ++k) MakeMedic(w);
     }
     if (fac.flamers && w >= 3 && RandInt(0, 99) < 35) MakeFlamer(w);  // now and then one, from the 3rd wave
+    if (g_arena.faction == 9 && w >= 2) {  // SWAT: shield men (one, two with many enemies)
+        int shields = count >= 9 ? 2 : 1;
+        for (int k = 0; k < shields; ++k) MakeShield(w);
+    }
     if (TwinsWave(w)) MakeTwins(w);
     if (MiniBoss(w) == 2) MakeSaw(w);
     if (MiniBoss(w) == 3) MakeOfficer(w);
@@ -3864,7 +3874,7 @@ void SpawnWave() {
         g_arena.boss = b;
         bossLine = BossName(b);
     }
-    if (RcPlace()) MakeOperator(w);  // the RC helicopters' man
+    if (RcPlace()) g_dronesLeft = std::min(3, w), g_nextDroneMs = NowMs() + 8000;  // the RC helicopters: 1 in the first wave, up to 3
     if (CrackPlace()) ZoneWave(w);
     if (g_nextBoss < 0) g_nextBoss = PickBoss(g_arena.faction);  // the next boss wave's, shown at the bar's end
     {
@@ -4218,7 +4228,6 @@ void SpawnDrone() {
     // from the drone operator (over his head), else from the far end of the place (the farthest tenth of the cells)
     CVector at;
     bool picked = false;
-    if (g_operator && IsPedValid(g_operator)) at = g_operator->GetPosition() + CVector{0, 0, 2.0f}, picked = true;
     if (!picked && GridUsable()) {
         std::vector<CVector> players = PlayerSpots();
         std::vector<std::pair<float, int>> ends;
@@ -4267,8 +4276,7 @@ void ClearDrones() {
     g_dronesLeft = 0;
 }
 void DronesFrame(uint64_t now) {  // host, every frame
-    if (g_operator && (!IsPedValid(g_operator) || g_operator->Health() <= 0.0f)) g_operator = nullptr, g_dronesLeft = 0;  // he is down: no more
-    if (g_operator && g_dronesLeft > 0 && !g_break && g_arena.left > 0 && now >= g_nextDroneMs && g_drones.size() < 3) {
+    if (g_dronesLeft > 0 && !g_break && g_arena.left > 0 && now >= g_nextDroneMs && g_drones.size() < 3) {
         SpawnDrone();
         --g_dronesLeft;
         g_nextDroneMs = now + (uint64_t)RandInt(6000, 9000);
@@ -4574,6 +4582,39 @@ void Breach(CPed* p, Enemy& e, CPed* t, uint64_t now) {
 // The medic: CPR on a fallen one it reached (3 s, then it is up again, 5 at most), else running to the nearest fallen or
 // hurt one within 40 m (sprinting); nobody to see to: it fights as the others. Its healing (20% of the most health, every
 // 2 s, all of its own within 5 m) goes on all the while.
+bool FloorNoBars(float x, float y, float fromZ, float& z);
+// a medic with nothing to heal: at the back, behind its own (their middle, further from the players), shooting from there
+bool MedicBack(CPed* p, Enemy& e, CPed* t, uint64_t now) {
+    int h = GetPedRef(p);
+    CVector mid{}, pmid{};
+    int n = 0;
+    for (auto& [q, qe] : g_info)
+        if (q != p && IsPedValid(q) && q->Health() > 0.0f && qe.role != R_MEDIC && qe.role != R_SNIPER) mid = mid + q->GetPosition(), ++n;
+    std::vector<CVector> players = PlayerSpots();
+    for (const CVector& q : players) pmid = pmid + q;
+    if (n && !players.empty()) {
+        mid = mid * (1.0f / (float)n), pmid = pmid * (1.0f / (float)players.size());
+        CVector away = mid - pmid;
+        away.z = 0;
+        float l = away.Length();
+        if (l > 0.5f) {
+            CVector spot = mid + away * (6.0f / l);
+            float z = 0;
+            if (FloorNoBars(spot.x, spot.y, mid.z + 0.5f, z) && std::fabs(z - (mid.z - 1.0f)) < 1.5f) {
+                CVector to{spot.x, spot.y, z};
+                if ((p->GetPosition() - CVector{0, 0, 1.0f} - to).Length2D() > 3.0f) {
+                    GoTo(p, e, to, 6);
+                    return true;
+                }
+            }
+        }
+    }
+    if (e.routing || now - e.setOnMs > 2500) {  // there: shoots from where it stands
+        e.routing = false, e.setOnMs = now, e.after = t;
+        Cmd(0x074D).I(h).I(GetPedRef(t)).I(2500).Run();  // TASK_SHOOT_AT_CHAR
+    }
+    return true;
+}
 bool Medic(CPed* p, Enemy& e, CPed* t, uint64_t now) {
     int h = GetPedRef(p);
     if (now - e.healMs > 2000) {
@@ -4628,7 +4669,7 @@ bool Medic(CPed* p, Enemy& e, CPed* t, uint64_t now) {
         float d = (q->GetPosition() - p->GetPosition()).Length() * (down ? 0.7f : 1.0f);  // the fallen first
         if (d < bestD) bestD = d, best = q, dead = down;
     }
-    if (!best) return false;
+    if (!best) return MedicBack(p, e, t, now);
     float d = (best->GetPosition() - p->GetPosition()).Length2D();
     if (dead && d < 1.4f && EnsureBlock("MEDIC")) {
         g_info[best].revivedBy = p;
@@ -4644,7 +4685,7 @@ bool Medic(CPed* p, Enemy& e, CPed* t, uint64_t now) {
         GoTo(p, e, best->GetPosition() - CVector{0, 0, 1.0f}, 7);  // sprinting
         return true;
     }
-    return false;  // by a hurt one: the healing does it, meanwhile it fights
+    return MedicBack(p, e, t, now);  // by a hurt one: the healing does it, meanwhile at the back
 }
 
 // the fallen one up again (a new man of its kind where it lay, 60% of its health)
@@ -4680,27 +4721,6 @@ void RaiseFallen() {
 // builders (no weapon, $150 on them) put barricades up round the zone (cover for their own, fences for everyone).
 // The builders' barricades break: shots, blows, blasts and the chainsaw's dash take their health off (each game
 // tells the host of its own player's, A_EBARHIT; the host's word they are down, A_EBARGONE)
-void RemoteFrame() {
-    if (g_remoteId) {
-        int h = Peds::Instance().HandleOf(g_remoteId);
-        if (CPed* p = h >= 0 ? GetPed(h) : nullptr) g_remoteFor = p, g_remoteId = 0;
-        else if (NowMs() > g_remoteIdUntil) g_remoteId = 0;
-    }
-    bool alive = g_remoteFor && IsPedValid(g_remoteFor) && g_remoteFor->Health() > 0.0f;
-    if (!alive) {
-        g_remoteFor = nullptr;
-        DelObj(g_remoteObj);
-        return;
-    }
-    if (g_remoteObj >= 0 && GetObject(g_remoteObj)) return;
-    float lift = 0, height = 0;
-    int model = PickModel({330});  // the cellphone
-    if (model < 0) return;
-    g_remoteObj = MakeObj(model, g_remoteFor->GetPosition(), 0.0f, lift, height);
-    if (g_remoteObj < 0) return;
-    Cmd(0x0382).I(g_remoteObj).I(0).Run();  // SET_OBJECT_COLLISION: none
-    Cmd(0x069B).I(g_remoteObj).I(GetPedRef(g_remoteFor)).F(0.12f).F(0.32f).F(0.05f).F(-60.0f).F(0.0f).F(0.0f).Run();  // ATTACH_OBJECT_TO_CHAR: before him, in his hands
-}
 constexpr int kEBarHp = 300;
 struct EBar {
     CVector pos;
@@ -4841,6 +4861,7 @@ void EBarFrame(uint64_t now) {
         if (Call<0x56BA00, bool>(&a, &b, &cp, &hit, true, true, false, true, false, false, true, false)) {  // ProcessLineOfSight
             int i = EBarOf(hit);
             if (i >= 0) HitEBar(i, ShotDamage(type)), countedMs = now;
+            ShotAt(cp.point);  // into a flamer's fuel on the floor
         }
     }
     // blows: fists and melee weapons, the fire button, a barricade just in front
@@ -5029,29 +5050,6 @@ void Builder(CPed* p, Enemy& e, uint64_t now) {  // host, every round of tactics
     AddEBar(at, heading);
 }
 
-// ---- the RC battlefield's drone operator (host): a man with no weapon where the snipers sit, the RC helicopters
-// come from him (1 in the first wave, then up to 3 a wave, 3 at once at most); none once he is dead
-void MakeOperator(int wave) {
-    const Faction& f = kFactions[g_arena.faction];
-    g_squads.push_back(Squad{});
-    CVector at;
-    if (!GridUsable() || !SniperSpot({}, nullptr, 0.0f, at)) at = SpawnSpot(Rand(0.0f, 6.2831853f), 3.2f, 8.0f);
-    float fz = 0;
-    if (FloorNoBars(at.x, at.y, at.z + 0.5f, fz)) at.z = fz + 1.0f;  // on the floor
-    int h = MakeEnemy(f.models[(size_t)RandInt(0, 3)], 0, 100 + 15 * wave, ArmourFor(wave, 0), 50, at, (int)g_squads.size() - 1, R_OPERATOR, true);
-    g_operator = h >= 0 ? GetPed(h) : nullptr;
-    g_dronesLeft = std::min(3, wave);
-    g_nextDroneMs = NowMs() + 8000;
-    if (g_operator) {
-        ui::TheChat().AddSystem(TR("Оператор дронов на позиции.", "A drone operator is in place."));
-        if (NetPed* np = Peds::Instance().Find(g_operator)) {
-            uint16_t id = np->netId;
-            Send(A_OPERATOR, [id](Writer& w) { w.U16(id); });
-        }
-        g_remoteFor = g_operator, g_remoteId = 0;
-    }
-}
-
 // ---- the katana boss (host): runs at his player, within 7 m winds up (0.8 s), then spins fast (3.5 s) and comes on at
 // 5 m/s; whoever he gets to loses half of all its health and armour; while he spins the bullets bounce off him (his
 // bullet proof); a player's chainsaw dash into him then stuns him 4 s
@@ -5192,6 +5190,21 @@ void SendHit(uint8_t id) {
     w.U8(A_HIT);
     Net().SendTo(id, proto::CH_RELIABLE, w);
 }
+// the Butcher's saw roaring as he winds up (every game: his copy too): the game's own chainsaw engine
+// (CAEWeaponAudioEntity::ReportChainsawEvent, AE_WEAPON_CHAINSAW_ACTIVE on the man's weapon audio, CPed +0x394)
+std::map<CPed*, uint64_t> g_sawRoar;
+void SawRoar(CPed* p, uint64_t until) { g_sawRoar[p] = until; }
+void RoarFrame(uint64_t now) {
+    for (auto it = g_sawRoar.begin(); it != g_sawRoar.end();) {
+        CPed* p = it->first;
+        if (now > it->second || !IsPedValid(p) || p->Health() <= 0.0f) {
+            it = g_sawRoar.erase(it);
+            continue;
+        }
+        CallMethod<0x503910>((void*)((uint8_t*)p + 0x394), (CEntity*)p, 154 /* AE_WEAPON_CHAINSAW_ACTIVE */);
+        ++it;
+    }
+}
 void SawFrame(uint64_t now) {
     float dt = std::min(0.1f, TimeStep() / 50.0f);
     for (auto& [p, e] : g_info) {
@@ -5290,12 +5303,19 @@ void Saw(CPed* p, Enemy& e, CPed* t, float d, bool sees, uint64_t now) {
     if (e.sawStage != 0) return;
     int h = GetPedRef(p);
     if (sees && d > 4.0f && d < 28.0f && now >= e.nextChargeMs) {
+        // the warning: he stops, the saw up and its engine roaring (1.8 s), then the charge
         e.sawStage = 1;
-        e.sawUntil = now + 1400;
+        e.sawUntil = now + 1800;
         e.after = t;
         e.routing = false;
-        Cmd(0x0687).I(h).Run();                 // CLEAR_CHAR_TASKS
-        PlayAnim(h, "IDLE_armed", "PED", true);  // the saw up, roaring
+        Cmd(0x0687).I(h).Run();  // CLEAR_CHAR_TASKS
+        if (EnsureBlock("CHAINSAW")) PlayAnim(h, "WEAPON_csaw", "CHAINSAW", true);  // the saw held up, running
+        else PlayAnim(h, "IDLE_armed", "PED", true);
+        SawRoar(p, now + 1800);
+        if (NetPed* np = Peds::Instance().Find(p)) {
+            uint16_t id = np->netId;
+            Send(A_SAWWIND, [id](Writer& w) { w.U16(id); });
+        }
         return;
     }
     CVector wp;
@@ -5457,8 +5477,8 @@ void UpdateGas(uint64_t now) {
                 if (n) LOGD("Arena: %d hurt ones go to the healing gas", n);
                 g.healMs = now;
                 for (auto& [q, qe] : g_info)
-                    if (IsPedValid(q) && q->Health() > 0.0f && (q->GetPosition() - g.pos).Length() < 4.0f)
-                        q->Health() = std::min(qe.maxHealth, q->Health() + qe.maxHealth * 0.04f);
+                    if (IsPedValid(q) && q->Health() > 0.0f && (q->GetPosition() - g.pos).Length() < 5.0f)
+                        q->Health() = std::min(qe.maxHealth, q->Health() + qe.maxHealth * 0.06f);  // a little stronger than it was (4 m, 4%)
             }
         }
         ++it;
@@ -5561,8 +5581,20 @@ bool TBone(CPed* p, Enemy& e, CPed* t, float d, bool sees, uint64_t now) {
         }
         return true;
     }
-    if (!e.uglLoaded || !sees || d < 7.0f || d > 40.0f || now < e.nextUglMs) return false;
+    if (!e.uglLoaded || !sees || d < 11.0f || d > 40.0f || now < e.nextUglMs) return false;
     CVector to = t->GetPosition() - p->GetPosition();
+    // not into his own: none of his men within 6 m of where it lands, nor near its way out of the barrel
+    for (auto& [q, qe] : g_info) {
+        if (q == p || !IsPedValid(q) || q->Health() <= 0.0f) continue;
+        CVector rel = q->GetPosition() - p->GetPosition();
+        float along = rel.Dot(to) / std::max(0.1f, to.Length());
+        CVector side = rel - to * (along / std::max(0.1f, to.Length()));
+        if ((q->GetPosition() - t->GetPosition()).Length() < 6.0f || (along > 0.0f && along < 8.0f && side.Length() < 1.6f)) {
+            e.nextUglMs = now + 700;  // a moment, then looks again
+            return false;
+        }
+    }
+    if (!Clear(p->GetPosition() + CVector{0, 0, 0.45f}, t->GetPosition())) return false;  // no wall right before him
     Cmd(0x0173).I(h).F(std::atan2(-to.x, to.y) * 57.29578f).Run();  // at him
     float l = std::max(0.1f, to.Length2D());
     CVector from = p->GetPosition() + CVector{to.x / l, to.y / l, 0.0f} * 0.7f + CVector{0, 0, 0.45f};
@@ -5690,15 +5722,6 @@ void Tactics() {
             e.routing = false;
             e.lastMoveMs = now, e.lastPos = p->GetPosition();
             if (e.role != R_KNIFE) SetOn(p, e, t);
-            continue;
-        }
-        if (e.role == R_OPERATOR) {  // he stands there with his remote, sending his helicopters; on the floor, not in the air
-            CVector pp = p->GetPosition();
-            float fz = 0;
-            if (!p->InVehicle() && FloorNoBars(pp.x, pp.y, pp.z, fz) ? pp.z - fz > 1.6f : FloorNoBars(pp.x, pp.y, pp.z - 3.0f, fz) && pp.z - fz > 1.6f) {
-                SetEntityPosition(p, {pp.x, pp.y, fz + 1.0f});
-                p->MoveSpeed() = CVector{};
-            }
             continue;
         }
         if (e.role == R_BUILDER) {
@@ -5972,10 +5995,8 @@ void Clear() {
     if (g_arena.host) ReleaseDead();
     ForgetSpot();
     ClearEBars();
+    ClearGear();
     g_zoneNow = -1;
-    g_operator = nullptr;
-    g_remoteFor = nullptr, g_remoteId = 0;
-    DelObj(g_remoteObj);
     ClearDrones();
     ClearQuads();
     ClearGuards();
@@ -6038,6 +6059,7 @@ void Relocate(int place) {
     ForgetSpot();
     g_radioSpots.clear(), g_sodaSpots.clear();
     ClearEBars();
+    ClearGear();
     g_zoneNow = -1;
     g_arena.place = place;
     CPlayerPed* me = FindPlayerPed(0);
@@ -6234,6 +6256,233 @@ void TwinCopies() {
     EagleModel(g_arena.host ? g_twinPeds[1] : g_twinCopies[1]);
 }
 
+// ======================================================================= block 2: the shield man's shield, the flamer's tank
+// Every game keeps the same gear on the same men (by their net id): the host decides its state (A_GEAR) and sends it
+// whenever it changes. The shield man (SWAT): a shield in front (a door made small: the game has no riot shield), shots
+// and blows from the front go into it, a blast breaks it. The flamethrower man: a fuel tank on his back and two
+// molotovs on his belt (one fewer each throw); a shot into the tank from behind holes it (a trail of fuel after him: a
+// shot into the trail sets it alight), a second one blows it up with him.
+struct Gear {
+    uint16_t id = 0;
+    CPed* ped = nullptr;
+    bool shield = false, shieldOn = false;
+    bool tank = false;
+    int tankState = 0;  // 0 whole, 1 leaking, 2 blown
+    int belt = 0;       // molotovs on the belt
+    bool blown = false;  // host: its blast done
+    int shieldObj = -1, tankObj = -1, beltObj[2] = {-1, -1};
+    std::vector<CVector> trail;  // the fuel on the floor behind a leaking man
+    uint64_t trailMs = 0;
+};
+std::map<uint16_t, Gear> g_gear;
+float g_gearTune[2][4] = {{-0.28f, 0.45f, -0.95f, 0.55f},   // the shield: right, forward, up from the torso; its size
+                          {0.0f, -0.28f, -0.05f, 1.6f}};    // the tank
+std::vector<CVector> g_igniteQueue;  // host: the fuel's spots to set alight, a few a frame
+uint64_t g_igniteMs = 0;
+constexpr int MODEL_SHIELD = 1499, MODEL_TANK = 1650, MODEL_MOLOTOV = 344;
+
+uint16_t NetIdOf(CPed* p) {
+    NetPed* np = p ? Peds::Instance().Find(p) : nullptr;
+    return np ? np->netId : 0;
+}
+void SendGear(const Gear& g) {  // host
+    Send(A_GEAR, [&](Writer& w) {
+        w.U16(g.id);
+        w.U8((uint8_t)((g.shield ? 1 : 0) | (g.shieldOn ? 2 : 0) | (g.tank ? 4 : 0)));
+        w.U8((uint8_t)g.tankState);
+        w.U8((uint8_t)g.belt);
+    });
+}
+Gear* GearOf(CPed* p) {
+    uint16_t id = NetIdOf(p);
+    auto it = id ? g_gear.find(id) : g_gear.end();
+    return it != g_gear.end() ? &it->second : nullptr;
+}
+void GearOn(CPed* p, bool shield, bool tank, int belt) {  // host, as the man is made
+    uint16_t id = NetIdOf(p);
+    if (!id) return;
+    Gear& g = g_gear[id];
+    g.id = id, g.ped = p, g.shield = shield, g.shieldOn = shield, g.tank = tank, g.belt = belt;
+    SendGear(g);
+}
+void GearObjsOff(Gear& g) {
+    DelObj(g.shieldObj), DelObj(g.tankObj), DelObj(g.beltObj[0]), DelObj(g.beltObj[1]);
+}
+void ClearGear() {
+    for (auto& [id, g] : g_gear) GearObjsOff(g);
+    g_gear.clear();
+    g_igniteQueue.clear();
+}
+int GearObj(int model, CPed* p, float scale) {
+    float lift = 0, height = 0;
+    int h = PickModel({model}) >= 0 ? MakeObj(model, p->GetPosition(), 0.0f, lift, height) : -1;
+    if (h < 0) return -1;
+    Cmd(0x0382).I(h).I(0).Run();  // SET_OBJECT_COLLISION: none
+    Cmd(0x0550).I(h).I(1).Run();  // FREEZE_OBJECT_POSITION
+    if (CObject* o = GetObject(h)) Field<float>(o, 0x15C) = scale;
+    return h;
+}
+bool BoneAt(CPed* p, int node, CVector& at);
+// the man's frame at his chest: the spine up (bent as he is), the way he faces, his right
+bool ChestFrame(CPed* p, CVector& torso, CVector& right, CVector& fwd, CVector& up) {
+    CMatrix* pm = IsPedValid(p) ? p->Matrix() : nullptr;
+    CVector head;
+    if (!pm || !BoneAt(p, 1, torso) || !BoneAt(p, 2, head)) return false;
+    up = head - torso;
+    float l = up.Length();
+    up = l > 0.01f ? up * (1.0f / l) : pm->up;
+    fwd = pm->forward - up * pm->forward.Dot(up);
+    float fl = fwd.Length();
+    fwd = fl > 0.01f ? fwd * (1.0f / fl) : pm->forward;
+    right = CVector{fwd.y * up.z - fwd.z * up.y, fwd.z * up.x - fwd.x * up.z, fwd.x * up.y - fwd.y * up.x};
+    return true;
+}
+void PutAt(int h, const CVector& pos, const CVector& right, const CVector& fwd, const CVector& up, float scale) {
+    CObject* o = h >= 0 ? GetObject(h) : nullptr;
+    CMatrix* m = o ? o->Matrix() : nullptr;
+    if (!m) return;
+    WorldRemove(o);
+    m->right = right, m->forward = fwd, m->up = up, m->pos = pos;
+    Field<float>(o, 0x15C) = scale;
+    CallMethod<0x446F90>(o);  // CEntity::UpdateRW
+    CallMethod<0x532B00>(o);  // CEntity::UpdateRwFrame
+    WorldAdd(o);
+}
+// every frame (every game): the men found, their objects made, kept and put on them; the fuel's trail laid
+void GearFrame(uint64_t now) {
+    for (auto it = g_gear.begin(); it != g_gear.end();) {
+        Gear& g = it->second;
+        if (!g.ped || !IsPedValid(g.ped)) {
+            int h = Peds::Instance().HandleOf(g.id);
+            g.ped = h >= 0 ? GetPed(h) : nullptr;
+        }
+        bool alive = g.ped && IsPedValid(g.ped) && g.ped->Health() > 0.0f;
+        if (!alive) {
+            GearObjsOff(g);
+            if (g.ped || g.trail.empty()) {  // gone (its fuel stays a while for a shot)
+                it = g_gear.erase(it);
+                continue;
+            }
+            ++it;
+            continue;
+        }
+        CPed* p = g.ped;
+        if (g_arena.host && g.tank && g.tankState == 2 && !g.blown) {  // the tank goes up, and he with it
+            g.blown = true;
+            CMatrix* pm = p->Matrix();
+            CVector at = p->GetPosition() - (pm ? pm->forward * 0.3f : CVector{});
+            Call<0x736A50>((CEntity*)nullptr, (CEntity*)nullptr, 0 /* EXPLOSION_GRENADE */, at, (uint32_t)0, (uint8_t)1, -1.0f, (uint8_t)0);  // AddExplosion
+            Cmd(0x0223).I(GetPedRef(p)).I(0).Run();  // SET_CHAR_HEALTH 0
+            LOGI("Arena: a flamer's tank blew up");
+        }
+        if (g.shield && g.shieldOn && (g.shieldObj < 0 || !GetObject(g.shieldObj))) g.shieldObj = GearObj(MODEL_SHIELD, p, g_gearTune[0][3]);
+        if (!(g.shield && g.shieldOn)) DelObj(g.shieldObj);
+        if (g.tank && g.tankState < 2 && (g.tankObj < 0 || !GetObject(g.tankObj))) g.tankObj = GearObj(MODEL_TANK, p, g_gearTune[1][3]);
+        if (!g.tank || g.tankState >= 2) DelObj(g.tankObj);
+        for (int k = 0; k < 2; ++k) {
+            bool want = g.tank && k < g.belt;
+            if (want && (g.beltObj[k] < 0 || !GetObject(g.beltObj[k]))) g.beltObj[k] = GearObj(MODEL_MOLOTOV, p, 1.0f);
+            if (!want) DelObj(g.beltObj[k]);
+        }
+        if (g.tankState == 1 && now - g.trailMs > 450 && g.trail.size() < 40) {  // leaking: the fuel behind him
+            g.trailMs = now;
+            CVector at = p->GetPosition();
+            float z = 0;
+            if (FloorNoBars(at.x, at.y, at.z, z) && (g.trail.empty() || (g.trail.back() - CVector{at.x, at.y, z}).Length() > 0.6f))
+                g.trail.push_back({at.x, at.y, z + 0.03f});
+        }
+        ++it;
+    }
+    // host: the fuel burning, a few spots a frame (the fires go out by themselves, ShortFires)
+    if (g_arena.host && !g_igniteQueue.empty() && now - g_igniteMs > 90) {
+        g_igniteMs = now;
+        CVector at = g_igniteQueue.front();
+        g_igniteQueue.erase(g_igniteQueue.begin());
+        int fire = -1;
+        Cmd(0x02CF).F(at.x).F(at.y).F(at.z).I(0).I(1).Out(&fire).Run();  // START_SCRIPT_FIRE: no spreading, size 1
+    }
+}
+// as it is drawn: the objects on the men
+void GearOnBodies() {
+    for (auto& [id, g] : g_gear) {
+        CVector torso, right, fwd, up;
+        if (!g.ped || !IsPedValid(g.ped) || g.ped->Health() <= 0.0f || !ChestFrame(g.ped, torso, right, fwd, up)) continue;
+        const float* s = g_gearTune[0];
+        if (g.shieldObj >= 0) PutAt(g.shieldObj, torso + right * s[0] + fwd * s[1] + up * s[2], right, fwd, up, s[3]);
+        const float* t = g_gearTune[1];
+        if (g.tankObj >= 0) PutAt(g.tankObj, torso + right * t[0] + fwd * t[1] + up * t[2], right, fwd, up, t[3]);
+        for (int k = 0; k < 2; ++k)
+            if (g.beltObj[k] >= 0) PutAt(g.beltObj[k], torso + right * (k ? 0.2f : -0.2f) + fwd * 0.06f - up * 0.45f, right, fwd, up, 1.0f);
+    }
+}
+// the fuel on the floor: dark puddles
+void DrawFuel() {
+    auto& g = ui::Gfx();
+    float s = g.Scale();
+    for (auto& [id, gr] : g_gear)
+        for (const CVector& at : gr.trail) {
+            float x, y, depth;
+            if (!WorldToScreen(at, x, y, depth) || depth < 0.3f || depth > 60.0f) continue;
+            float r = std::clamp(140.0f / depth, 4.0f, 60.0f) * s;
+            g.Ellipse(x, y, r, r * 0.35f, 0x9A201408);
+        }
+}
+// a shot of this player's went into the floor there: a fuel trail near it catches fire
+void ShotAt(const CVector& hit) {
+    for (auto& [id, g] : g_gear) {
+        if (g.trail.empty()) continue;
+        bool close = false;
+        for (const CVector& at : g.trail) close |= (at - hit).Length() < 1.0f;
+        if (!close) continue;
+        if (g_arena.host) {
+            g_igniteQueue.insert(g_igniteQueue.end(), g.trail.begin(), g.trail.end());
+            g.trail.clear();
+            if (g.tankState == 1) g.tankState = 3, SendGear(g);  // 3: leaking no more (its fuel burnt)
+        } else {
+            uint16_t gid = id;
+            Send(A_IGNITE, [gid](Writer& w) { w.U16(gid); });
+            g.trail.clear();
+        }
+        LOGI("Arena: a flamer's fuel trail set alight");
+        return;
+    }
+}
+bool Blast(int weapon) { return weapon == 16 || weapon == 19 || weapon == 35 || weapon == 36 || weapon == 39 || weapon == 51; }
+// host: a hit on one of the arena's men (this game's own, or a partner's): true when the shield took it
+bool GearHit(CPed* victim, CEntity* by, int weapon) {
+    Gear* g = GearOf(victim);
+    if (!g) return false;
+    CVector to = by ? by->GetPosition() - victim->GetPosition() : CVector{};
+    to.z = 0;
+    float l = to.Length();
+    CMatrix* pm = victim->Matrix();
+    float front = l > 0.1f && pm ? (to.x * pm->forward.x + to.y * pm->forward.y) / l : 0.0f;
+    if (g->shield && g->shieldOn) {
+        if (Blast(weapon)) {  // a blast breaks it
+            g->shieldOn = false;
+            SendGear(*g);
+            LOGI("Arena: a shield man's shield blown away");
+            return false;
+        }
+        if (by && front > 0.2f && weapon != 37 && weapon != 18) return true;  // from the front: into the shield
+    }
+    if (g->tank && g->tankState < 2 && by && front < -0.3f && weapon >= 22 && weapon <= 38) {  // a shot into the tank on his back
+        if (g->tankState == 0) {
+            g->tankState = 1;
+            SendGear(*g);
+            LOGI("Arena: a flamer's tank holed");
+        } else {
+            g->tankState = 2;  // the blast in the next frame (GearFrame), not inside the game's damage
+            SendGear(*g);
+        }
+    }
+    return false;
+}
+void BlastGear(const CVector& at) {  // host: a blast near a shield breaks it
+    for (auto& [id, g] : g_gear)
+        if (g.shield && g.shieldOn && g.ped && IsPedValid(g.ped) && (g.ped->GetPosition() - at).Length() < 5.0f) g.shieldOn = false, SendGear(g);
+}
+
 void Handle(uint8_t from, Reader& r) {
     uint8_t op = r.U8();
     if (r.Ok() && op == A_SKIP) {  // a player asks the host to start the next wave now
@@ -6272,6 +6521,15 @@ void Handle(uint8_t from, Reader& r) {
         if (!r.Ok() || !g_arena.host) return;
         int h = Peds::Instance().HandleOf(id);
         if (CPed* p = h >= 0 ? GetPed(h) : nullptr) Magnet(p, from);
+        return;
+    }
+    if (r.Ok() && op == A_IGNITE) {  // host: a partner's shot set a flamer's fuel alight
+        uint16_t id = r.U16();
+        auto it = r.Ok() && g_arena.host ? g_gear.find(id) : g_gear.end();
+        if (it != g_gear.end() && !it->second.trail.empty()) {
+            g_igniteQueue.insert(g_igniteQueue.end(), it->second.trail.begin(), it->second.trail.end());
+            it->second.trail.clear();
+        }
         return;
     }
     if (r.Ok() && op == A_EBARHIT) {  // host: a partner hit a builder's barricade
@@ -6433,6 +6691,17 @@ void Handle(uint8_t from, Reader& r) {
         int8_t idx = r.I8();
         Vec3 v = r.Vec();
         if (r.Ok()) ShowZone(idx, {v.x, v.y, v.z});
+    } else if (op == A_GEAR) {  // the host's word on a man's gear
+        uint16_t id = r.U16();
+        uint8_t flags = r.U8(), tank = r.U8(), belt = r.U8();
+        if (!r.Ok()) return;
+        Gear& g = g_gear[id];
+        g.id = id, g.shield = flags & 1, g.shieldOn = (flags & 2) != 0, g.tank = (flags & 4) != 0, g.tankState = tank, g.belt = belt;
+        if (tank >= 3) g.trail.clear();
+    } else if (op == A_SAWWIND) {  // the Butcher winds up (his copy here roars too)
+        uint16_t id = r.U16();
+        int h = r.Ok() ? Peds::Instance().HandleOf(id) : -1;
+        if (CPed* p = h >= 0 ? GetPed(h) : nullptr) SawRoar(p, NowMs() + 1800);
     } else if (op == A_NEXTBOSS) {
         uint8_t b = r.U8();
         if (r.Ok() && b < kBossCount) g_nextBoss = b;
@@ -6443,9 +6712,6 @@ void Handle(uint8_t from, Reader& r) {
         uint8_t id = r.U8();
         uint16_t kills = r.U16();
         if (r.Ok()) ShowMvp(id, kills);
-    } else if (op == A_OPERATOR) {
-        uint16_t id = r.U16();
-        if (r.Ok()) g_remoteId = id, g_remoteIdUntil = NowMs() + 15000, g_remoteFor = nullptr;
     } else if (op == A_EBARGONE) {
         uint8_t i = r.U8();
         if (r.Ok()) EBarDown(i);
@@ -6821,6 +7087,7 @@ void BuyStats() {
 }
 // ---- the armour on the body: a vest on every player who has armour (every game, its own objects)
 std::map<CPed*, int> g_vestObjs;
+float g_vestTune[4] = {0.0f, 0.09f, 0.08f, 1.3f};  // the vest on the chest: right, forward, up (from the torso's bone), its size
 void ArmourFrame() {
     std::vector<CPed*> peds;
     if (CPlayerPed* me = FindPlayerPed(0)) peds.push_back(me);
@@ -6843,7 +7110,7 @@ void ArmourFrame() {
         if (h < 0) continue;
         Cmd(0x0382).I(h).I(0).Run();  // SET_OBJECT_COLLISION: none
         Cmd(0x0550).I(h).I(1).Run();  // FREEZE_OBJECT_POSITION: it goes where VestsOnBodies puts it
-        if (CObject* o = GetObject(h)) Field<float>(o, 0x15C) = 1.2f;  // CObject::m_fScale: a fifth bigger
+        if (CObject* o = GetObject(h)) Field<float>(o, 0x15C) = g_vestTune[3];  // CObject::m_fScale
         g_vestObjs[p] = h;
     }
 }
@@ -6875,7 +7142,8 @@ void VestsOnBodies() {
         CVector right{fwd.y * up.z - fwd.z * up.y, fwd.z * up.x - fwd.x * up.z, fwd.x * up.y - fwd.y * up.x};
         WorldRemove(o);
         m->right = right, m->forward = fwd, m->up = up;
-        m->pos = torso + fwd * 0.05f - up * 0.10f;  // over the chest and the belly
+        m->pos = torso + right * g_vestTune[0] + fwd * g_vestTune[1] + up * g_vestTune[2];  // on the chest (/vestpos tunes it)
+        Field<float>(o, 0x15C) = g_vestTune[3];
         CallMethod<0x446F90>(o);  // CEntity::UpdateRW
         CallMethod<0x532B00>(o);  // CEntity::UpdateRwFrame
         WorldAdd(o);
@@ -6902,6 +7170,11 @@ void Update() {
     game::challenge::Tick();
     if (g_arena.taken) HoldWorld(true);
     ArmourFrame();
+    GearFrame(now);
+    if (g_arena.host)  // the flamers' belts: one molotov fewer each throw
+        for (auto& [q, qe] : g_info)
+            if (qe.role == R_FLAMER && IsPedValid(q))
+                if (Gear* gr = GearOf(q); gr && gr->belt != std::clamp(qe.grenades, 0, 2)) gr->belt = std::clamp(qe.grenades, 0, 2), SendGear(*gr);
     MeleeHint();
     if (g_arena.endAt) {
         if (now >= g_arena.endAt) End(false);
@@ -6932,7 +7205,6 @@ void Update() {
         g_fewSince = 0;
     }
     if (g_arena.host) KatanaFrame(now);
-    RemoteFrame();
     SodaFrame(now);
     {  // no enemy drops its gun (the game's own pickups) in any game: the copies too (the host made its own so); the
        // flamethrower man, the Butcher and the bosses leave theirs as the arena's drops
@@ -6946,6 +7218,38 @@ void Update() {
                 if (q->IsPlayer() || q->Health() <= 0.0f || !arena::IsEnemy(q)) continue;
                 Cmd(0x087E).I(GetPedRef(q)).I(0).Run();  // SET_CHAR_DROPS_WEAPONS_WHEN_DEAD: none
             }
+            // and whatever the game dropped anyway (a copy's death in a partner's game, a SWAT man's): the weapon
+            // pickups dead men leave (PICKUP_ONCE_TIMEOUT, _SLOW) in the place are switched off at once; the arena's
+            // own (PICKUP_ONCE) stay
+            const CVector mid = kPlaces[g_arena.place].pos;
+            for (int i = 0; i < 620; ++i) {
+                uintptr_t pk = 0x9788C0 + (uintptr_t)i * 0x20;  // CPickups::aPickUps
+                uint8_t type = Ref<uint8_t>(pk + 0x1C);
+                int16_t model = Ref<int16_t>(pk + 0x18);
+                if ((type != 4 && type != 5) || (Ref<uint8_t>(pk + 0x1D) & 1u) || model < 321 || model > 372) continue;
+                CVector at{Ref<int16_t>(pk + 0x10) / 8.0f, Ref<int16_t>(pk + 0x12) / 8.0f, Ref<int16_t>(pk + 0x14) / 8.0f};  // CompressedLargeVector
+                if ((at - mid).Length() > 150.0f) continue;
+                Ref<uint32_t>(pk + 0x0C) = 0xFFFFFF00u;  // m_nRegenerationTime: never
+                Ref<uint8_t>(pk + 0x1D) |= 1u;           // bDisabled
+                CallMethod<0x454CF0>((void*)pk);         // CPickup::GetRidOfObjects
+                LOGI("Arena: a dropped weapon (model %d) taken away", model);
+            }
+        }
+    }
+    {  // the enemies' grenades: 1.5 s longer on the floor before they go off (time to run)
+        static std::vector<std::pair<int, int32_t>> stretched;  // projectile slot, the destroy time it was given
+        for (int i = 0; i < 32; ++i) {
+            uintptr_t pi = 0xC891A8 + (uintptr_t)i * 0x24;  // gaProjectileInfo
+            if (!Ref<uint8_t>(pi + 0x10) || Ref<uint32_t>(pi) != 16 /* WEAPON_GRENADE */) continue;
+            auto* by = Ref<CEntity*>(pi + 0x04);
+            if (!by || !by->IsPed() || ((CPed*)by)->IsPlayer() || !arena::IsEnemy((CPed*)by)) continue;
+            int32_t& until = Ref<int32_t>(pi + 0x0C);
+            bool done = false;
+            for (auto& [slot, t] : stretched) done |= slot == i && t == until;
+            if (done) continue;
+            until += 1500;
+            for (auto it = stretched.begin(); it != stretched.end();) it = it->first == i ? stretched.erase(it) : std::next(it);
+            stretched.push_back({i, until});
         }
     }
     static uint64_t scoreMs = 0;  // the score now and then too: one that came in late has everyone's
@@ -7007,6 +7311,7 @@ void Update() {
     if (g_spectating) SpectateFrame(now);
     if (g_uglReadyMs && now >= g_uglReadyMs) g_uglReadyMs = 0, g_uglLoaded = true;
     TagCopies();
+    RoarFrame(now);  // every game
     if (g_arena.host) {
         SawFrame(now);
         KnifeFrame();
@@ -7522,6 +7827,8 @@ void DrawCod() {
     DrawHelpBox(now);
     DrawKeys();
     VestsOnBodies();
+    GearOnBodies();
+    DrawFuel();
     if (g_zoneNow >= 0)
         Label(g_zoneAt + CVector{0, 0, 1.3f}, Format(TR("ЗОНА %d", "ZONE %d"), g_zoneNow + 1), 0xFFFFA040, 300.0f, true);
     for (auto& [h, name] : g_guardNames)  // the homies' names
@@ -7873,6 +8180,17 @@ public:
     }
     bool OnCommand(const std::string& cmd, const std::vector<std::string>& args) override {
         std::string c = LowerRu(cmd);
+        if (c == "gearpos" && !args.empty()) {  // /gearpos shield|tank x y z scale: the gear's place, tried in the game
+            int k = LowerRu(args[0]) == "tank" ? 1 : 0;
+            for (size_t i = 1; i < args.size() && i < 5; ++i) g_gearTune[k][i - 1] = (float)std::atof(args[i].c_str());
+            ui::TheChat().AddSystem(Format("gearpos %s %.2f %.2f %.2f %.2f", k ? "tank" : "shield", g_gearTune[k][0], g_gearTune[k][1], g_gearTune[k][2], g_gearTune[k][3]));
+            return true;
+        }
+        if (c == "vestpos") {  // /vestpos x y z scale: the vest's place on the chest, tried in the game
+            for (size_t i = 0; i < args.size() && i < 4; ++i) g_vestTune[i] = (float)std::atof(args[i].c_str());
+            ui::TheChat().AddSystem(Format("vestpos %.2f %.2f %.2f %.2f", g_vestTune[0], g_vestTune[1], g_vestTune[2], g_vestTune[3]));
+            return true;
+        }
         if (c == "подсказки" || c == "tips") {  // the arena's hints on and off (F9 too)
             Cfg().tips = !Cfg().tips;
             flow::SaveConnectSettings();
@@ -8003,6 +8321,11 @@ namespace arena {
 
 void BarricadeBlast(const CVector& at) {
     if (g_arena.on && g_arena.taken && !g_ebars.empty()) EBarBlast(at);
+    if (g_arena.on && g_arena.host) BlastGear(at);
+}
+bool EnemyHitBlocked(CPed* victim, CEntity* by, int weapon) {
+    if (!g_arena.on || !g_arena.host || !victim || victim->IsPlayer()) return false;
+    return GearHit(victim, by, weapon);
 }
 bool On() {
     CPlayerPed* me = core::IsPlayerReady() ? FindPlayerPed(0) : nullptr;
