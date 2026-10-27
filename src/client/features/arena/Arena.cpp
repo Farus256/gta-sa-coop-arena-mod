@@ -3572,10 +3572,16 @@ bool EnsureBlock(const char* block) {
     int idx = Call<0x4D3990, int>(block);  // CAnimManager::GetAnimationBlockIndex
     if (idx < 0) return false;
     uintptr_t b = 0xB5D4A0 + (uintptr_t)idx * 0x20;  // CAnimManager::ms_aAnimBlocks
-    if (Ref<uint8_t>(b + 0x10)) return true;
-    RequestModel(25575 + idx, 2);
-    LoadAllRequestedModels(false);
-    return Ref<uint8_t>(b + 0x10) != 0;
+    if (!Ref<uint8_t>(b + 0x10)) {
+        RequestModel(25575 + idx, 2);
+        LoadAllRequestedModels(false);
+    }
+    if (!Ref<uint8_t>(b + 0x10)) return false;
+    // held for good (CAnimBlock::usRefs +0x12, as CAnimManager::AddAnimBlockRef): a block nobody held was let go by the
+    // streaming while a ped's task still played its animation (crash.log: 0x72F4DE from CAnimManager::BlendAnimation)
+    static bool held[256] = {};
+    if (idx < 256 && !held[idx]) held[idx] = true, ++Ref<uint16_t>(b + 0x12);
+    return true;
 }
 
 CVector ThrowFrom(CPed* p, const CVector& at) {  // the hand as the arm comes over, towards `at`
@@ -6256,6 +6262,15 @@ void Update() {
         g_fewSince = 0;
     }
     if (g_arena.host) KatanaFrame(now);
+    static uint64_t blocksMs = 0;  // every animation block in memory now is held for good while the arena is on: one
+    if (now - blocksMs > 1000) {   // the streaming let go mid-animation crashed (0x72F4DE, CAnimManager::BlendAnimation)
+        blocksMs = now;
+        static bool held[180] = {};
+        for (int i = 0; i < 180; ++i) {
+            uintptr_t b = 0xB5D4A0 + (uintptr_t)i * 0x20;  // CAnimManager::ms_aAnimBlocks
+            if (!held[i] && Ref<char>(b) && Ref<uint8_t>(b + 0x10)) held[i] = true, ++Ref<uint16_t>(b + 0x12);
+        }
+    }
     static uint64_t scoreMs = 0;  // the score now and then too: one that came in late has everyone's
     if (now - scoreMs > 3000) {
         scoreMs = now, SendScore();

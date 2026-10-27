@@ -40,10 +40,16 @@ bool EnsureBlock(const char* block) {
     int idx = Call<0x4D3990, int>(block);  // CAnimManager::GetAnimationBlockIndex
     if (idx < 0) return false;
     uintptr_t b = 0xB5D4A0 + (uintptr_t)idx * 0x20;  // CAnimManager::ms_aAnimBlocks
-    if (Ref<uint8_t>(b + 0x10)) return true;
-    RequestModel(25575 + idx, 2);
-    LoadAllRequestedModels(false);
-    return Ref<uint8_t>(b + 0x10) != 0;
+    if (!Ref<uint8_t>(b + 0x10)) {
+        RequestModel(25575 + idx, 2);
+        LoadAllRequestedModels(false);
+    }
+    if (!Ref<uint8_t>(b + 0x10)) return false;
+    // held for good (CAnimBlock::usRefs +0x12, as CAnimManager::AddAnimBlockRef): a block nobody held was let go by the
+    // streaming while a ped's task still played its animation (crash.log: 0x72F4DE from CAnimManager::BlendAnimation)
+    static bool held[256] = {};
+    if (idx < 256 && !held[idx]) held[idx] = true, ++Ref<uint16_t>(b + 0x12);
+    return true;
 }
 
 bool g_wasDown = false;
