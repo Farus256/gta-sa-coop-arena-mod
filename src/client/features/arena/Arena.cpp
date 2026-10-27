@@ -332,6 +332,8 @@ struct MerchantState {
     uint64_t textUntil = 0, walkUntil = 0;
     int wave = 0;          // host: the wave he came after
     game::CVector from;    // where he came in (every game: the cut-scene looks there)
+    game::CVector to;      // host: where he goes
+    bool walking = false;  // host: sent on his way (once the words are gone)
     uint64_t cutFrom = 0, cutUntil = 0;  // the cut-scene: after the words, 5 s of him walking in
     bool cut = false;
 } g_merchant;
@@ -6395,8 +6397,7 @@ void StartMerchant() {  // host
         to = to + CVector{-std::sin(r), std::cos(r), 0.0f} * 1.8f;
     }
     if (g_hasMerchantTo) to = g_merchantTo;  // the host's own spot for him (/торговец цель)
-    Cmd(0x05D3).I(h).F(to.x).F(to.y).F(to.z + 1.0f).I(4).I(20000).Run();  // TASK_GO_STRAIGHT_TO_COORD, walking
-    g_merchant.walkUntil = NowMs() + 20000;
+    g_merchant.to = to, g_merchant.walking = false;  // he sets off once the words are gone (MerchantFrame)
     g_merchant.on = true;
     g_merchant.textUntil = NowMs() + 4500;
     g_merchant.cutFrom = g_merchant.textUntil - 400, g_merchant.cutUntil = g_merchant.textUntil + 5500;
@@ -6436,6 +6437,8 @@ void MerchantCut(uint64_t now) {
 void MerchantFrame(uint64_t now) {  // every game
     MerchantCut(now);
     if (!g_merchant.on) return;
+    // nobody to see till the words are gone ("Но никто не пришел."): then he comes in
+    if (g_merchant.ped && IsPedValid(g_merchant.ped)) Cmd(0x0337).I(GetPedRef(g_merchant.ped)).I(now >= g_merchant.textUntil ? 1 : 0).Run();  // SET_CHAR_VISIBLE
     if (g_arena.host) {
         CPed* p = g_merchant.ped;
         if (p && IsPedValid(p)) {
@@ -6444,6 +6447,12 @@ void MerchantFrame(uint64_t now) {  // every game
             if (id != g_merchant.id) {  // its id at last: the partners told
                 g_merchant.id = id;
                 SendMerchant(true, id);
+            }
+            if (!g_merchant.walking && now >= g_merchant.textUntil) {  // the words gone: on his way, walking
+                g_merchant.walking = true;
+                CVector to = g_merchant.to;
+                Cmd(0x05D3).I(GetPedRef(p)).F(to.x).F(to.y).F(to.z + 1.0f).I(4).I(20000).Run();  // TASK_GO_STRAIGHT_TO_COORD
+                g_merchant.walkUntil = now + 20000;
             }
             if (g_merchant.walkUntil && now > g_merchant.walkUntil && g_box.placed) {  // stuck on the way: there
                 g_merchant.walkUntil = 0;
@@ -6679,8 +6688,8 @@ void UseGadget() {
         float hd = me->CurrentRotation();
         CVector base = me->GetPosition() + CVector{-std::sin(hd), std::cos(hd), 0.0f} * 3.0f;
         CVector top;
-        float up = Ray(base, base + CVector{0, 0, 16.0f}, top) ? std::max(2.5f, top.z - base.z - 1.5f) : 15.0f;
-        CVector at = base + CVector{0, 0, std::min(15.0f, up)};
+        float up = Ray(base, base + CVector{0, 0, 10.0f}, top) ? std::max(2.5f, top.z - base.z - 2.0f) : 8.0f;
+        CVector at = base + CVector{0, 0, std::min(8.0f, up)};  // a little lower than it was (15 m)
         Cmd(0x04D7).I(h).I(1).Run();  // FREEZE_CHAR_POSITION: CJ stays on the floor while he steers
         LoadModelNow(501);  // the RC Goblin
         Cmd(0x046E).I(0).F(at.x).F(at.y).F(at.z).F(me->CurrentRotation() * 57.29578f).I(501).Run();  // GIVE_REMOTE_CONTROLLED_MODEL_TO_PLAYER
@@ -6691,8 +6700,10 @@ void UseGadget() {
 }
 void ShahedBoom(CVehicle* rc) {
     CVector at = rc->GetPosition();
-    Call<0x45AE80>(false);  // CRemote::TakeRemoteControlledCarFromPlayer: the control and the camera back to CJ
+    Call<0x45AE80>(false);  // CRemote::TakeRemoteControlledCarFromPlayer: the control back to CJ
     if (CPlayerPed* me = FindPlayerPed(0)) Cmd(0x04D7).I(GetPedRef(me)).I(0).Run();  // FREEZE_CHAR_POSITION off
+    Cmd(0x015A).Run();  // RESTORE_CAMERA_JUMPCUT: the camera back on CJ (it stayed on the blast)
+    Cmd(0x0373).Run();  // SET_CAMERA_BEHIND_PLAYER
     Call<0x736A50>((CEntity*)nullptr, (CEntity*)FindPlayerPed(0), 2 /* EXPLOSION_ROCKET */, at, (uint32_t)0, (uint8_t)1, -1.0f, (uint8_t)0);  // AddExplosion: his
     g_shahedSince = 0;
 }
