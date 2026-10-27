@@ -976,7 +976,16 @@ int GunFor(int weapon) {  // the weapon if its model is in memory now, else a pi
     return IsModelLoaded(346) || LoadModelNow(346) ? WEAPON_PISTOL : 0;
 }
 
+bool EnsureBlock(const char* block);
+// a melee weapon's animations (its IFP) in memory and held before a man gets it: a katana, a bat or a chainsaw in a
+// man's hands without them, his first blow crashed (0x4D3FBC, CAnimManager::BlendAnimation with no animations there)
+void MeleeAnims(int weapon) {
+    const char* block = weapon == 8 ? "SWORD" : weapon == 9 ? "CHAINSAW" : weapon == 4 ? "KNIFE"
+                      : (weapon >= 2 && weapon <= 7) ? "BASEBALL" : nullptr;
+    if (block && !EnsureBlock(block)) LOGI("Arena: the %s animations not in memory for weapon %d", block, weapon);
+}
 void Give(int h, int weapon, int ammo) {
+    MeleeAnims(weapon);
     weapon = GunFor(weapon);
     if (weapon) Cmd(0x01B2).I(h).I(weapon).I(ammo).Run();  // GIVE_WEAPON_TO_CHAR
 }
@@ -3036,6 +3045,10 @@ const DefaultSpot kDefaultSpots[] = {
     {"motel", "spawn", "2244.32 -1190.78 1028.80 45.1"},
     {"motel", "enemy1", "2241.32 -1162.16 1028.80 -178.7"},
     {"motel", "enemy2", "2208.51 -1188.46 1028.80 -90.9"},
+    {"motel", "soda1", "2234.62 -1192.53 1028.80 91.7"},
+    {"motel", "radio1", "2248.91 -1190.91 1029.42 -90.3"},
+    {"rc", "radio1", "-973.44 1063.54 1344.01 1.0"},
+    {"rc", "soda1", "-974.65 1086.11 1343.98 -0.2"},
 };
 // a kind's points: the file's, or (none of that kind there) the mod's own
 std::vector<std::string> SpotLines(const Ini* ini, const std::string& sec, const char* kind, int most) {
@@ -3086,10 +3099,13 @@ void LoadOwnPoints() {
         if (ReadVec(v, p, h)) g_zones.push_back(p);
     for (const std::string& v : SpotLines(file, sec, "build", kMaxBuildSpots))
         if (ReadVec(v, p, h)) g_buildSpots.push_back({p, h});
-    for (int k = 1; k <= 4; ++k) {
+    for (const std::string& v : SpotLines(file, sec, "radio", 4)) {
         Prop pr;
-        if (ReadVec(ini.Get(sec, Format("radio%d", k)), p, h)) pr.pos = p, pr.heading = h, g_radioSpots.push_back(pr);
-        if (ReadVec(ini.Get(sec, Format("soda%d", k)), p, h) && g_sodaSpots.size() < 2) pr.pos = p, pr.heading = h, g_sodaSpots.push_back(pr);
+        if (ReadVec(v, p, h)) pr.pos = p, pr.heading = h, g_radioSpots.push_back(pr);
+    }
+    for (const std::string& v : SpotLines(file, sec, "soda", 4)) {
+        Prop pr;
+        if (ReadVec(v, p, h) && g_sodaSpots.size() < 2) pr.pos = p, pr.heading = h, g_sodaSpots.push_back(pr);
     }
     if (g_hasOwnSpawn || !g_enemyPts.empty() || !g_zones.empty() || !g_buildSpots.empty())
         LOGI("Arena: own points here: spawn %d, %d enemy points, %d zones, %d builder spots", g_hasOwnSpawn ? 1 : 0, (int)g_enemyPts.size(),
