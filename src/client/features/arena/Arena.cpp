@@ -197,7 +197,7 @@ enum ArenaOp : uint8_t {
     A_START = 1, A_WAVE, A_LEFT, A_BOSS, A_END, A_ITEMS, A_PREP, A_MARK, A_SKIP,
     A_SCORE, A_BARS, A_BOARD, A_REPAIR, A_BOX, A_BOXUSE, A_BOXROLL, A_PERKS, A_PSPAWN, A_GRAB, A_POWER, A_TWINS,
     A_WALLS, A_DROP, A_TAKE, A_TAKEN, A_BUILD, A_LOBBY, A_FLAMER, A_STAGE, A_VOTE, A_VOTES, A_GIVE, A_MAPVOTE, A_MOVE,
-    A_HEALGAS, A_BOSSNAME, A_HIT, A_SHELL, A_SPEC, A_BOXTAKEN, A_SPOT, A_DRONEHIT, A_ALERT /* not used any more */, A_GUARDNAME, A_GUARDREQ, A_ZONE, A_EBAR, A_SAWHIT, A_HALVE, A_PROPS, A_EBARHIT, A_EBARGONE, A_OPERATOR, A_MVP
+    A_HEALGAS, A_BOSSNAME, A_HIT, A_SHELL, A_SPEC, A_BOXTAKEN, A_SPOT, A_DRONEHIT, A_ALERT /* not used any more */, A_GUARDNAME, A_GUARDREQ, A_ZONE, A_EBAR, A_SAWHIT, A_HALVE, A_PROPS, A_EBARHIT, A_EBARGONE, A_OPERATOR, A_MVP, A_MAGNET
 };
 struct Arena {
     bool on = false, host = false;
@@ -1981,7 +1981,9 @@ void SendBox() {
 enum OutfitPerk : uint8_t {
     O_ARMOUR25, O_ARMOUR50, O_HEALTH125, O_HEALTH150, O_REGEN1, O_REGEN2, O_SPRINT, O_RELOAD, O_CASH25, O_CASH50,
     O_GRENADE, O_MOLOTOV, O_AMMO, O_TOUGH, O_FIREPROOF, O_BLASTPROOF, O_KILLHEAL, O_KILLARMOUR, O_SKILL, O_BOX, O_REPAIR,
-    O_SUIT, O_PERK_COUNT
+    O_SUIT,
+    // Brotato-like effects
+    O_MAGNET, O_BOUNTY, O_LIFESTEAL, O_SCAVENGER, O_INTEREST, O_LASTSTAND, O_GREEDY, O_PERK_COUNT
 };
 const char* const kPerkText[O_PERK_COUNT][2] = {
     TRP("+25 брони каждую волну", "+25 armour each wave"),
@@ -2006,6 +2008,13 @@ const char* const kPerkText[O_PERK_COUNT][2] = {
     TRP("ящик с оружием на $200 дешевле", "the weapon box $200 cheaper"),
     TRP("доски на баррикады бесплатно", "barricade boards for free"),
     TRP("150 здоровья и +50 брони каждую волну", "150 health and +50 armour each wave"),
+    TRP("25% шанс сразу забрать деньги с убитого", "25% chance to take a kill's money at once"),
+    TRP("+$5 за каждое убийство", "+$5 a kill"),
+    TRP("10% шанс +5 здоровья при попадании", "10% chance of +5 health a hit"),
+    TRP("15% шанс получить обойму за убийство", "15% chance of a clip a kill"),
+    TRP("в начале волны +5% ваших денег (до $100)", "at each wave +5% of your money (up to $100)"),
+    TRP("при здоровье ниже 25% урон по вам на 40% меньше", "under 25% health 40% less damage to you"),
+    TRP("+$15 за убийство, но урон по вам на 10% больше", "+$15 a kill, but 10% more damage to you"),
 };
 struct Cloth {
     const char* texture;
@@ -2100,13 +2109,13 @@ struct PartPerk {
     std::vector<OutfitPerk> perks;  // what its pieces give, in turn
 };
 const PartPerk kParts[] = {
-    {0, TRP("Верх", "Top"), {O_ARMOUR25, O_TOUGH, O_ARMOUR50, O_FIREPROOF, O_KILLARMOUR, O_BLASTPROOF, O_HEALTH125, O_REGEN1}},
-    {2, TRP("Штаны", "Trousers"), {O_HEALTH125, O_SPRINT, O_AMMO, O_HEALTH150, O_KILLHEAL, O_TOUGH, O_BLASTPROOF}},
-    {3, TRP("Обувь", "Shoes"), {O_SPRINT, O_KILLHEAL, O_FIREPROOF, O_RELOAD, O_BLASTPROOF, O_REGEN1}},
-    {13, TRP("Цепь", "Chain"), {O_CASH25, O_SKILL, O_CASH50, O_BOX, O_KILLARMOUR, O_REGEN1}},
-    {14, TRP("Часы", "Watch"), {O_RELOAD, O_SKILL, O_AMMO, O_REPAIR, O_BOX, O_CASH25}},
-    {15, TRP("Очки или маска", "Glasses or a mask"), {O_REGEN1, O_SKILL, O_REGEN2, O_KILLHEAL, O_TOUGH, O_CASH25}},
-    {16, TRP("Головной убор", "Headwear"), {O_GRENADE, O_ARMOUR25, O_MOLOTOV, O_TOUGH, O_REGEN1, O_KILLARMOUR, O_CASH25, O_BLASTPROOF, O_SKILL}},
+    {0, TRP("Верх", "Top"), {O_ARMOUR25, O_TOUGH, O_ARMOUR50, O_FIREPROOF, O_KILLARMOUR, O_BLASTPROOF, O_HEALTH125, O_REGEN1, O_LASTSTAND, O_LIFESTEAL}},
+    {2, TRP("Штаны", "Trousers"), {O_HEALTH125, O_SPRINT, O_AMMO, O_HEALTH150, O_KILLHEAL, O_TOUGH, O_BLASTPROOF, O_SCAVENGER, O_MAGNET}},
+    {3, TRP("Обувь", "Shoes"), {O_SPRINT, O_KILLHEAL, O_FIREPROOF, O_RELOAD, O_BLASTPROOF, O_REGEN1, O_MAGNET, O_LASTSTAND}},
+    {13, TRP("Цепь", "Chain"), {O_CASH25, O_SKILL, O_CASH50, O_BOX, O_KILLARMOUR, O_REGEN1, O_INTEREST, O_GREEDY, O_BOUNTY}},
+    {14, TRP("Часы", "Watch"), {O_RELOAD, O_SKILL, O_AMMO, O_REPAIR, O_BOX, O_CASH25, O_INTEREST, O_SCAVENGER}},
+    {15, TRP("Очки или маска", "Glasses or a mask"), {O_REGEN1, O_SKILL, O_REGEN2, O_KILLHEAL, O_TOUGH, O_CASH25, O_LIFESTEAL, O_BOUNTY}},
+    {16, TRP("Головной убор", "Headwear"), {O_GRENADE, O_ARMOUR25, O_MOLOTOV, O_TOUGH, O_REGEN1, O_KILLARMOUR, O_CASH25, O_BLASTPROOF, O_SKILL, O_GREEDY, O_MAGNET}},
     {17, TRP("Костюм", "Costume"), {O_SUIT, O_HEALTH150, O_ARMOUR50, O_TOUGH, O_REGEN2, O_FIREPROOF, O_SKILL, O_CASH50, O_AMMO}},
 };
 // what a piece is called, by its model (the part's name when not here)
@@ -2317,6 +2326,10 @@ void OutfitWaveStart() {  // at each wave: the armour, the health, the grenades 
             int clip = info ? std::max<int>(1, Field<int16_t>(info, 0x20)) : 10;
             w.ammoTotal = std::min(99999, (int)w.ammoTotal + clip * n);
         }
+    if (int n = PerkCount(O_INTEREST)) {  // Brotato's piggy bank
+        int add = std::min(100 * n, Cash() * 5 * n / 100);
+        if (add > 0) AddPoints(add, 0xFFFFD040);
+    }
 }
 void BuyOutfit() {
     CPlayerPed* me = FindPlayerPed(0);
@@ -2754,8 +2767,17 @@ struct Drop {
     int handle = -1;
     uint64_t until = 0, born = 0;
     bool asked = false;
+    game::CPed* from = nullptr;  // host: D_CASH: the dead one it fell off
 };
 std::vector<Drop> g_drops;
+std::map<game::CPed*, uint8_t> g_magnets;  // host: the dead whose money goes straight to that player (the clothes' magnet)
+void TakeDrop(uint8_t id, uint8_t by);
+// host: the killer's magnet took this dead one's money: its drop, if out already, else as it falls
+void Magnet(game::CPed* dead, uint8_t by) {
+    for (const Drop& d : g_drops)
+        if (d.type == D_CASH && d.from == dead) return TakeDrop(d.id, by);
+    g_magnets[dead] = by;
+}
 uint8_t g_nextDrop = 1;
 const char* WeaponName(int w);
 int WeaponModel(int weapon);
@@ -2915,6 +2937,7 @@ void PutDownGun() {
 void ClearDrops() {
     for (Drop& d : g_drops) DelObj(d.handle);
     g_drops.clear();
+    g_magnets.clear();
 }
 
 // ---- barricades the players build: H with 300 (B is the voice) points puts one up in front of the player (12 in all at most)
@@ -5959,6 +5982,13 @@ void Handle(uint8_t from, Reader& r) {
         if (owner == Net().MyId()) ui::TheChat().AddSystem(Format(TR("Кент %s с вами.", "%s, a homie, is with you."), kGuardNames[name][Lang()]));
         return;
     }
+    if (r.Ok() && op == A_MAGNET) {  // host: a partner's magnet took a kill's money
+        uint16_t id = r.U16();
+        if (!r.Ok() || !g_arena.host) return;
+        int h = Peds::Instance().HandleOf(id);
+        if (CPed* p = h >= 0 ? GetPed(h) : nullptr) Magnet(p, from);
+        return;
+    }
     if (r.Ok() && op == A_EBARHIT) {  // host: a partner hit a builder's barricade
         uint8_t i = r.U8();
         uint16_t dmg = r.U16();
@@ -6477,6 +6507,14 @@ void Update() {
         cash += RandInt(0, 4) * 5;
         if (int8_t by = Field<int8_t>(q, 0x760); by >= 0 && by <= 15) cash *= 2;  // CPed::m_nLastWeaponDamage: a melee kill pays double
         SpawnDrop(D_CASH, at + CVector{Rand(-0.4f, 0.4f), Rand(-0.4f, 0.4f), 0}, 0, (uint16_t)cash);
+        if (!g_drops.empty() && g_drops.back().type == D_CASH) {
+            g_drops.back().from = q;
+            if (auto mg = g_magnets.find(q); mg != g_magnets.end()) {
+                uint8_t by = mg->second;
+                g_magnets.erase(mg);
+                TakeDrop(g_drops.back().id, by);
+            }
+        }
         bool special = qe.role == R_FLAMER || qe.role == R_TWIN || qe.role == R_BOSS || qe.role == R_SAW || qe.role == R_OFFICER;
         if (qe.role == R_MEDIC) special = RandInt(0, 99) < 35;  // a medic: now and then
         if (!special) {
@@ -7405,11 +7443,14 @@ int IncomingDamage(CEntity* creator, int weapon, int damage) {
     // the clothes
     float f = 1.0f;
     for (int n = PerkCount(O_TOUGH); n > 0; --n) f *= 0.85f;
+    for (int n = PerkCount(O_GREEDY); n > 0; --n) f *= 1.10f;
+    if (CPlayerPed* me = FindPlayerPed(0); me && PerkCount(O_LASTSTAND) && me->Health() < MaxHealth() * 0.25f)
+        for (int n = PerkCount(O_LASTSTAND); n > 0; --n) f *= 0.6f;
     if (weapon == WEAPON_FLAMETHROWER || weapon == WEAPON_MOLOTOV)
         for (int n = PerkCount(O_FIREPROOF); n > 0; --n) f *= 0.5f;
     if (weapon == WEAPON_GRENADE || weapon == 19 || weapon == 35 || weapon == 36 || weapon == 39 || weapon == 51)
         for (int n = PerkCount(O_BLASTPROOF); n > 0; --n) f *= 0.5f;
-    if (f < 1.0f) out = std::max(1, (int)((float)out * f + 0.5f));
+    if (f != 1.0f) out = std::max(1, (int)((float)out * f + 0.5f));
     return out;
 }
 
@@ -7420,7 +7461,17 @@ bool IsEnemy(CPed* p) {
     return p->AreaCode() == kPlaces[g_arena.place].area;
 }
 
-void OnLocalHit(CPed* victim, int weapon, int damage, int piece) {}  // money now falls off the dead (D_CASH)
+void OnLocalHit(CPed* victim, int weapon, int damage, int piece) {  // money now falls off the dead (D_CASH); the clothes' lifesteal
+    if (!On() || !IsEnemy(victim) || damage <= 0) return;
+    int n = PerkCount(O_LIFESTEAL);
+    CPlayerPed* me = FindPlayerPed(0);
+    if (!n || !me || me->Health() <= 0.0f || me->Health() >= MaxHealth()) return;
+    static uint64_t lastMs = 0;  // a shotgun's pellets: one roll a shot
+    uint64_t now = NowMs();
+    if (now - lastMs < 120) return;
+    lastMs = now;
+    if (RandInt(0, 99) < 10 * n) me->Health() = std::min(MaxHealth(), me->Health() + 5.0f);
+}
 
 // Weapon skills grow with kills in the arena: the game's own skill stats (the pistol's, the AK's...: poor, gangster,
 // hitman at 1000), +2.5 a kill, +4 a headshot (the game's own growth on hits is off there); a step up shows
@@ -7460,6 +7511,19 @@ void OnLocalKill(CPed* victim, int weapon, bool headshot) {
     if (CPlayerPed* me = FindPlayerPed(0); me && me->Health() > 0.0f) {  // the clothes: health, armour a kill
         if (int n = PerkCount(O_KILLHEAL)) me->Health() = std::min(MaxHealth(), me->Health() + 5.0f * (float)n);
         if (int n = PerkCount(O_KILLARMOUR)) me->Armour() = std::min(100.0f, me->Armour() + 5.0f * (float)n);
+        if (int n = PerkCount(O_SCAVENGER); n && RandInt(0, 99) < 15 * n) {
+            MoreAmmo(me, 0.35f);
+            g_popups.push_back({TR("+обойма", "+clip"), NowMs(), 0xFF80C0FF});
+        }
+    }
+    if (int bonus = 5 * PerkCount(O_BOUNTY) + 15 * PerkCount(O_GREEDY)) AddPoints(bonus);
+    if (int n = PerkCount(O_MAGNET); n && RandInt(0, 99) < std::min(100, 25 * n)) {  // the kill's money straight in the pocket
+        uint8_t me = Net().Online() ? Net().MyId() : 0;
+        if (g_arena.host) Magnet(victim, me);
+        else if (NetPed* np = Peds::Instance().Find(victim)) {
+            uint16_t id = np->netId;
+            Send(A_MAGNET, [id](Writer& w) { w.U16(id); });
+        }
     }
     SendScore();
 }
