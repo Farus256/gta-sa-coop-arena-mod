@@ -6310,20 +6310,25 @@ void DashFrame(uint64_t now) {
         HoldFire(true);
         return;
     }
-    bool rmb = can && (GetAsyncKeyState(VK_RBUTTON) & 0x8000);
-    g_dashAim = rmb;
-    HoldFire(rmb);
-    if (!rmb) return;
+    // N held: the aim (the way shown); let go: the dash
+    bool held = can && (GetAsyncKeyState('N') & 0x8000);
+    static bool heldWas = false;
+    bool release = heldWas && !held && can && g_dashAim;
+    heldWas = held;
+    HoldFire(false);
+    if (!held && !release) {
+        g_dashAim = false;
+        return;
+    }
     CVector f = cam::Front();
     f.z = 0;
     float l = f.Length();
     g_dashDir = l > 0.01f ? f * (1.0f / l) : CVector{0, 1, 0};
     bool way = DashFrom(me->GetPosition(), g_dashDir, g_dashEnd) || (g_dashEnd - me->GetPosition()).Length() > 0.3f;
-    static bool lmbWas = false;
+    g_dashAim = held;
     static uint64_t aimLogMs = 0;
-    bool lmb = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0 || GetPad(0)->NewState.ButtonCircle != 0;
-    if (now - aimLogMs > 2000) aimLogMs = now, LOGI("Chainsaw dash aimed: %.1f m clear, ready %d", (g_dashEnd - me->GetPosition()).Length(), now >= g_dashReadyMs ? 1 : 0);
-    if (lmb && !lmbWas && way && now >= g_dashReadyMs) {
+    if (held && now - aimLogMs > 2000) aimLogMs = now, LOGI("Chainsaw dash aimed: %.1f m clear, ready %d", (g_dashEnd - me->GetPosition()).Length(), now >= g_dashReadyMs ? 1 : 0);
+    if (release && way && now >= g_dashReadyMs) {
         LOGI("Chainsaw dash: %.1f m", (g_dashEnd - me->GetPosition()).Length());
         g_dashing = true;
         g_dashLeft = (g_dashEnd - me->GetPosition()).Length();
@@ -6333,7 +6338,6 @@ void DashFrame(uint64_t now) {
         Cmd(0x0173).I(h).F(std::atan2(-g_dashDir.x, g_dashDir.y) * 57.29578f).Run();
         PlayAnim(h, "sprint_civi", "PED", true);
     }
-    lmbWas = lmb;
 }
 void DrawDash() {
     if (!g_dashAim || g_dashing) return;
@@ -7036,7 +7040,8 @@ bool KeyDown(int vk, bool repeat) {
     if (!On() || !ReviveText(hint).empty()) return false;
     if (vk == 'H') return repeat ? g_holo : HoloKey();  // held: the hologram (HoloFrame)
     if (vk == 'J') return !repeat && (PutDownGun(), true);
-    if (vk == 'N') {  // T-Bone's launcher; without it N goes on (a side activity's "no")
+    if (vk == 'N') {  // T-Bone's launcher, the chainsaw's dash (DashFrame); without them N goes on (a side activity's "no")
+        if (CPlayerPed* me = FindPlayerPed(0); me && me->ActiveWeapon().type == WEAPON_CHAINSAW) return true;
         if (!g_hasUgl) return false;
         if (!repeat) PlayerUgl();
         return true;
