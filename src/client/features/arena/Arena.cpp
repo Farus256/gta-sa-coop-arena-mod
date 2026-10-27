@@ -361,6 +361,7 @@ uint64_t g_rageStunUntil = 0, g_rageUntil = 0, g_rageTextUntil = 0;
 int g_shahedCharges = 0, g_scrap = 0;
 uint64_t g_shahedSince = 0;
 float g_shahedSpeed = 0.0f;
+float g_shYaw = 0, g_shPitch = 0;  // where the Shahed looks (the mouse turns it)
 bool g_shopOpen = false;
 struct ShopItem {
     int kind;  // 0 armour, 1 gadget, 2 mod
@@ -6544,7 +6545,8 @@ std::vector<int> ModGuns(int mod) {  // the guns this player carries that the mo
     if (CPlayerPed* me = FindPlayerPed(0))
         for (int slot = 0; slot < NUM_WEAPON_SLOTS; ++slot) {
             int t = me->Weapons()[slot].type;
-            if (t >= 22 && t <= 34 && !ModOn(mod, t) && std::find(guns.begin(), guns.end(), t) == guns.end()) guns.push_back(t);
+            bool other = (mod == 0 && ModOn(1, t)) || (mod == 1 && ModOn(0, t));  // a gun takes the bayonet or the launcher, not both
+            if (t >= 22 && t <= 34 && !ModOn(mod, t) && !other && std::find(guns.begin(), guns.end(), t) == guns.end()) guns.push_back(t);
         }
     return guns;
 }
@@ -6559,7 +6561,7 @@ void Buy(int i) {
         }
         if (ModGuns(it.which - 1).empty()) {
             ui::TheChat().AddError(g_modGuns[it.which - 1].empty() ? TR("Нет оружия для модификации.", "No gun to put it on.")
-                                                                   : TR("Она уже стоит на всём вашем оружии.", "It is on every gun you carry already."));
+                                                                   : TR("Некуда ставить: на оружии уже стоит она или (штык/подствольник) другая.", "Nowhere to put it: your guns have it or (bayonet/launcher) the other one."));
             return;
         }
         g_modPick = i;
@@ -7030,11 +7032,16 @@ void UseGadget() {
         Cmd(0x04D7).I(h).I(1).Run();  // FREEZE_CHAR_POSITION: CJ stays on the floor while he steers
         LoadModelNow(501);  // the RC Goblin
         Cmd(0x046E).I(0).F(at.x).F(at.y).F(at.z).F(me->CurrentRotation() * 57.29578f).I(501).Run();  // GIVE_REMOTE_CONTROLLED_MODEL_TO_PLAYER
-        if (CVehicle* rc = Ref<CVehicle*>((uintptr_t)&PlayerInfos()[0] + 0xB0))
+        if (CVehicle* rc = Ref<CVehicle*>((uintptr_t)&PlayerInfos()[0] + 0xB0)) {
             Cmd(0x0840).I(GetVehicleRef(rc)).I(kPlaces[g_arena.place].area).Run();  // SET_VEHICLE_AREA_VISIBLE
+            SetEntityPosition(rc, at);  // there, not where the game put it (under CJ on the RC field)
+            rc->MoveSpeed() = CVector{0, 0, 0};
+        }
         g_shahedSince = now;
         g_shahedSpeed = 0.0f;
-        ShowHelp(TR("Shahed: мышь — куда лететь, W — быстрее, S — тормоз, X — взорвать.", "Shahed: the mouse steers, W faster, S brakes, X blows it up."), 5000);
+        g_shYaw = me->CurrentRotation(), g_shPitch = 0.0f;  // on as CJ looks, level
+        Cmd(0x01B4).I(0).I(0).Run();  // SET_PLAYER_CONTROL off: the mouse and W/S are the Shahed's, not CJ's
+        ShowHelp(TR("Shahed: мышь — поворот, W — вперёд, S — назад, X — взорвать.", "Shahed: the mouse turns it, W forward, S back, X blows it up."), 5000);
     }
 }
 // once: the blast where it is, the control and the camera back to CJ, the toy itself gone (it was left with the player
@@ -7055,35 +7062,42 @@ void ShahedBoom(CVehicle* rc) {
     Cmd(0x0373).Run();  // SET_CAMERA_BEHIND_PLAYER
     Call<0x736A50>((CEntity*)nullptr, (CEntity*)FindPlayerPed(0), 2 /* EXPLOSION_ROCKET */, at, (uint32_t)0, (uint8_t)1, -1.0f, (uint8_t)0);  // AddExplosion: his
 }
-// every frame while it flies: it goes where the camera looks (the mouse), never falls; W faster, S brakes. Armed after
-// 0.6 s: then a wall, the floor or a man before it is the blast (it fell on the floor at once and blew up there)
+// every frame while it flies: its own camera behind it (the game's stayed on CJ), the mouse turns it (left-right,
+// up-down), W flies on, S back, nothing held: it hangs in the air. Armed after 0.6 s: then flying into a wall or the
+// floor, or a man near it, is the blast
 void ShahedFly(CVehicle* rc, uint64_t now, float dt) {
     bool fg = IsForeground() && !ui::TheChat().IsOpen();
-    float want = 13.0f;
-    if (fg && (GetAsyncKeyState('W') & 0x8000)) want = 24.0f;
-    if (fg && (GetAsyncKeyState('S') & 0x8000)) want = 3.0f;
-    g_shahedSpeed += (want - g_shahedSpeed) * std::min(1.0f, dt * 2.5f);
+    float want = 0.0f;
+    if (fg && (GetAsyncKeyState('W') & 0x8000)) want = 20.0f;
+    if (fg && (GetAsyncKeyState('S') & 0x8000)) want = -6.0f;
+    g_shahedSpeed += (want - g_shahedSpeed) * std::min(1.0f, dt * 3.0f);
+    float mx = Ref<float>(0xB73418 + 0x0C), my = Ref<float>(0xB73418 + 0x10);  // CPad::NewMouseControllerState: m_AmountMoved
+    if (fg) {
+        g_shYaw -= mx * 0.005f;
+        g_shPitch = std::clamp(g_shPitch + my * 0.005f, -1.3f, 1.0f);
+    }
+    CVector f{-std::sin(g_shYaw) * std::cos(g_shPitch), std::cos(g_shYaw) * std::cos(g_shPitch), std::sin(g_shPitch)};
     CMatrix* m = rc->Matrix();
     if (!m) return;
-    CVector look = cam::Front();
-    if (look.Length() < 0.1f) look = m->forward;
-    look = look.Normalized();
-    CVector f = m->forward + (look - m->forward) * std::min(1.0f, dt * 4.0f);  // turns to it smoothly
-    if (f.Length() < 0.1f) f = look;
-    f = f.Normalized();
-    CVector r{f.y, -f.x, 0.0f};  // level: no roll
-    if (r.Length() < 0.01f) r = m->right;
-    r = r.Normalized();
+    CVector r{std::cos(g_shYaw), std::sin(g_shYaw), 0.0f};  // level: no roll
     CVector u{r.y * f.z - r.z * f.y, r.z * f.x - r.x * f.z, r.x * f.y - r.y * f.x};
     m->right = r, m->forward = f, m->up = u;
     rc->MoveSpeed() = f * (g_shahedSpeed / 50.0f);  // metres a frame of the game's 50
     rc->TurnSpeed() = CVector{0, 0, 0};
-    if (now - g_shahedSince < 600) return;
     CVector at = rc->GetPosition(), hit;
+    // the camera: behind it and a little over it, not through a wall
+    CVector focus = at + CVector{0, 0, 0.4f}, camAt = at - f * 4.5f + CVector{0, 0, 1.3f};
+    if (Ray(focus, camAt, hit)) camAt = hit + (focus - hit) * (0.3f / std::max(0.3f, (focus - hit).Length()));
+    CVector lookAt = at + f * 6.0f;
+    Cmd(0x015F).F(camAt.x).F(camAt.y).F(camAt.z).F(0.0f).F(0.0f).F(0.0f).Run();  // SET_FIXED_CAMERA_POSITION
+    Cmd(0x0160).F(lookAt.x).F(lookAt.y).F(lookAt.z).I(2).Run();                // POINT_CAMERA_AT_POINT: at once
+    if (now - g_shahedSince < 600) return;
     bool boom = now - g_shahedSince > 25000;
-    if (!boom && Ray(at, at + f * (g_shahedSpeed * dt + 0.9f), hit)) boom = true;  // a wall, a barricade
+    float sp = std::fabs(g_shahedSpeed);
+    CVector dir = g_shahedSpeed >= 0.0f ? f : f * -1.0f;
+    if (!boom && sp > 2.0f && Ray(at, at + dir * (sp * dt + 0.9f), hit)) boom = true;  // flown into a wall, a barricade
     float z = 0;
-    if (!boom && FloorNoBars(at.x, at.y, at.z + 0.2f, z) && at.z - z < 0.6f) boom = true;  // the floor
+    if (!boom && sp > 2.0f && FloorNoBars(at.x, at.y, at.z + 0.2f, z) && at.z - z < 0.6f) boom = true;  // into the floor
     CPoolHeader* pool = PedPool();
     for (int i = 0; pool && i < pool->size && !boom; ++i) {
         if (pool->byteMap[i] < 0) continue;
