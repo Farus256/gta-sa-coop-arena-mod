@@ -7,6 +7,7 @@
 #include "entities/player/Players.h"
 #include "entities/session/Flow.h"
 #include "features/revive/Revive.h"
+#include "features/arena/Arena.h"
 #include "features/story/missions/Missions.h"
 #include "features/voice/Voice.h"
 #include "shared/api/net-session/Session.h"
@@ -49,7 +50,8 @@ void RenderOverlay() {
     if (phase == flow::Phase::WaitingWorld || phase == flow::Phase::StartingServer || phase == flow::Phase::Connecting)
         st = flow::StatusText();
     else if (!frontend && (st = CutsceneSkipText(hint)).empty() && (st = ReviveText(hint)).empty() &&
-             (st = SideCallText(hint)).empty())
+             (st = SideCallText(hint)).empty() &&
+             (st = arena::PromptText(hint)).empty())
         st = MissionWaitText(hint);
     if (!core::ConnectMenuVisible() && !st.empty()) {
         float w = std::max(g.TextWidth(FONT_MENU, st), hint.empty() ? 0.0f : g.TextWidth(FONT_SMALL, hint)) + 48 * s;

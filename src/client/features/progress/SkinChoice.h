@@ -22,6 +22,8 @@ struct Choice {
     uint32_t shirt, pants, hat;  // the colours of its picture (ARGB)
     uint8_t top, head;           // what it wears up top and on its head
     uint32_t shoes;
+    uint16_t alt[3] = {};  // its looks (fam1, fam2, fam3): a second click on its card turns to the next
+    uint8_t variants = 1, variant = 0;
 };
 const Choice* Choices(int& count);
 
@@ -30,6 +32,7 @@ const Choice* Choices(int& count);
 void OnProfile(bool empty, uint16_t worn);
 bool Newcomer();
 void SetChoice(int index);   // the player turned to this one in the lobby
+void NextVariant(int index); // ... clicked it again: its next look
 int ChosenIndex();
 bool Picked();               // ... it did (what it picked goes on over its profile's)
 // Progress, once the world loaded and the player is new here or picked one: what was picked in the lobby goes on

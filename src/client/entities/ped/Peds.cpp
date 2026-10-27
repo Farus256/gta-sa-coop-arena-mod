@@ -1432,8 +1432,9 @@ void Peds::ApplyMirror(NetPed& np) {
         return;
     }
 
-    // guns
-    if ((st.flags & PedSyncState::F_AIMING) && st.weapon != 0) {
+    // guns. Running (faster than a walk) it runs here too, the gun down: aiming, the copy slid along at a run while
+    // its gun task stepped backwards or sideways at a walk (a moonwalk)
+    if ((st.flags & PedSyncState::F_AIMING) && st.weapon != 0 && st.vel.Length2D() < 2.6f) {
         CVector aimAt = st.pos + st.aim;
         uint8_t mode = (st.flags & PedSyncState::F_FIRING) ? 2 : 1;
         int targetHandle = aimHandle();

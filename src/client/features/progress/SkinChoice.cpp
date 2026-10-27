@@ -18,11 +18,16 @@ namespace {
 using namespace game;
 using game::script::Cmd;
 
-const Choice kChoices[] = {
+// one card a kind; its looks (the game's models of that kind) one after another on a second click
+Choice kChoices[] = {
     {0, TRP("Карл Джонсон (CJ)", "Carl Johnson (CJ)"), 0xFFF2F2F2, 0xFF3A5A8C, 0xFF151515, TOP_TANK, HEAD_HAIR, 0xFF1A1A1A},
-    {105, TRP("Боец Grove Street 1", "Grove Street homie 1"), 0xFF2E8B3E, 0xFF2B2B2B, 0xFF2E8B3E, TOP_TEE, HEAD_CAP, 0xFFE8E8E8},
-    {106, TRP("Боец Grove Street 2", "Grove Street homie 2"), 0xFF3FA34D, 0xFF5A4630, 0xFF1F5F2A, TOP_LONG, HEAD_BANDANA, 0xFF202020},
-    {107, TRP("Боец Grove Street 3", "Grove Street homie 3"), 0xFF1E6B2E, 0xFF3A3A3A, 0xFF151515, TOP_TEE, HEAD_HAIR, 0xFFD8D8D8},
+    {105, TRP("Грув-стрит (fam)", "Grove Street (fam)"), 0xFF2E8B3E, 0xFF2B2B2B, 0xFF2E8B3E, TOP_TEE, HEAD_CAP, 0xFFE8E8E8, {105, 106, 107}, 3},
+    {102, TRP("Баллас (ballas)", "Ballas"), 0xFF7A3FA0, 0xFF2B2B2B, 0xFF5A2A7A, TOP_TEE, HEAD_CAP, 0xFFE8E8E8, {102, 103, 104}, 3},
+    {108, TRP("Вагос (vag)", "Vagos (vag)"), 0xFFE8C030, 0xFF3A3A3A, 0xFFE8C030, TOP_TEE, HEAD_BANDANA, 0xFF202020, {108, 109, 110}, 3},
+    {114, TRP("Ацтекас (vla)", "Aztecas (vla)"), 0xFF30B8C8, 0xFF2B3A5A, 0xFF30B8C8, TOP_TANK, HEAD_BANDANA, 0xFF202020, {114, 115, 116}, 3},
+    {280, TRP("Полицейский", "Police officer"), 0xFF2A3A6A, 0xFF1A2040, 0xFF1A2040, TOP_LONG, HEAD_CAP, 0xFF101010, {280, 281, 282}, 3},
+    {285, TRP("Спецназ / ФБР", "SWAT / FBI"), 0xFF202428, 0xFF202428, 0xFF202428, TOP_LONG, HEAD_CAP, 0xFF101010, {285, 286}, 2},
+    {287, TRP("Солдат", "Soldier"), 0xFF4A5A30, 0xFF4A5A30, 0xFF3A4A28, TOP_LONG, HEAD_CAP, 0xFF2A2018},
 };
 bool g_profileKnown = false, g_newcomer = false, g_picked = false;
 int g_choice = 0;
@@ -89,14 +94,26 @@ void OnProfile(bool empty, uint16_t worn) {
     if (!g_profileKnown || empty) g_newcomer = empty;  // the first one of the session says; an empty one later: a new game
     g_profileKnown = true;
     if (!g_picked)  // the lobby shows the one it has
-        for (int i = 0; i < (int)std::size(kChoices); ++i)
-            if (kChoices[i].model == (empty ? 0 : worn)) g_choice = i;
+        for (int i = 0; i < (int)std::size(kChoices); ++i) {
+            Choice& c = kChoices[i];
+            uint16_t want = empty ? 0 : worn;
+            if (c.model == want) g_choice = i;
+            for (uint8_t v = 0; v < c.variants; ++v)
+                if (c.alt[v] && c.alt[v] == want) g_choice = i, c.variant = v, c.model = want;
+        }
 }
 
 bool Newcomer() { return g_newcomer; }
 
 void SetChoice(int index) {
     if (index >= 0 && index < (int)std::size(kChoices)) g_choice = index, g_picked = true;
+}
+
+void NextVariant(int index) {
+    if (index < 0 || index >= (int)std::size(kChoices)) return;
+    Choice& c = kChoices[index];
+    if (c.variants > 1) c.variant = (uint8_t)((c.variant + 1) % c.variants), c.model = c.alt[c.variant];
+    g_choice = index, g_picked = true;
 }
 
 bool Picked() { return g_picked; }
@@ -128,8 +145,11 @@ uint16_t Worn() {
     CPlayerPed* me = FindPlayerPed(0);
     if (!me) return 0;
     uint16_t m = me->ModelIndex();
-    for (const Choice& c : kChoices)
+    for (const Choice& c : kChoices) {
         if (c.model == m) return m;
+        for (uint8_t v = 0; v < c.variants; ++v)
+            if (c.alt[v] == m) return m;
+    }
     return 0;
 }
 

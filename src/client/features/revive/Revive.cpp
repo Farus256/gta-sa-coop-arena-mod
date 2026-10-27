@@ -11,6 +11,7 @@
 #include "common/lib/util/Util.h"
 #include "entities/ped/Peds.h"
 #include "entities/player/Players.h"
+#include "features/arena/Arena.h"
 #include "shared/api/net-session/Session.h"
 #include "shared/config/Config.h"
 #include "shared/game/Game.h"
@@ -26,7 +27,9 @@ using namespace game;
 using game::script::Cmd;
 
 constexpr uint64_t kDownMs = 30000;              // how long a wounded player waits for help
-constexpr uint64_t kCprMs = 5000;                // how long the CPR takes
+constexpr uint64_t kCprBaseMs = 5000;            // how long the CPR takes (half of it with Quick Revive in the arena)
+uint64_t CprMs() { return arena::QuickRevive() ? kCprBaseMs / 2 : kCprBaseMs; }
+constexpr uint64_t kSelfReviveMs = 8000;         // Quick Revive: the wounded one gets up by itself after this
 constexpr uint64_t kWindowMs = 6 * 60 * 1000;    // revives are counted over this time
 constexpr int kMaxRevives = 2;                   // ... and this many are allowed in it
 constexpr uint64_t kGiveUpHoldMs = 1500;         // holding the key this long, the wounded one gives up
@@ -42,6 +45,7 @@ enum : uint8_t { OP_START = 1, OP_STOP = 2, OP_DONE = 3 };
 
 // ---- this player wounded
 bool g_wantDown = false;   // its health ran out in the damage processing: it falls right after it
+bool g_wantFall = false;   // ... in the arena with nobody to revive it: it watches (arena::Fall) right after it
 bool g_down = false;
 // It bled out or gave up: it dies for real now. Until the game has it wasted no hit puts it down again (a shot at the
 // body on the ground went through ComputeWillKillPed, the hook took it for a new wound, and the 30 seconds started over)
@@ -69,6 +73,7 @@ std::string Key() {  // the revive key as the player knows it: a letter, a digit
 std::string Name(int id) { return Net().PeerName((uint8_t)id); }
 
 int RevivesLeft() {
+    if (arena::UnlimitedRevives()) return 99;  // the arena: no limit, no 6 minutes
     uint64_t now = NowMs();
     while (!g_revives.empty() && now - g_revives.front() > kWindowMs) g_revives.pop_front();
     return kMaxRevives - (int)g_revives.size();
@@ -133,7 +138,7 @@ CPed* NearestRival(CPlayerPed* me) {
 bool CanGoDown(CPlayerPed* me, int weapon) {
     if (weapon == WEAPON_DROWNING || me->InVehicle() || (me->PhysicalFlags() & kSubmerged) || Ref<uint8_t>(kCutsceneRunning))
         return false;
-    if (!HelpNear(me)) return false;  // only a partner can revive it
+    if (!HelpNear(me) && !arena::QuickRevive()) return false;  // only a partner can revive it (or Quick Revive)
     if (RevivesLeft() <= 0) {
         ui::TheChat().AddSystem(TR("Вас уже откачивали дважды за 6 минут: в этот раз не повезло.",
                                    "You were revived twice in 6 minutes already: no luck this time."));
@@ -158,10 +163,21 @@ using WillKillFn = void(__fastcall*)(void*, void*, CPed*, uint8_t*, bool);
 WillKillFn g_origWillKill = nullptr;
 void __fastcall HookWillKill(void* calc, void* edx, CPed* ped, uint8_t* rsp, bool speak) {
     g_origWillKill(calc, edx, ped, rsp, speak);
-    if (!rsp[8] || !Net().Online() || g_dyingMs) return;
+    if (!rsp[8] || (!Net().Online() && !arena::On()) || g_dyingMs) return;
     CPlayerPed* me = FindPlayerPed(0);
     if (ped != me) return;
-    if (!g_down && !g_wantDown && !CanGoDown(me, Field<int32_t>(calc, 0x0C))) return;
+    if (arena::Spectating()) {  // watching: nothing hurts it
+        ped->Health() = 100.0f;
+        rsp[8] = rsp[9] = 0;
+        return;
+    }
+    if (!g_down && !g_wantDown && !CanGoDown(me, Field<int32_t>(calc, 0x0C))) {
+        if (!arena::On()) return;
+        ped->Health() = 1.0f;  // the arena: no death, no hospital: it watches till the next wave
+        rsp[8] = rsp[9] = 0;
+        g_wantFall = true;
+        return;
+    }
     ped->Health() = 1.0f;
     rsp[8] = rsp[9] = 0;
     g_wantDown = true;
@@ -185,8 +201,7 @@ void GoDown(CPlayerPed* me) {
     g_animCheckMs = NowMs();
     Players::Instance().SetLocalDowned(true, (uint8_t)(kDownMs / 1000));
     LeaveAlone(me, true);  // nobody shoots at it or arrests it while it lies there
-    ui::TheChat().AddSystem(Format(TR("Вы тяжело ранены! Напарник может откачать вас за %d с. Удерживайте %s, чтобы сдаться.",
-                                      "You are badly wounded! A partner can revive you within %d s. Hold %s to give up."),
+    ui::TheChat().AddSystem(Format(TR("Вы ранены. Ждите помощи %d с. Держите [%s], чтобы сдаться.", "Wounded. Help has %d s. Hold [%s] to give up."),
                                    (int)(kDownMs / 1000), Key().c_str()));
     LOGI("Wounded: lying for %llu s (revives left %d)", (unsigned long long)(kDownMs / 1000), RevivesLeft());
 }
@@ -232,6 +247,11 @@ void KillNow(CPlayerPed* me) {
 
 void Die(CPlayerPed* me, const char* why) {
     EndDown(me);
+    if (arena::On()) {  // the arena: no death, it watches till the next wave
+        arena::Fall();
+        LOGI("Wounded: out of the arena's wave (%s)", why);
+        return;
+    }
     g_dyingMs = NowMs();
     KillNow(me);
     LOGI("Wounded: died (%s)", why);
@@ -265,9 +285,12 @@ void Revive(CPlayerPed* me, const std::string& who) {
     me->Health() = maxHealth * 0.5f;
     g_revives.push_back(NowMs());
     int left = RevivesLeft();
-    ui::TheChat().AddSystem(Format(TR("Вас откачал %s. Ещё возрождений в ближайшие 6 минут: %d.",
-                                      "%s revived you. Revives left for the next 6 minutes: %d."),
-                                   who.c_str(), left));
+    if (arena::UnlimitedRevives())
+        ui::TheChat().AddSystem(Format(TR("Вас откачал %s.", "%s revived you."), who.c_str()));
+    else
+        ui::TheChat().AddSystem(Format(TR("Вас откачал %s. Ещё возрождений в ближайшие 6 минут: %d.",
+                                          "%s revived you. Revives left for the next 6 minutes: %d."),
+                                       who.c_str(), left));
     LOGI("Revived by %s (revives left %d)", who.c_str(), left);
 }
 
@@ -276,10 +299,16 @@ bool EnsureBlock(const char* block) {
     int idx = Call<0x4D3990, int>(block);  // CAnimManager::GetAnimationBlockIndex
     if (idx < 0) return false;
     uintptr_t b = 0xB5D4A0 + (uintptr_t)idx * 0x20;  // CAnimManager::ms_aAnimBlocks
-    if (Ref<uint8_t>(b + 0x10)) return true;
-    RequestModel(25575 + idx, 2);  // the IFP's streaming id
-    LoadAllRequestedModels(false);
-    return Ref<uint8_t>(b + 0x10) != 0;
+    if (!Ref<uint8_t>(b + 0x10)) {
+        RequestModel(25575 + idx, 2);  // the IFP's streaming id
+        LoadAllRequestedModels(false);
+    }
+    if (!Ref<uint8_t>(b + 0x10)) return false;
+    // held for good (CAnimBlock::usRefs +0x12, as CAnimManager::AddAnimBlockRef): a block nobody held was let go by the
+    // streaming while a ped's task still played its animation (crash.log: 0x72F4DE from CAnimManager::BlendAnimation)
+    static bool held[256] = {};
+    if (idx < 256 && !held[idx]) held[idx] = true, ++Ref<uint16_t>(b + 0x12);
+    return true;
 }
 
 bool CanHelp(CPlayerPed* me) {
@@ -326,7 +355,7 @@ void UpdateRescuer(CPlayerPed* me) {
         if (!keep) {
             LOGI("CPR for player %d stopped", g_target);
             StopCpr(me, true);
-        } else if (NowMs() - g_cprStart >= kCprMs) {
+        } else if (NowMs() - g_cprStart >= CprMs()) {
             SendOp(g_target, OP_DONE);
             LOGI("CPR for player %d done", g_target);
             StopCpr(me, false);
@@ -409,6 +438,10 @@ void UpdateDowned(CPlayerPed* me) {
         g_revives.clear();
         LOGI("Wounded: died, the revives count from zero again");
     }
+    if (g_wantFall) {
+        g_wantFall = false;
+        arena::Fall();
+    }
     UpdateDying(me);
     if (g_dyingMs) g_wantDown = false;
     if (g_wantDown) GoDown(me);
@@ -438,6 +471,12 @@ void UpdateDowned(CPlayerPed* me) {
     if (g_rescuer >= 0) g_downEnd = std::max(g_downEnd, now + 1500);  // not while it is being revived
     if (me->InVehicle()) {  // a script put it in a car: no lying there
         Die(me, "put in a car");
+        return;
+    }
+    // Quick Revive (the arena's perk): up by itself after a while, once
+    if (g_rescuer < 0 && arena::QuickRevive() && now + kDownMs - g_downEnd >= kSelfReviveMs) {
+        arena::UseQuickRevive();
+        Revive(me, TR("«Быстрое оживление»", "Quick Revive"));
         return;
     }
     if (now >= g_downEnd) {
@@ -529,6 +568,7 @@ public:
     void OnPostProcess() override {
         if (!Net().Online() || !core::IsPlayerReady()) {
             if (g_down || g_target >= 0) ResetAll();
+            if (g_wantFall && core::IsPlayerReady()) g_wantFall = false, arena::Fall();  // the arena alone: it watches
             return;
         }
         CPlayerPed* me = FindPlayerPed(0);
@@ -554,21 +594,47 @@ std::string ReviveText(std::string& hint) {
         } else if (g_kicker.handle >= 0 && g_kicker.stage == 1) {
             hint = TR("Вас добивают ногами!", "You are being kicked to death!");
         } else {
-            hint = Format(TR("Ждите напарника · удерживайте %s, чтобы сдаться", "Wait for a partner · hold %s to give up"),
-                          Key().c_str());
+            hint = Format(TR("Держите [%s], чтобы сдаться", "Hold [%s] to give up"), Key().c_str());
         }
-        return Format(TR("Вы ранены · %d с", "You are wounded · %d s"), secs);
+        return Format(TR("Вы ранены  %d с", "Wounded  %d s"), secs);
     }
     if (g_target >= 0) {
-        int secs = (int)((kCprMs - std::min<uint64_t>(kCprMs, NowMs() - g_cprStart) + 999) / 1000);
-        hint = Format(TR("%s — прервать", "%s — stop"), Key().c_str());
-        return Format(TR("Откачиваете %s · %d с", "Reviving %s · %d s"), Name(g_target).c_str(), secs);
+        int secs = (int)((CprMs() - std::min<uint64_t>(CprMs(), NowMs() - g_cprStart) + 999) / 1000);
+        hint = Format(TR("[%s] Прервать", "[%s] Stop"), Key().c_str());
+        return Format(TR("Откачиваете %s  %d с", "Reviving %s  %d s"), Name(g_target).c_str(), secs);
     }
     if (g_candidate >= 0) {
-        hint = Format(TR("%s — откачать", "%s — revive"), Key().c_str());
+        hint = Format(TR("[%s] Откачать", "[%s] Revive"), Key().c_str());
         return Format(TR("%s ранен", "%s is wounded"), Name(g_candidate).c_str());
     }
     return {};
+}
+
+void KnockDown() {
+    CPlayerPed* me = core::IsPlayerReady() ? FindPlayerPed(0) : nullptr;
+    if (!me || me->Health() <= 0.0f || g_down || g_wantDown || g_dyingMs) return;
+    if (Net().Online() && CanGoDown(me, 0)) {
+        me->Health() = 1.0f;
+        g_wantDown = true;
+        return;
+    }
+    me->Health() = std::max(0.0f, me->Health() - 120.0f);
+}
+void CancelDown() {
+    CPlayerPed* me = core::IsPlayerReady() ? FindPlayerPed(0) : nullptr;
+    g_wantDown = g_wantFall = false;
+    if (!g_down) return;
+    EndDown(me);
+    if (!me) return;
+    Cmd(0x0792).I(GetPedRef(me)).Run();  // CLEAR_CHAR_TASKS_IMMEDIATELY: up
+    me->Health() = std::max(me->Health(), std::max<float>(PlayerInfos()[0].maxHealth, 100.0f) * 0.5f);
+}
+void ArenaWound() {
+    CPlayerPed* me = core::IsPlayerReady() ? FindPlayerPed(0) : nullptr;
+    if (!me || g_down || g_wantDown || g_dyingMs) return;
+    me->Health() = std::max(me->Health(), 1.0f);
+    if (Net().Online() && CanGoDown(me, 0)) g_wantDown = true;
+    else g_wantFall = true;  // nobody to revive it: it watches till the next wave
 }
 
 bool ReviveKeyPressed() {

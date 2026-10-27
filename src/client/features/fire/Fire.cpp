@@ -12,6 +12,7 @@
 #include "common/lib/log/Log.h"
 #include "common/lib/util/Util.h"
 #include "entities/mission/Mission.h"
+#include "features/arena/Arena.h"
 #include "entities/ped/Peds.h"
 #include "entities/player/Players.h"
 #include "entities/vehicle/Vehicles.h"
@@ -249,6 +250,7 @@ void __cdecl HookAddExplosion(CEntity* victim, CEntity* creator, int type, CVect
         Net().Send(proto::CH_RELIABLE, w);
     }
     g_origAddExplosion(victim, creator, type, pos, lifetime, sound, shake, visible);
+    if (IsBlast(type) && core::IsPlayerReady()) arena::BarricadeBlast(pos);
 }
 
 void DropCharges(CEntity* creator, const CVector& at, float within);
@@ -328,6 +330,41 @@ CPhysical* NewProjectile(uint32_t before) {
     for (int i = 0; i < 32; ++i)
         if (added & (1u << i)) return Ref<CPhysical*>(kProjectiles + (uintptr_t)i * 4);
     return nullptr;
+}
+
+// A projectile keeps a bare pointer to its thrower and its target (gaProjectileInfo +4, +8): a ped or a vehicle
+// deleted while it flew (the arena's enemies at its end, a copy of a player who left) left it pointing at freed
+// memory, and its blast then registered a reference through it (a crash, now or later). Before the game updates
+// them each frame: a projectile whose thrower is gone goes, without a blast; a target that is gone is forgotten.
+// Only a pointer into a pool whose slot is free counts as gone (a SAM site's building is no pool's).
+bool Gone(CEntity* e) {
+    auto freed = [e](CPoolHeader* pool, int elemSize) {
+        if (!pool || !e) return false;
+        uintptr_t base = (uintptr_t)pool->objects, addr = (uintptr_t)e;
+        if (addr < base || addr >= base + (uintptr_t)pool->size * (uintptr_t)elemSize) return false;
+        uintptr_t off = addr - base;
+        return off % (uintptr_t)elemSize != 0 || pool->byteMap[off / (uintptr_t)elemSize] < 0;
+    };
+    return freed(PedPool(), kPedPoolElemSize) || freed(VehiclePool(), kVehiclePoolElemSize) || freed(ObjectPool(), kObjectPoolElemSize);
+}
+using ProjectileUpdateFn = void(__cdecl*)();
+ProjectileUpdateFn g_origProjectileUpdate = nullptr;
+void __cdecl HookProjectileUpdate() {
+    for (int i = 0; i < 32; ++i) {
+        uintptr_t info = kProjectileInfos + (uintptr_t)i * 0x24;
+        if (!Ref<uint8_t>(info + 0x10)) continue;
+        if (Gone(Ref<CEntity*>(info + 4))) {
+            auto* obj = Ref<CPhysical*>(kProjectiles + (uintptr_t)i * 4);
+            LOGI("Projectile %d (weapon %d): its thrower is gone, it goes too", i, Ref<int32_t>(info));
+            Ref<CEntity*>(info + 4) = nullptr;  // never looked at again, not even while it goes
+            Ref<CEntity*>(info + 8) = nullptr;
+            if (obj) Call<0x739A40, bool>(obj);  // CProjectileInfo::RemoveIfThisIsAProjectile
+            if (Ref<uint8_t>(info + 0x10)) Ref<uint8_t>(info + 0x10) = 0;
+            continue;
+        }
+        if (Gone(Ref<CEntity*>(info + 8))) Ref<CEntity*>(info + 8) = nullptr;
+    }
+    g_origProjectileUpdate();
 }
 
 // a target both games know (the other player, a copy), unlike Describe: a heat-seeking rocket's
@@ -517,6 +554,7 @@ public:
         Net().SetHandler(proto::G_EXPLOSION, &HandleExplosion);
         mem::HookFn(0x737C80, &HookAddProjectile, &g_origAddProjectile, "CProjectileInfo::AddProjectile");
         mem::HookFn(0x5660B0, &HookUseDetonator, &g_origUseDetonator, "CWorld::UseDetonator");
+        mem::HookFn(0x738B20, &HookProjectileUpdate, &g_origProjectileUpdate, "CProjectileInfo::Update");
         Net().SetHandler(proto::G_PROJECTILE, &HandleProjectile);
         mem::HookFn(0x728CB0, &HookWaterCannon, &g_origWaterCannon, "CWaterCannons::UpdateOne");
         mem::RedirectCallFn(0x6C7773, &HookHeliRound, &g_origHeliRound);  // CHeli::ProcessControl -> FireOneInstantHitRound
