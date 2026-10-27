@@ -7521,8 +7521,7 @@ void MerchantReminder() {  // at each break: when the merchant comes
     if (m < 0 || (!Endless() && m >= g_arena.waves)) return;  // no break after the last wave
     std::string t = m == g_arena.wave ? std::string(TR("Торговец придёт в конце этой перемены!", "The merchant comes at the end of this break!"))
                                       : Format(TR("Торговец придёт после %d-й волны (через %d).", "The merchant comes after wave %d (in %d)."), m, m - g_arena.wave);
-    ui::TheChat().AddSystem(t);
-    ShowHelp(t, 6000);
+    ShowHelp(t, 6000);  // on the screen only, not in the chat
 }
 void SetBreak(bool on, uint64_t endMs) {
     if (on && !g_break) MerchantReminder();
