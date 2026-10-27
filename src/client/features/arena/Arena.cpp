@@ -343,7 +343,7 @@ bool g_hasMerchantTo = false;  // host: where he walks to at this place (/тор
 game::CVector g_merchantTo;
 bool g_hasMerchantSpot = false;  // host: where he comes in at this place (/торговец), else an enemies' spot
 game::CVector g_merchantSpot;
-bool MerchantWave(int w) { return w == 5 || (w > 5 && (w - 5) % 10 == 0); }
+bool MerchantWave(int w) { return w > 0 && w % 5 == 0; }  // after every 5th wave
 // what this player bought: the armour's kind (0 none, 1 the Juggernaut's, 2 the Firestarter's, 3 the Soldier's), the
 // gadget (0 none, 1 the cop's visor, 2 the rage dose, 3 the Shahed's remote), the mods
 int g_armourKind = 0, g_gadget = 0;
@@ -378,6 +378,7 @@ bool Owned(const ShopItem& it) {
     return it.kind == 0 ? g_armourKind == it.which : it.kind == 1 ? g_gadget == it.which
            : it.which == 1 ? g_modUgl : it.which == 2 ? g_modBayonet : g_modSpark;
 }
+void SetWardOpen(bool on);
 void ResetShop() {  // a new arena: nothing bought
     g_armourKind = g_gadget = 0;
     g_modUgl = g_modBayonet = g_modSpark = false;
@@ -386,6 +387,7 @@ void ResetShop() {  // a new arena: nothing bought
     g_shahedCharges = g_scrap = 0, g_shahedSince = 0;
     if (g_shopOpen) ui::In().SetKeyboardCapture(false), ui::In().SetMouseCapture(false);
     g_shopOpen = false;
+    SetWardOpen(false);
 }
 void PlayerGuns(bool bigClips, bool sharp);
 void BayonetHit(game::CPed* p);
@@ -2448,21 +2450,60 @@ void OutfitWaveStart() {  // at each wave: the armour, the health, the grenades 
     }
 }
 void ShowHelp(const std::string& text, uint64_t ms);
+// The wardrobe ($600): three pieces to choose from (the merchant's look), one taken or none (the money is gone either way)
+struct WardOffer {
+    int k;     // kClothes' piece
+    int rare;  // 0 blue (60%), 1 pink (30%), 2 red (10%)
+};
+std::vector<WardOffer> g_wardOffers;
+bool g_wardOpen = false;
+int g_wardSel = 0;
+uint64_t g_wardOpenedMs = 0;
+float g_wardMouseX = -1, g_wardMouseY = -1;
+void SetWardOpen(bool on) {
+    if (on == g_wardOpen) return;
+    g_wardOpen = on;
+    ui::In().SetKeyboardCapture(on);
+    ui::In().SetMouseCapture(on);
+    if (on) g_wardSel = 0, g_wardOpenedMs = NowMs();
+    else g_wardOffers.clear();
+}
+uint32_t RareColour(int rare) { return rare == 2 ? 0xFFFF3B3B : rare == 1 ? 0xFFFF6EC7 : 0xFF4DA6FF; }
+const char* RareName(int rare) { return rare == 2 ? TR("красная", "red") : rare == 1 ? TR("розовая", "pink") : TR("синяя", "blue"); }
 void BuyOutfit() {
     CPlayerPed* me = FindPlayerPed(0);
-    if (!me) return;
+    if (!me || g_wardOpen) return;
     if (Cash() < kWardCost) {
         ui::TheChat().AddError(Format(TR("Нужно $%d.", "You need $%d."), kWardCost));
         return;
     }
-    int k = RandInt(0, kClothCount - 1);
-    int pi = PartIndex(kClothes[k].part);
-    if (pi >= 0 && k == g_worn[pi]) k = (k + 1) % kClothCount, pi = PartIndex(kClothes[k].part);  // not the one it wears
-    if (pi < 0) return;
-    const Cloth& a = kClothes[k];
     AddPoints(-kWardCost);
+    g_wardOffers.clear();
+    std::set<int> parts;
+    for (int tries = 0; tries < 200 && g_wardOffers.size() < 3; ++tries) {
+        int k = RandInt(0, kClothCount - 1);
+        int pi = PartIndex(kClothes[k].part);
+        if (pi < 0 || k == g_worn[pi]) continue;  // not the one it wears
+        if (tries < 150 && parts.count(pi)) continue;  // three different parts, if it can be
+        bool dup = false;
+        for (const WardOffer& o : g_wardOffers) dup |= o.k == k;
+        if (dup) continue;
+        int roll = RandInt(0, 99);
+        g_wardOffers.push_back({k, roll < 10 ? 2 : roll < 40 ? 1 : 0});
+        parts.insert(pi);
+    }
+    CallMethod<0x506EA0>((void*)0xB6BC90, 40 /* AE_FRONTEND_PURCHASE_WEAPON */, 0.0f, 1.0f);
+    if (g_wardOffers.empty()) return;
+    SetWardOpen(true);
+}
+void WearOffer(const WardOffer& o) {  // the piece chosen: on him, its perk
+    CPlayerPed* me = FindPlayerPed(0);
+    int k = o.k, pi = PartIndex(kClothes[k].part);
+    if (!me || pi < 0) return;
+    const Cloth& a = kClothes[k];
     OutfitPerks(false);
     g_worn[pi] = k;
+    g_wornRare[pi] = o.rare;
     OutfitPerks(true);
     OutfitWaveStart();
     if (me->ModelIndex() == 0) {  // CJ: on him (another character keeps only the perk)
@@ -2470,17 +2511,85 @@ void BuyOutfit() {
         Cmd(0x087B).I(0).S(a.texture).S(a.model).I(a.part).Run();  // GIVE_PLAYER_CLOTHES_OUTSIDE_SHOP
         RequestRebuild();  // BUILD_PLAYER_MODEL's work, at a safe moment
     }
-    CallMethod<0x506EA0>((void*)0xB6BC90, 40 /* AE_FRONTEND_PURCHASE_WEAPON */, 0.0f, 1.0f);
-    // its rarity, only a colour for its name: blue (60%), pink (30%), red (10%); the rest of the line as the system's
-    int roll = RandInt(0, 99);
-    int rare = roll < 10 ? 2 : roll < 40 ? 1 : 0;
-    g_wornRare[pi] = rare;
-    const char* tint = rare == 2 ? "{FF3B3B}" : rare == 1 ? "{FF6EC7}" : "{4DA6FF}";
+    CallMethod<0x506EA0>((void*)0xB6BC90, 6 /* AE_FRONTEND_PICKUP_WEAPON */, 0.0f, 1.0f);
+    const char* tint = o.rare == 2 ? "{FF3B3B}" : o.rare == 1 ? "{FF6EC7}" : "{4DA6FF}";
     ui::TheChat().AddSystem(Format("%s%s{FFC864}: %s", tint, ClothTitle(k), kPerkText[PerkOf(k)][Lang()]));
     // over the subtitles, as the skills box's word
-    const char* rareName = rare == 2 ? TR("красная", "red") : rare == 1 ? TR("розовая", "pink") : TR("синяя", "blue");
-    ShowHelp(Format(TR("Одежда (%s): %s — %s", "Clothes (%s): %s - %s"), rareName, ClothTitle(k), kPerkText[PerkOf(k)][Lang()]), 6000);
-    g_popups.push_back({ClothTitle(k), NowMs(), rare == 2 ? 0xFFFF3B3B : rare == 1 ? 0xFFFF6EC7 : 0xFF4DA6FF});
+    ShowHelp(Format(TR("Одежда (%s): %s — %s", "Clothes (%s): %s - %s"), RareName(o.rare), ClothTitle(k), kPerkText[PerkOf(k)][Lang()]), 6000);
+    g_popups.push_back({ClothTitle(k), NowMs(), RareColour(o.rare)});
+}
+// the window: three cards as the merchant's; A/D or the arrows pick, Enter, Space or a click take, Esc, E or Backspace refuse
+void DrawWardrobe() {
+    if (!g_wardOpen) return;
+    CPlayerPed* me = FindPlayerPed(0);
+    if (!me || me->Health() <= 0.0f || !arena::On()) return SetWardOpen(false);
+    auto& g = ui::Gfx();
+    float s = g.Scale();
+    uint64_t now = NowMs();
+    auto& st = ui::In().State();
+    int n = (int)g_wardOffers.size();
+    bool take = false;
+    for (int vk : st.keyDowns) {
+        if (vk == 'E' && now - g_wardOpenedMs < 500) continue;  // the E that opened it
+        if (vk == VK_ESCAPE || vk == VK_BACK || vk == 'E') {
+            ui::TheChat().AddSystem(TR("Вы отказались от одежды.", "You took no clothes."));
+            return SetWardOpen(false);
+        }
+        if (vk == 'A' || vk == 'W' || vk == VK_LEFT || vk == VK_UP) g_wardSel = std::max(0, g_wardSel - 1);
+        if (vk == 'D' || vk == 'S' || vk == VK_RIGHT || vk == VK_DOWN) g_wardSel = std::min(n - 1, g_wardSel + 1);
+        if (vk == VK_RETURN || vk == VK_SPACE) take = true;
+        if (vk >= '1' && vk <= '3' && vk - '1' < n) g_wardSel = vk - '1', take = true;
+    }
+    float W = 1000 * s, H = 560 * s;
+    float x = (g.Width() - W) * 0.5f, y = (g.Height() - H) * 0.5f;
+    g.Rect(0, 0, g.Width(), g.Height(), 0x70000000);
+    g.Rect(x, y, W, H, 0xF0000000);
+    g.RectOutline(x, y, W, H, 0xFF26303B, std::max(1.0f, s));
+    g.GameText(ui::GAME_FONT_GOTHIC, x + 40 * s, y + 14 * s, "Wardrobe", 56 * s, 0xFFACCBF1);  // the menus' own title
+    g.Text(ui::FONT_MENU, x + W - 40 * s, y + 30 * s, TR("Выберите одну вещь", "Pick one piece"), 0xFF8D9CAD, ui::TEXT_RIGHT | ui::TEXT_SHADOW);
+    auto hover = [&](float hx, float hy, float hw, float hh) { return st.mouseX >= hx && st.mouseX < hx + hw && st.mouseY >= hy && st.mouseY < hy + hh; };
+    float cy = y + 100 * s, gap = 20 * s;
+    float cw = (W - 80 * s - gap * 2) / 3.0f, chh = H - (cy - y) - 70 * s;
+    for (int k = 0; k < n && k < 3; ++k) {
+        const WardOffer& o = g_wardOffers[(size_t)k];
+        int pi = PartIndex(kClothes[o.k].part);
+        float cx = x + 40 * s + (cw + gap) * (float)k;
+        bool hv = hover(cx, cy, cw, chh);
+        if (hv && (st.mouseX != g_wardMouseX || st.mouseY != g_wardMouseY)) g_wardSel = k;
+        bool sel = g_wardSel == k;
+        uint32_t rc = RareColour(o.rare);
+        g.Rect(cx, cy, cw, chh, sel ? 0xE0182230 : 0xC0101418);
+        g.Rect(cx, cy, cw, 6 * s, rc);  // its rarity's stripe
+        g.RectOutline(cx, cy, cw, chh, sel ? rc : 0xFF26303B, std::max(1.0f, s) * (sel ? 2.5f : 1.0f));
+        float py = cy + 20 * s;
+        for (auto& line : g.Wrap(ui::FONT_MENU, ui::Widen(ClothTitle(o.k)), cw - 32 * s)) {
+            g.TextW(ui::FONT_MENU, cx + cw * 0.5f, py, line, rc, ui::TEXT_CENTER | ui::TEXT_SHADOW);
+            py += g.LineHeight(ui::FONT_MENU);
+        }
+        py += 4 * s;
+        g.Text(ui::FONT_SMALL, cx + cw * 0.5f, py, Format("%s  ·  %s", pi >= 0 ? kParts[pi].name[Lang()] : "?", RareName(o.rare)), 0xFFB0B0B0,
+               ui::TEXT_CENTER | ui::TEXT_SHADOW);
+        py += g.LineHeight(ui::FONT_SMALL) + 16 * s;
+        for (auto& line : g.Wrap(ui::FONT_NORMAL, ui::Widen(kPerkText[PerkOf(o.k)][Lang()]), cw - 32 * s)) {
+            g.TextW(ui::FONT_NORMAL, cx + 16 * s, py, line, 0xFFFFFFFF, ui::TEXT_SHADOW);
+            py += g.LineHeight(ui::FONT_NORMAL);
+        }
+        if (pi >= 0 && g_worn[pi] >= 0)  // what it puts off
+            g.Text(ui::FONT_SMALL, cx + cw * 0.5f, cy + chh - 34 * s, Format(TR("Вместо: %s", "Instead of: %s"), ClothTitle(g_worn[pi])), 0xFFFFB060,
+                   ui::TEXT_CENTER | ui::TEXT_SHADOW);
+        if (hv && st.lmbPressed) take = true, g_wardSel = k, st.lmbPressed = false;
+    }
+    g_wardMouseX = st.mouseX, g_wardMouseY = st.mouseY;
+    g.Text(ui::FONT_SMALL, x + W * 0.5f, y + H - 34 * s,
+           TR("A/D, стрелки — выбор    Enter, Пробел, ЛКМ, 1-3 — взять    Esc, E — отказаться",
+              "A/D, arrows: pick    Enter, Space, click, 1-3: take    Esc, E: refuse"),
+           0xFF8D9CAD, ui::TEXT_CENTER | ui::TEXT_SHADOW);
+    ui::w::DrawCursor();
+    if (take && g_wardSel >= 0 && g_wardSel < n) {
+        WardOffer o = g_wardOffers[(size_t)g_wardSel];
+        SetWardOpen(false);
+        WearOffer(o);
+    }
 }
 void TakeOffOutfit() {  // the arena is over: the perks go, CJ's clothes from before it come back
     OutfitPerks(false);
@@ -7401,7 +7510,22 @@ void Vote(uint8_t by) {  // host
     SendVotes();
     if (g_voteCount >= g_voteNeed) Skip(by);
 }
+void MerchantReminder() {  // at each break: when the merchant comes
+    if (!g_arena.wave || g_arena.endAt) return;
+    int m = -1;
+    for (int w = g_arena.wave; w < g_arena.wave + 30; ++w)
+        if (MerchantWave(w)) {
+            m = w;
+            break;
+        }
+    if (m < 0 || (!Endless() && m >= g_arena.waves)) return;  // no break after the last wave
+    std::string t = m == g_arena.wave ? std::string(TR("Торговец придёт в конце этой перемены!", "The merchant comes at the end of this break!"))
+                                      : Format(TR("Торговец придёт после %d-й волны (через %d).", "The merchant comes after wave %d (in %d)."), m, m - g_arena.wave);
+    ui::TheChat().AddSystem(t);
+    ShowHelp(t, 6000);
+}
 void SetBreak(bool on, uint64_t endMs) {
+    if (on && !g_break) MerchantReminder();
     if (on && !g_break) g_votes.clear(), g_mapVotes.clear(), g_voteCount = g_mapVoteCount = 0, g_iVoted = g_iMapVoted = false;
     g_break = on;
     if (on) g_breakEndMs = endMs;
@@ -7487,24 +7611,29 @@ void DrawWaveBar(float y) {
     if (n <= 0 || n > 12) return;
     auto& g = ui::Gfx();
     float s = g.Scale();
-    float cw = 34 * s, gap = 4 * s, ch = 9 * s;
+    // the game's own HUD bars' look (health, armour): one bar in a thick black frame, its cells a darker shade of
+    // their colour till done, the full colour once done; the boss's cell red, a hard one orange
+    float cw = 34 * s, ch = 12 * s, frame = std::max(2.0f, 2.0f * s);
     std::string boss = g_nextBoss >= 0 ? BossName(g_nextBoss) : std::string("?");
     float bw = g.TextWidth(ui::FONT_SMALL, boss) + 16 * s;
-    float total = (float)n * cw + (float)(n - 1) * gap + 10 * s + bw;
-    float x = (g.Width() - total) * 0.5f;
+    float barW = (float)n * cw;
+    float total = barW + frame * 2 + 12 * s + bw;
+    float x0 = (g.Width() - total) * 0.5f;
+    g.Rect(x0, y, barW + frame * 2, ch + frame * 2, 0xFF000000);  // the frame
+    float x = x0 + frame;
     for (int i = 0; i < n; ++i) {
         int wave = from + i + 1;
-        bool done = wave < g_arena.wave || (wave == g_arena.wave && g_break);
-        bool cur = wave == g_arena.wave && !g_break;
-        g.Rect(x, y, cw, ch, 0xA0000000);
-        uint32_t c = done ? 0xFFACCBF1 : cur ? 0xFFFFD060 : 0x00000000;
-        if (c) g.Rect(x + 1 * s, y + 1 * s, cw - 2 * s, ch - 2 * s, c);
-        if (BossWave(wave)) g.RectOutline(x, y, cw, ch, 0xFFC8282D, std::max(1.0f, s) * 2.0f);
-        else if (HardWave(wave)) g.RectOutline(x, y, cw, ch, 0xFFFF9020, std::max(1.0f, s) * 2.0f);
-        x += cw + gap;
+        bool done = wave <= g_arena.wave;
+        bool bossW = BossWave(wave), hard = !bossW && HardWave(wave);
+        uint32_t full = bossW ? 0xFFB4191D : hard ? 0xFFE1A03C : 0xFFACCBF1;   // HUD red, orange, the menus' blue
+        uint32_t dark = bossW ? 0xFF4A0A0C : hard ? 0xFF5A4018 : 0xFF2C3540;
+        g.Rect(x, y + frame, cw, ch, done ? full : dark);
+        if (i) g.Rect(x, y + frame, std::max(1.0f, s), ch, 0xFF000000);  // the cells' seams
+        if (wave == g_arena.wave + 1) g.Rect(x + std::max(1.0f, s), y + frame + ch - 3 * s, cw - std::max(1.0f, s), 3 * s, 0xFFFFD060);  // the next one
+        x += cw;
     }
-    x += 10 * s - gap;
-    g.Text(ui::FONT_SMALL, x, y + ch * 0.5f - g.LineHeight(ui::FONT_SMALL) * 0.5f, boss, 0xFFFF6050, ui::TEXT_OUTLINE);
+    x += frame + 12 * s;
+    g.Text(ui::FONT_SMALL, x, y + frame + ch * 0.5f - g.LineHeight(ui::FONT_SMALL) * 0.5f, boss, 0xFFB4191D, ui::TEXT_OUTLINE);
 }
 // the arena's world stands still: midday and one weather (the weather let go after it); no radar
 bool g_worldHeld = false;
@@ -8295,6 +8424,7 @@ void DrawCod() {
     DrawArmourBar();
     DrawGadgets(now);
     DrawShop();
+    DrawWardrobe();
     DrawHelpBox(now);
     DrawKeys();
     if (g_zoneNow >= 0)
@@ -8812,7 +8942,7 @@ struct Reg {
 
 namespace arena {
 
-bool ShopOpen() { return g_shopOpen; }
+bool ShopOpen() { return g_shopOpen || g_wardOpen; }
 int OutgoingDamage(CEntity* creator, int weapon, int damage) { return On() ? OutgoingDamageArena(weapon, damage) : damage; }
 void BarricadeBlast(const CVector& at) {
     if (g_arena.on && g_arena.taken && !g_ebars.empty()) EBarBlast(at);
@@ -8955,7 +9085,7 @@ bool KeyDown(int vk, bool repeat) {
         return true;
     }
     if (!On() || !ReviveText(hint).empty()) return false;
-    if (g_shopOpen) return true;  // the merchant's screen reads its keys itself (DrawShop)
+    if (g_shopOpen || g_wardOpen) return true;  // the merchant's and the wardrobe's screens read their keys themselves
     if (vk == 'E' && NearMerchant()) {
         if (!repeat) SetShopOpen(true);
         return true;
