@@ -1528,6 +1528,12 @@ void Peds::ApplyMirror(NetPed& np) {
     }
     if (onCar) return;
     if (np.animFull) {  // a full-body action plays: hold the position without locomotion tasks
+        // its walk task from before went on under it (a grenade's throw: the copy turned to its owner's heading, at the
+        // player, while the task still walked it on to its old goal behind it: it walked backwards). It stands now.
+        if (np.lastTaskMove != 1 && !TaskPending(ped)) {
+            Cmd(0x05BA).I(np.handle).I(1000).Run();  // TASK_STAND_STILL
+            np.lastTaskMove = 1;
+        }
         if (d > 2.0f) SetEntityPosition(ped, CVector{target.x, target.y, cur.z});  // a scene's warp: there at once
         else if (d > 0.25f) SetEntityPosition(ped, cur + CVector{err.x * 0.2f, err.y * 0.2f, 0});
         ped->CurrentRotation() = ped->AimingRotation() = LerpAngle(ped->CurrentRotation(), st.heading, 0.2f);
