@@ -321,7 +321,6 @@ void GearOn(game::CPed* p, bool shield, bool tank, int belt);
 void ClearGear();
 void ShowStatBox();
 void HoldWorld(bool on);
-void ClearBodyVests();
 extern int g_dashCharges;
 int MountQuad(int h);
 bool RcPlace() { return std::string(kPlaces[g_arena.place].keys[0][1]) == "rc"; }
@@ -1542,7 +1541,7 @@ void DrawMvp(uint64_t now) {  // as the game's own menu: its dark panel, the got
     float w = std::max({g.TextWidth(ui::FONT_BIG, g_mvp.name), g.TextWidth(ui::FONT_MENU, sub), g.GameTextWidth(ui::GAME_FONT_GOTHIC, "MVP", th)}) + 64 * s;
     float h = th + g.LineHeight(ui::FONT_MENU) * 2 + g.LineHeight(ui::FONT_BIG) + 52 * s;
     // under the break's line on the right ("Пауза ... [Y] пропустить"), not over it
-    float x = g.Width() - w - 24 * s, y = g.Height() * 0.36f + g.LineHeight(ui::FONT_NORMAL) + 30 * s;
+    float x = g.Width() - w - 24 * s, y = g.Height() * 0.36f + g.LineHeight(ui::FONT_NORMAL) * 2 + 34 * s;
     g.Rect(x, y, w, h, ui::WithAlpha(0xE0000000, a));
     g.RectOutline(x, y, w, h, ui::WithAlpha(0xFF26303B, a), std::max(1.0f, s));
     float cx = x + w * 0.5f, ty = y + 12 * s;
@@ -6136,7 +6135,6 @@ void End(bool tell) {
     CancelDown();
     StopOwnMoves();
     HoldWorld(false);
-    ClearBodyVests();
     g_station = -1;
     g_spectators.clear();
     HideSaves(false);
@@ -6276,10 +6274,10 @@ struct Gear {
 };
 std::map<uint16_t, Gear> g_gear;
 float g_gearTune[2][4] = {{-0.28f, 0.45f, -0.95f, 0.55f},   // the shield: right, forward, up from the torso; its size
-                          {0.0f, -0.28f, -0.05f, 1.6f}};    // the tank
+                          {0.0f, -0.24f, -0.10f, 1.5f}};    // the tank
 std::vector<CVector> g_igniteQueue;  // host: the fuel's spots to set alight, a few a frame
 uint64_t g_igniteMs = 0;
-constexpr int MODEL_SHIELD = 1499, MODEL_TANK = 1650, MODEL_MOLOTOV = 344;
+constexpr int MODEL_SHIELD = 1499, MODEL_TANK = 366, MODEL_MOLOTOV = 344;  // a door made small, the fire extinguisher, the molotov
 
 uint16_t NetIdOf(CPed* p) {
     NetPed* np = p ? Peds::Instance().Find(p) : nullptr;
@@ -6294,13 +6292,23 @@ void SendGear(const Gear& g) {  // host
     });
 }
 Gear* GearOf(CPed* p) {
-    uint16_t id = NetIdOf(p);
-    auto it = id ? g_gear.find(id) : g_gear.end();
-    return it != g_gear.end() ? &it->second : nullptr;
+    for (auto& [id, g] : g_gear)
+        if (g.ped == p) return &g;
+    return nullptr;
 }
+struct GearWait {
+    CPed* ped;
+    bool shield, tank;
+    int belt;
+};
+std::vector<GearWait> g_gearWait;  // host: men made this frame, their net ids not given yet (Peds shares them a little later)
 void GearOn(CPed* p, bool shield, bool tank, int belt) {  // host, as the man is made
-    uint16_t id = NetIdOf(p);
-    if (!id) return;
+    static uint16_t offlineId = 0xF000;
+    uint16_t id = Net().Online() ? NetIdOf(p) : ++offlineId;  // alone: an id of its own (no one to send it to)
+    if (!id) {
+        g_gearWait.push_back({p, shield, tank, belt});
+        return;
+    }
     Gear& g = g_gear[id];
     g.id = id, g.ped = p, g.shield = shield, g.shieldOn = shield, g.tank = tank, g.belt = belt;
     SendGear(g);
@@ -6311,12 +6319,17 @@ void GearObjsOff(Gear& g) {
 void ClearGear() {
     for (auto& [id, g] : g_gear) GearObjsOff(g);
     g_gear.clear();
+    g_gearWait.clear();
     g_igniteQueue.clear();
 }
 int GearObj(int model, CPed* p, float scale) {
     float lift = 0, height = 0;
-    int h = PickModel({model}) >= 0 ? MakeObj(model, p->GetPosition(), 0.0f, lift, height) : -1;
-    if (h < 0) return -1;
+    int h = MakeObj(model, p->GetPosition(), 0.0f, lift, height);  // its model streamed in first (LoadModelNow)
+    if (h < 0) {
+        static uint64_t logMs = 0;
+        if (NowMs() - logMs > 5000) logMs = NowMs(), LOGI("Arena: gear model %d not made", model);
+        return -1;
+    }
     Cmd(0x0382).I(h).I(0).Run();  // SET_OBJECT_COLLISION: none
     Cmd(0x0550).I(h).I(1).Run();  // FREEZE_OBJECT_POSITION
     if (CObject* o = GetObject(h)) Field<float>(o, 0x15C) = scale;
@@ -6350,6 +6363,15 @@ void PutAt(int h, const CVector& pos, const CVector& right, const CVector& fwd, 
 }
 // every frame (every game): the men found, their objects made, kept and put on them; the fuel's trail laid
 void GearFrame(uint64_t now) {
+    if (g_arena.host && !g_gearWait.empty()) {  // the waiting ones: their ids now
+        std::vector<GearWait> wait;
+        wait.swap(g_gearWait);
+        for (const GearWait& w : wait)
+            if (IsPedValid(w.ped) && w.ped->Health() > 0.0f) {
+                if (NetIdOf(w.ped)) GearOn(w.ped, w.shield, w.tank, w.belt);
+                else g_gearWait.push_back(w);
+            }
+    }
     for (auto it = g_gear.begin(); it != g_gear.end();) {
         Gear& g = it->second;
         if (!g.ped || !IsPedValid(g.ped)) {
@@ -7085,35 +7107,6 @@ void BuyStats() {
     ShowHelp(Format(TR("Ящик навыков: %s", "The skills box: %s"), what.c_str()), 5000);
     CallMethod<0x506EA0>((void*)0xB6BC90, 40 /* AE_FRONTEND_PURCHASE_WEAPON */, 0.0f, 1.0f);
 }
-// ---- the armour on the body: a vest on every player who has armour (every game, its own objects)
-std::map<CPed*, int> g_vestObjs;
-float g_vestTune[4] = {0.0f, 0.09f, 0.08f, 1.3f};  // the vest on the chest: right, forward, up (from the torso's bone), its size
-void ArmourFrame() {
-    std::vector<CPed*> peds;
-    if (CPlayerPed* me = FindPlayerPed(0)) peds.push_back(me);
-    for (auto& [id, rp] : Players::Instance().All())
-        if (rp.ped && IsPedValid(rp.ped)) peds.push_back(rp.ped);
-    bool show = g_arena.on && g_arena.taken;
-    for (auto it = g_vestObjs.begin(); it != g_vestObjs.end();) {  // the gone and the bare: no vest
-        CPed* p = it->first;
-        bool keep = show && std::find(peds.begin(), peds.end(), p) != peds.end() && IsPedValid(p) && p->Health() > 0.0f &&
-                    p->Armour() > 0.5f && !p->InVehicle() && it->second >= 0 && GetObject(it->second);
-        if (keep) ++it;
-        else DelObj(it->second), it = g_vestObjs.erase(it);
-    }
-    if (!show) return;
-    for (CPed* p : peds) {
-        if (g_vestObjs.count(p) || p->Health() <= 0.0f || p->Armour() <= 0.5f || p->InVehicle()) continue;
-        float lift = 0, height = 0;
-        int model = PickModel({1242});  // the body armour (the vest the pickups show)
-        int h = model >= 0 ? MakeObj(model, p->GetPosition(), 0.0f, lift, height) : -1;
-        if (h < 0) continue;
-        Cmd(0x0382).I(h).I(0).Run();  // SET_OBJECT_COLLISION: none
-        Cmd(0x0550).I(h).I(1).Run();  // FREEZE_OBJECT_POSITION: it goes where VestsOnBodies puts it
-        if (CObject* o = GetObject(h)) Field<float>(o, 0x15C) = g_vestTune[3];  // CObject::m_fScale
-        g_vestObjs[p] = h;
-    }
-}
 // a bone's place now (CPed::m_apBones' frame in the skin's world matrices)
 bool BoneAt(CPed* p, int node, CVector& at) {
     auto* clump = (uint8_t*)p->RwObject();
@@ -7124,34 +7117,6 @@ bool BoneAt(CPed* p, int node, CVector& at) {
     if (i < 0 || !bones) return false;
     at = ((const CMatrix*)(bones + (size_t)i * 0x40))->pos;
     return true;
-}
-// every frame as it is drawn: each vest on its chest, upright along the spine (torso to head: bent, crouched, leaning
-// as he is), facing the way he faces
-void VestsOnBodies() {
-    for (auto& [p, h] : g_vestObjs) {
-        CObject* o = h >= 0 ? GetObject(h) : nullptr;
-        CMatrix *m = o ? o->Matrix() : nullptr, *pm = IsPedValid(p) ? p->Matrix() : nullptr;
-        CVector torso, head;
-        if (!m || !pm || !BoneAt(p, 1 /* PED_NODE_UPPER_TORSO */, torso) || !BoneAt(p, 2 /* PED_NODE_HEAD */, head)) continue;
-        CVector up = head - torso;
-        float l = up.Length();
-        up = l > 0.01f ? up * (1.0f / l) : pm->up;
-        CVector fwd = pm->forward - up * pm->forward.Dot(up);  // the way he faces, square to the spine
-        float fl = fwd.Length();
-        fwd = fl > 0.01f ? fwd * (1.0f / fl) : pm->forward;
-        CVector right{fwd.y * up.z - fwd.z * up.y, fwd.z * up.x - fwd.x * up.z, fwd.x * up.y - fwd.y * up.x};
-        WorldRemove(o);
-        m->right = right, m->forward = fwd, m->up = up;
-        m->pos = torso + right * g_vestTune[0] + fwd * g_vestTune[1] + up * g_vestTune[2];  // on the chest (/vestpos tunes it)
-        Field<float>(o, 0x15C) = g_vestTune[3];
-        CallMethod<0x446F90>(o);  // CEntity::UpdateRW
-        CallMethod<0x532B00>(o);  // CEntity::UpdateRwFrame
-        WorldAdd(o);
-    }
-}
-void ClearBodyVests() {
-    for (auto& [p, h] : g_vestObjs) DelObj(h);
-    g_vestObjs.clear();
 }
 
 void Update() {
@@ -7169,7 +7134,6 @@ void Update() {
     if (now - savesMs > 1000) savesMs = now, HideSaves(true);
     game::challenge::Tick();
     if (g_arena.taken) HoldWorld(true);
-    ArmourFrame();
     GearFrame(now);
     if (g_arena.host)  // the flamers' belts: one molotov fewer each throw
         for (auto& [q, qe] : g_info)
@@ -7826,7 +7790,6 @@ void DrawCod() {
     DrawMvp(now);
     DrawHelpBox(now);
     DrawKeys();
-    VestsOnBodies();
     GearOnBodies();
     DrawFuel();
     if (g_zoneNow >= 0)
@@ -7834,12 +7797,14 @@ void DrawCod() {
     for (auto& [h, name] : g_guardNames)  // the homies' names
         if (CPed* gp = GetPed(h); gp && gp->Health() > 0.0f) Label(gp->GetPosition() + CVector{0, 0, 1.15f}, kGuardNames[name][Lang()], 0xFF80FF80, 30.0f);
     if (g_break && !g_arena.endAt && g_breakEndMs > now) {  // the break: one line on the right
-        std::string t = Format(TR("Пауза %d с   [Y] пропустить %d/%d", "Break %d s   [Y] skip %d/%d"), (int)((g_breakEndMs - now + 999) / 1000),
-                               g_voteCount, g_voteNeed);
-        float tw = g.TextWidth(ui::FONT_NORMAL, t) + 28 * s;
+        std::string t1 = Format(TR("Пауза %d с", "Break %d s"), (int)((g_breakEndMs - now + 999) / 1000));
+        std::string t2 = Format(TR("[Y] пропустить %d/%d", "[Y] skip %d/%d"), g_voteCount, g_voteNeed);
+        float lh = g.LineHeight(ui::FONT_NORMAL);
+        float tw = std::max(g.TextWidth(ui::FONT_NORMAL, t1), g.TextWidth(ui::FONT_NORMAL, t2)) + 36 * s;
         float px = g.Width() - tw - 24 * s, py = g.Height() * 0.36f;
-        g.Rect(px, py, tw, g.LineHeight(ui::FONT_NORMAL) + 16 * s, 0xA0000000);
-        g.Text(ui::FONT_NORMAL, px + 14 * s, py + 8 * s, t, 0xFFFFFFFF, ui::TEXT_SHADOW);
+        g.Rect(px, py, tw, lh * 2 + 20 * s, 0xA0000000);
+        g.Text(ui::FONT_NORMAL, px + tw * 0.5f, py + 8 * s, t1, 0xFFFFFFFF, ui::TEXT_CENTER | ui::TEXT_SHADOW);
+        g.Text(ui::FONT_NORMAL, px + tw * 0.5f, py + 12 * s + lh, t2, 0xFFFFFFFF, ui::TEXT_CENTER | ui::TEXT_SHADOW);
     }
     float x = g.Width() - 40 * s, y = g.Height() * 0.24f;  // under the game's own money
     for (const Popup& p : g_popups) {
@@ -8184,11 +8149,6 @@ public:
             int k = LowerRu(args[0]) == "tank" ? 1 : 0;
             for (size_t i = 1; i < args.size() && i < 5; ++i) g_gearTune[k][i - 1] = (float)std::atof(args[i].c_str());
             ui::TheChat().AddSystem(Format("gearpos %s %.2f %.2f %.2f %.2f", k ? "tank" : "shield", g_gearTune[k][0], g_gearTune[k][1], g_gearTune[k][2], g_gearTune[k][3]));
-            return true;
-        }
-        if (c == "vestpos") {  // /vestpos x y z scale: the vest's place on the chest, tried in the game
-            for (size_t i = 0; i < args.size() && i < 4; ++i) g_vestTune[i] = (float)std::atof(args[i].c_str());
-            ui::TheChat().AddSystem(Format("vestpos %.2f %.2f %.2f %.2f", g_vestTune[0], g_vestTune[1], g_vestTune[2], g_vestTune[3]));
             return true;
         }
         if (c == "подсказки" || c == "tips") {  // the arena's hints on and off (F9 too)
