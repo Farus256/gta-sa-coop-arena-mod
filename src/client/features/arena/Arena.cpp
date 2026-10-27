@@ -197,7 +197,7 @@ enum ArenaOp : uint8_t {
     A_START = 1, A_WAVE, A_LEFT, A_BOSS, A_END, A_ITEMS, A_PREP, A_MARK, A_SKIP,
     A_SCORE, A_BARS, A_BOARD, A_REPAIR, A_BOX, A_BOXUSE, A_BOXROLL, A_PERKS, A_PSPAWN, A_GRAB, A_POWER, A_TWINS,
     A_WALLS, A_DROP, A_TAKE, A_TAKEN, A_BUILD, A_LOBBY, A_FLAMER, A_STAGE, A_VOTE, A_VOTES, A_GIVE, A_MAPVOTE, A_MOVE,
-    A_HEALGAS, A_BOSSNAME, A_HIT, A_SHELL, A_SPEC, A_BOXTAKEN, A_SPOT, A_DRONEHIT, A_ALERT /* not used any more */, A_GUARDNAME, A_GUARDREQ, A_ZONE, A_EBAR, A_SAWHIT, A_HALVE, A_PROPS, A_EBARHIT, A_EBARGONE
+    A_HEALGAS, A_BOSSNAME, A_HIT, A_SHELL, A_SPEC, A_BOXTAKEN, A_SPOT, A_DRONEHIT, A_ALERT /* not used any more */, A_GUARDNAME, A_GUARDREQ, A_ZONE, A_EBAR, A_SAWHIT, A_HALVE, A_PROPS, A_EBARHIT, A_EBARGONE, A_OPERATOR
 };
 struct Arena {
     bool on = false, host = false;
@@ -334,6 +334,12 @@ constexpr int kMaxBuildSpots = 16;
 int g_zoneNow = -1;                  // every game: the wave's zone (its number from 0), -1: none
 game::CVector g_zoneAt;
 game::CPed* g_operator = nullptr;  // host: the RC helicopters' man
+// his remote in every game: a phone held before him (an object fixed to the man; a detonator in his hand, the game's
+// own, crashed as he "used" it: its animations not in memory, 0x4D3FBC and 0x72F4DE from CAnimManager::BlendAnimation)
+game::CPed* g_remoteFor = nullptr;
+uint16_t g_remoteId = 0;       // a partner's: the man's id till its copy is there
+uint64_t g_remoteIdUntil = 0;
+int g_remoteObj = -1;
 // host: this arena's boss carries the AK-47 with the grenade launcher (T-Bone always, the others half the time) or a
 // katana (spins at the players, the bullets bounce off him meanwhile)
 bool g_bossUgl = false, g_bossKatana = false;
@@ -3469,6 +3475,8 @@ void SpawnWave() {
     SendProps();
     int w = g_arena.wave;
     g_operator = nullptr;
+    g_remoteFor = nullptr, g_remoteId = 0;
+    DelObj(g_remoteObj);
     g_dronesLeft = 0;
     const Faction& fac = kFactions[g_arena.faction];
     g_sawPed = g_officerPed = nullptr;
@@ -4341,6 +4349,27 @@ void RaiseFallen() {
 // builders (no weapon, $150 on them) put barricades up round the zone (cover for their own, fences for everyone).
 // The builders' barricades break: shots, blows, blasts and the chainsaw's dash take their health off (each game
 // tells the host of its own player's, A_EBARHIT; the host's word they are down, A_EBARGONE)
+void RemoteFrame() {
+    if (g_remoteId) {
+        int h = Peds::Instance().HandleOf(g_remoteId);
+        if (CPed* p = h >= 0 ? GetPed(h) : nullptr) g_remoteFor = p, g_remoteId = 0;
+        else if (NowMs() > g_remoteIdUntil) g_remoteId = 0;
+    }
+    bool alive = g_remoteFor && IsPedValid(g_remoteFor) && g_remoteFor->Health() > 0.0f;
+    if (!alive) {
+        g_remoteFor = nullptr;
+        DelObj(g_remoteObj);
+        return;
+    }
+    if (g_remoteObj >= 0 && GetObject(g_remoteObj)) return;
+    float lift = 0, height = 0;
+    int model = PickModel({330});  // the cellphone
+    if (model < 0) return;
+    g_remoteObj = MakeObj(model, g_remoteFor->GetPosition(), 0.0f, lift, height);
+    if (g_remoteObj < 0) return;
+    Cmd(0x0382).I(g_remoteObj).I(0).Run();  // SET_OBJECT_COLLISION: none
+    Cmd(0x069B).I(g_remoteObj).I(GetPedRef(g_remoteFor)).F(0.12f).F(0.32f).F(0.05f).F(-60.0f).F(0.0f).F(0.0f).Run();  // ATTACH_OBJECT_TO_CHAR: before him, in his hands
+}
 constexpr int kEBarHp = 300;
 struct EBar {
     CVector pos;
@@ -4671,7 +4700,6 @@ void Builder(CPed* p, Enemy& e, uint64_t now) {  // host, every round of tactics
 
 // ---- the RC battlefield's drone operator (host): a man with no weapon where the snipers sit, the RC helicopters
 // come from him (1 in the first wave, then up to 3 a wave, 3 at once at most); none once he is dead
-constexpr int WEAPON_DETONATOR_ARENA = 40;  // the operator's remote (only in his hand)
 void MakeOperator(int wave) {
     const Faction& f = kFactions[g_arena.faction];
     g_squads.push_back(Squad{});
@@ -4679,11 +4707,18 @@ void MakeOperator(int wave) {
     if (!GridUsable() || !SniperSpot({}, nullptr, 0.0f, at)) at = SpawnSpot(Rand(0.0f, 6.2831853f), 3.2f, 8.0f);
     float fz = 0;
     if (FloorNoBars(at.x, at.y, at.z + 0.5f, fz)) at.z = fz + 1.0f;  // on the floor
-    int h = MakeEnemy(f.models[(size_t)RandInt(0, 3)], GunFor(WEAPON_DETONATOR_ARENA) == WEAPON_DETONATOR_ARENA ? WEAPON_DETONATOR_ARENA : 0, 100 + 15 * wave, ArmourFor(wave, 0), 50, at, (int)g_squads.size() - 1, R_OPERATOR, true);
+    int h = MakeEnemy(f.models[(size_t)RandInt(0, 3)], 0, 100 + 15 * wave, ArmourFor(wave, 0), 50, at, (int)g_squads.size() - 1, R_OPERATOR, true);
     g_operator = h >= 0 ? GetPed(h) : nullptr;
     g_dronesLeft = std::min(3, wave);
     g_nextDroneMs = NowMs() + 8000;
-    if (g_operator) ui::TheChat().AddSystem(TR("Оператор дронов на позиции.", "A drone operator is in place."));
+    if (g_operator) {
+        ui::TheChat().AddSystem(TR("Оператор дронов на позиции.", "A drone operator is in place."));
+        if (NetPed* np = Peds::Instance().Find(g_operator)) {
+            uint16_t id = np->netId;
+            Send(A_OPERATOR, [id](Writer& w) { w.U16(id); });
+        }
+        g_remoteFor = g_operator, g_remoteId = 0;
+    }
 }
 
 // ---- the katana boss (host): runs at his player, within 7 m winds up (0.8 s), then spins fast (3.5 s) and comes on at
@@ -5559,6 +5594,8 @@ void Clear() {
     ClearEBars();
     g_zoneNow = -1;
     g_operator = nullptr;
+    g_remoteFor = nullptr, g_remoteId = 0;
+    DelObj(g_remoteObj);
     ClearDrones();
     ClearQuads();
     ClearGuards();
@@ -5999,6 +6036,9 @@ void Handle(uint8_t from, Reader& r) {
         int8_t idx = r.I8();
         Vec3 v = r.Vec();
         if (r.Ok()) ShowZone(idx, {v.x, v.y, v.z});
+    } else if (op == A_OPERATOR) {
+        uint16_t id = r.U16();
+        if (r.Ok()) g_remoteId = id, g_remoteIdUntil = NowMs() + 15000, g_remoteFor = nullptr;
     } else if (op == A_EBARGONE) {
         uint8_t i = r.U8();
         if (r.Ok()) EBarDown(i);
@@ -6269,6 +6309,7 @@ void Update() {
         g_fewSince = 0;
     }
     if (g_arena.host) KatanaFrame(now);
+    RemoteFrame();
     static uint64_t scoreMs = 0;  // the score now and then too: one that came in late has everyone's
     if (now - scoreMs > 3000) {
         scoreMs = now, SendScore();
