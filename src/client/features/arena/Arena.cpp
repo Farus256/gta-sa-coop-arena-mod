@@ -201,7 +201,7 @@ enum ArenaOp : uint8_t {
     A_START = 1, A_WAVE, A_LEFT, A_BOSS, A_END, A_ITEMS, A_PREP, A_MARK, A_SKIP,
     A_SCORE, A_BARS, A_BOARD, A_REPAIR, A_BOX, A_BOXUSE, A_BOXROLL, A_PERKS, A_PSPAWN, A_GRAB, A_POWER, A_TWINS,
     A_WALLS, A_DROP, A_TAKE, A_TAKEN, A_BUILD, A_LOBBY, A_FLAMER, A_STAGE, A_VOTE, A_VOTES, A_GIVE, A_MAPVOTE, A_MOVE,
-    A_HEALGAS, A_BOSSNAME, A_HIT, A_SHELL, A_SPEC, A_BOXTAKEN, A_SPOT, A_DRONEHIT, A_ALERT /* not used any more */, A_GUARDNAME, A_GUARDREQ, A_ZONE, A_EBAR, A_SAWHIT, A_HALVE, A_PROPS, A_EBARHIT, A_EBARGONE, A_OPERATOR /* not used any more */, A_MVP, A_MAGNET, A_EVENT, A_NEXTBOSS, A_SAWWIND, A_GEAR /* not used any more */, A_IGNITE /* not used any more */, A_MERCHANT, A_BAYONET
+    A_HEALGAS, A_BOSSNAME, A_HIT, A_SHELL, A_SPEC, A_BOXTAKEN, A_SPOT, A_DRONEHIT, A_ALERT /* not used any more */, A_GUARDNAME, A_GUARDREQ, A_ZONE, A_EBAR, A_SAWHIT, A_HALVE, A_PROPS, A_EBARHIT, A_EBARGONE, A_OPERATOR /* not used any more */, A_MVP, A_MAGNET, A_EVENT, A_NEXTBOSS, A_SAWWIND, A_GEAR /* not used any more */, A_IGNITE /* not used any more */, A_MERCHANT, A_BAYONET, A_RAGEREADY
 };
 struct Arena {
     bool on = false, host = false;
@@ -229,6 +229,7 @@ int g_nextBoss = -1;  // the next boss wave's boss (the host picks it ahead; eve
 // the spectators: whoever fell in the arena watches a team mate till the next wave (every game knows who: A_SPEC)
 bool g_spectating = false;
 std::set<uint8_t> g_spectators;
+std::set<uint8_t> g_rageReady;  // host: the partners whose rage dose is ready (lying wounded they are still in the fight)
 uint8_t g_specTarget = 0xFF;
 bool Spectator(uint8_t id) { return g_spectators.count(id) != 0; }
 // this player has T-Bone's AK with the grenade launcher: loaded, or loading till then
@@ -6477,6 +6478,7 @@ void End(bool tell) {
     ResetShop();
     g_station = -1;
     g_spectators.clear();
+    g_rageReady.clear();
     HideSaves(false);
     ShutDoors(false);
     TakeBack();
@@ -7226,6 +7228,15 @@ void GadgetFrame(uint64_t now) {
         if (g_visorCharge <= 0.0f || g_break) g_visorCharge = std::max(0.0f, g_visorCharge), g_visorOn = false;
     }
     if (g_rageStunUntil && now >= g_rageStunUntil) RampageOn();
+    if (!g_arena.host && Net().Online()) {  // the host counts a partner lying wounded with it ready as still in
+        static int sent = -1;
+        static uint64_t sentMs = 0;
+        int ready = arena::RageReady() ? 1 : 0;
+        if (ready != sent || now - sentMs > 3000) {
+            sent = ready, sentMs = now;
+            Send(A_RAGEREADY, [ready](Writer& w) { w.U8((uint8_t)ready); });
+        }
+    }
     if (g_rageUntil && now < g_rageUntil) {  // the heartbeat in the camera
         static uint64_t beatMs = 0;
         if (now - beatMs > 800) beatMs = now, Call<0x50A970>((void*)addr::TheCamera, 0.04f);  // CCamera::CamShakeNoPos
@@ -7429,6 +7440,11 @@ void Handle(uint8_t from, Reader& r) {
     if (r.Ok() && op == A_SHELL && from != Net().HostId()) {  // a partner's own launcher
         Vec3 f = r.Vec(), v = r.Vec();
         if (r.Ok() && g_arena.on) AddShell({f.x, f.y, f.z}, {v.x, v.y, v.z}, nullptr, false);
+        return;
+    }
+    if (r.Ok() && op == A_RAGEREADY) {  // a partner's rage dose ready or not
+        uint8_t on = r.U8();
+        if (r.Ok()) on ? (void)g_rageReady.insert(from) : (void)g_rageReady.erase(from);
         return;
     }
     if (r.Ok() && op == A_BOXTAKEN) {
@@ -8317,7 +8333,8 @@ void Update() {
         anyIn |= !g_spectating && me->Health() > 0.0f && me->AreaCode() == area && (!Players::Instance().LocalDowned() || arena::RageReady());  // the rage dose can get it up
     for (auto& [id, rp] : Players::Instance().All())
         if (rp.hasState && !Spectator(id))
-            anyIn |= !(rp.state.flags & (OnFootState::F_DEAD | OnFootState::F_DOWNED)) && rp.state.area == area && now - rp.stateRecvMs < 5000;
+            anyIn |= !(rp.state.flags & OnFootState::F_DEAD) && (!(rp.state.flags & OnFootState::F_DOWNED) || g_rageReady.count(id)) &&
+                     rp.state.area == area && now - rp.stateRecvMs < 5000;  // wounded with the rage dose ready: still in
     if (!anyIn && now - g_arena.startMs > 8000) {
         if (!g_arena.outSince) g_arena.outSince = now;
         if (now - g_arena.outSince > 300) {  // at once (a moment for the states to come)
