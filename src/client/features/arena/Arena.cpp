@@ -942,8 +942,14 @@ bool PlayersSee(const CVector& at, const std::vector<CVector>& players) {
 // towards `angle` round the players (radians) if it can be, and out of the players' sight rather than in it. The
 // distance kept from the players is what the place allows (a narrow hall has its far ends only). `minApart` from this
 // wave's others; off the cells (too few): towards the angle from the middle.
-// the RC battlefield's "base": round the players' spot to come in at (20 m), where no enemy comes in
+// the players' base, where no enemy comes in: the host's own (/arena база [радиус], kept for the place), else on the RC
+// battlefield round the players' spot to come in at (20 m)
+bool g_hasBase = false;
+CVector g_basePos;
+float g_baseR = 20.0f;
+float g_baseArg = 0.0f;  // the radius the command gave (0: 15 m)
 bool NearBase(const CVector& p) {
+    if (g_hasBase) return (p - g_basePos).Length2D() < g_baseR;
     if (!RcPlace()) return false;
     return (p - kPlaces[g_arena.place].pos).Length2D() < 20.0f;
 }
@@ -3389,8 +3395,11 @@ void LoadOwnPoints() {
         if (ReadVec(v, p, h)) g_hasMerchantSpot = true, g_merchantSpot = p;
     for (const std::string& v : SpotLines(file, sec, "merchantto", 0))
         if (ReadVec(v, p, h)) g_hasMerchantTo = true, g_merchantTo = p;
+    g_hasBase = false;
+    for (const std::string& v : SpotLines(file, sec, "base", 0))
+        if (ReadVec(v, p, h) && h > 1.0f) g_hasBase = true, g_basePos = p, g_baseR = h;  // its radius in the heading's place
     for (const std::string& v : SpotLines(file, sec, "enemy", 8))
-        if (ReadVec(v, p, h)) g_enemyPts.push_back(p);
+        if (ReadVec(v, p, h) && !NearBase(p)) g_enemyPts.push_back(p);
     for (const std::string& v : SpotLines(file, sec, "zone", 4))
         if (ReadVec(v, p, h)) g_zones.push_back(p);
     for (const std::string& v : SpotLines(file, sec, "build", kMaxBuildSpots))
@@ -3511,7 +3520,9 @@ void SaveSpot(const std::string& what) {
         for (int k = 1; k <= most; ++k) ini.Set(sec, Format("%s%d", kind.c_str(), k), "");
         ini.Save(SpotsPath());
         const char* text =
-            kind == "box"     ? TR("Ящик этого места сброшен: со следующей арены он на своём месте по умолчанию.",
+            kind == "base"    ? TR("База игроков этого места сброшена (на RC-полигоне снова 20 м вокруг входа).",
+                                   "The players' base of this place forgotten (20 m round the way in again on the RC field).")
+            : kind == "box"   ? TR("Ящик этого места сброшен: со следующей арены он на своём месте по умолчанию.",
                                    "The box of this place forgotten: from the next arena it is at its own spot again.")
             : kind == "spawn" ? TR("Точка появления игроков сброшена (снова по умолчанию, со следующей арены).",
                                    "The players' spot forgotten (the default again, from the next arena on).")
@@ -3547,6 +3558,13 @@ void SaveSpot(const std::string& what) {
         ini.Set(sec, "merchantto", line);
         g_hasMerchantTo = true, g_merchantTo = p;
         ui::TheChat().AddSystem(TR("Торговец будет идти сюда и торговать здесь (сохранено для этого места).", "The merchant walks here and trades here (kept for this place)."));
+    } else if (what == "base") {
+        float r = g_baseArg > 1.0f ? std::min(g_baseArg, 80.0f) : 15.0f;
+        ini.Set(sec, "base", Format("%.2f %.2f %.2f %.1f", p.x, p.y, p.z, r));
+        g_hasBase = true, g_basePos = p, g_baseR = r;
+        g_enemyPts.erase(std::remove_if(g_enemyPts.begin(), g_enemyPts.end(), [](const CVector& q) { return NearBase(q); }), g_enemyPts.end());
+        ui::TheChat().AddSystem(Format(TR("База игроков: %.0f м вокруг вас, враги здесь не появляются (сохранено для этого места; сброс: /arena база сброс).",
+                                          "The players' base: %.0f m round you, no enemy comes in here (kept for this place; forget it: /arena base reset)."), r));
     } else if (what == "spawn") {
         ini.Set(sec, "spawn", line);
         ui::TheChat().AddSystem(TR("Точка появления игроков сохранена (со следующей арены).", "The players' spot to come in at is kept (from the next arena on)."));
@@ -3576,7 +3594,7 @@ void SaveSpot(const std::string& what) {
         ui::TheChat().AddError(TR("Оружия на стенах больше нет.", "There are no wall guns any more."));
         return;
     } else if (what == "reset") {
-        for (const char* key : {"box", "spawn"}) ini.Set(sec, key, "");
+        for (const char* key : {"box", "spawn", "base"}) ini.Set(sec, key, "");
         for (int k = 1; k <= 8; ++k) ini.Set(sec, Format("enemy%d", k), "");
         for (int k = 1; k <= 4; ++k) {
             ini.Set(sec, Format("zone%d", k), "");
@@ -9143,9 +9161,11 @@ public:
                            : IsWord(a0, TRP("баррикада", "barricade")) || a0 == "barricade" ? "bar"
                            : IsWord(a0, TRP("стройка", "build")) || IsWord(a0, TRP("строитель", "build")) || a0 == "build" ? "build"
                            : IsWord(a0, TRP("стена", "wall")) || a0 == "wall"          ? "wall"
+                           : IsWord(a0, TRP("база", "base")) || a0 == "base"            ? "base"
                            : IsWord(a0, TRP("сброс", "reset")) || a0 == "reset"         ? "reset"
                                                                     : nullptr;
         std::string what = spot ? spot : "";
+        g_baseArg = what == "base" && args.size() > 1 ? (float)std::atof(args[1].c_str()) : 0.0f;  // /arena база 25: its radius
         if (spot && what != "reset" && what != "wall" && args.size() > 1) {  // /arena газировка сброс: that kind alone
             std::string a1 = LowerRu(args[1]);
             if (IsWord(a1, TRP("сброс", "reset")) || a1 == "reset") what += "reset";
