@@ -624,6 +624,7 @@ void WireHooks() {
     h.arenaSpectating = &arena::Spectating;
     h.arenaFall = &arena::Fall;
     h.arenaQuickRevive = &arena::QuickRevive;
+    h.arenaRageReady = &arena::RageReady;
     h.arenaUseQuickRevive = &arena::UseQuickRevive;
     h.arenaOnLocalHit = &arena::OnLocalHit;
     h.arenaOnLocalKill = &arena::OnLocalKill;

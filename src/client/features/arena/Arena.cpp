@@ -7226,6 +7226,20 @@ void GadgetFrame(uint64_t now) {
         if (g_visorCharge <= 0.0f || g_break) g_visorCharge = std::max(0.0f, g_visorCharge), g_visorOn = false;
     }
     if (g_rageStunUntil && now >= g_rageStunUntil) RampageOn();
+    if (g_rageUntil && now < g_rageUntil) {  // the heartbeat in the camera
+        static uint64_t beatMs = 0;
+        if (now - beatMs > 800) beatMs = now, Call<0x50A970>((void*)addr::TheCamera, 0.04f);  // CCamera::CamShakeNoPos
+    }
+    // the mods on guns this player carries no more (lost, put down, gone with a death): off the merchant's list too
+    if (!g_spectating && me->Health() > 0.0f && PlayerInfos()[0].playerState == 0) {
+        for (int mod = 0; mod < 3; ++mod)
+            for (auto it = g_modGuns[mod].begin(); it != g_modGuns[mod].end();) {
+                bool carried = false;
+                for (int slot = 0; slot < NUM_WEAPON_SLOTS; ++slot) carried |= me->Weapons()[slot].type == *it;
+                it = carried ? std::next(it) : g_modGuns[mod].erase(it);
+            }
+        g_modUgl = !g_modGuns[0].empty(), g_modBayonet = !g_modGuns[1].empty(), g_modSpark = !g_modGuns[2].empty();
+    }
     if (g_rageUntil && now >= g_rageUntil) {
         g_rageUntil = 0;
         if (me->Health() > MaxHealth()) me->Health() = MaxHealth();
@@ -7269,6 +7283,50 @@ void GadgetFrame(uint64_t now) {
                 if (void* assoc = Call<0x4D68B0, void*>(clump, (uint32_t)anim)) Ref<float>((uintptr_t)assoc + 0x24) = 2.0f;
     reloading = now2;
 }
+// The rampage on the screen, as Trevor's in GTA V: the picture graded hot (red and orange, pulsing with a heartbeat),
+// a dark red vignette breathing round the edges, flickers and red-and-cyan fringes at the sides now and then,
+// fine lines over it, a white flash as it starts and the picture going back to normal in its last 2 s
+void DrawRampage(uint64_t now) {
+    auto& g = ui::Gfx();
+    float s = g.Scale(), W = g.Width(), H = g.Height();
+    float since = (float)(now - (g_rageUntil - 25000)) / 1000.0f, left = (float)(g_rageUntil - now) / 1000.0f;
+    float fade = std::clamp(left / 2.0f, 0.0f, 1.0f) * std::clamp(since / 0.4f, 0.0f, 1.0f);
+    // the heartbeat: two beats a second and a little, the second softer
+    float ph = std::fmod(since * 1.25f, 1.0f);
+    float beat = std::exp(-ph * 14.0f) + 0.6f * std::exp(-std::fabs(ph - 0.22f) * 18.0f);
+    beat = std::min(1.0f, beat);
+    auto a = [&](float x) { return (uint32_t)std::clamp(x * fade, 0.0f, 255.0f) << 24; };
+    g.Rect(0, 0, W, H, a(55.0f + 45.0f * beat) | 0xFF3000);  // the hot grade
+    g.Rect(0, 0, W, H, a(25.0f) | 0xFFA020);
+    // the vignette: bands from each edge in, darker and redder outside
+    const int bands = 14;
+    float depth = (0.18f + 0.05f * beat) * std::min(W, H);
+    for (int i = 0; i < bands; ++i) {
+        float k = 1.0f - (float)i / (float)bands, w = depth / (float)bands;
+        uint32_t c = a(110.0f * k * k) | 0x400000;
+        float o = w * (float)i;
+        g.Rect(o, o, W - 2 * o, w, c);                // top
+        g.Rect(o, H - o - w, W - 2 * o, w, c);        // bottom
+        g.Rect(o, o + w, w, H - 2 * o - 2 * w, c);    // left
+        g.Rect(W - o - w, o + w, w, H - 2 * o - 2 * w, c);  // right
+    }
+    // the fine lines
+    for (float y = 0; y < H; y += 4.0f * std::max(1.0f, s)) g.Rect(0, y, W, std::max(1.0f, s), a(14.0f));
+    // the flickers and the fringes: a few times a second, short
+    uint64_t slot = now / 90;
+    uint32_t r = (uint32_t)(slot * 2654435761u) >> 24;
+    if (r < 40) g.Rect(0, 0, W, H, a(40.0f) | 0xFFE0D0);
+    if (r > 200) {
+        float off = (6.0f + (float)(r - 200) * 0.3f) * s;
+        g.Rect(0, 0, off, H, a(90.0f) | 0xFF0000);
+        g.Rect(W - off, 0, off, H, a(90.0f) | 0x00FFFF);
+    }
+    // the start: a white flash
+    if (since < 0.35f) g.Rect(0, 0, W, H, (uint32_t)(std::clamp((0.35f - since) / 0.35f, 0.0f, 1.0f) * 200.0f) << 24 | 0xFFFFFF);
+    // the word at the top, beating, with the seconds left
+    g.Text(ui::FONT_BIG, W * 0.5f, H * 0.12f, Format("RAMPAGE  %d", (int)(left + 0.999f)),
+           ui::WithAlpha(0xFFFF3020, std::clamp(0.55f + 0.45f * beat, 0.0f, 1.0f) * fade), ui::TEXT_CENTER | ui::TEXT_OUTLINE);
+}
 void DrawGadgets(uint64_t now) {
     auto& g = ui::Gfx();
     float s = g.Scale();
@@ -7292,6 +7350,7 @@ void DrawGadgets(uint64_t now) {
         }
     }
     if (g_rageStunUntil) g.Rect(0, 0, g.Width(), g.Height(), 0x40FF0000);
+    if (g_rageUntil && now < g_rageUntil) DrawRampage(now);
     if (now < g_rageTextUntil) {  // RAMPAGE over the whole screen
         float k = (float)(g_rageTextUntil - now) / 2500.0f;
         float hgt = (150.0f + 60.0f * k) * s;
@@ -8255,7 +8314,7 @@ void Update() {
     bool anyIn = false;
     // (a wounded one lying there counts as out: everyone down at once ends it)
     if (CPlayerPed* me = FindPlayerPed(0))
-        anyIn |= !g_spectating && me->Health() > 0.0f && me->AreaCode() == area && !Players::Instance().LocalDowned();
+        anyIn |= !g_spectating && me->Health() > 0.0f && me->AreaCode() == area && (!Players::Instance().LocalDowned() || arena::RageReady());  // the rage dose can get it up
     for (auto& [id, rp] : Players::Instance().All())
         if (rp.hasState && !Spectator(id))
             anyIn |= !(rp.state.flags & (OnFootState::F_DEAD | OnFootState::F_DOWNED)) && rp.state.area == area && now - rp.stateRecvMs < 5000;
@@ -9237,6 +9296,10 @@ bool UnlimitedRevives() { return g_arena.on && g_arena.taken; }
 bool Spectating() { return g_spectating; }
 void Fall() { Spectate(); }
 bool QuickRevive() { return false; }
+bool RageReady() {
+    uint64_t now = NowMs();
+    return g_arena.on && g_gadget == 2 && g_arena.wave >= g_rageReadyWave && !g_rageStunUntil && !(g_rageUntil && now < g_rageUntil);
+}
 void UseQuickRevive() {}
 float ReloadFactor() { return 1.0f; }
 bool IsEnemy(CPed* p);

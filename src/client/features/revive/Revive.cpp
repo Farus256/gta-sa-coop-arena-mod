@@ -138,7 +138,7 @@ CPed* NearestRival(CPlayerPed* me) {
 bool CanGoDown(CPlayerPed* me, int weapon) {
     if (weapon == WEAPON_DROWNING || me->InVehicle() || (me->PhysicalFlags() & kSubmerged) || Ref<uint8_t>(kCutsceneRunning))
         return false;
-    if (!HelpNear(me) && !hooks::ArenaQuickRevive()) return false;  // only a partner can revive it (or Quick Revive)
+    if (!HelpNear(me) && !hooks::ArenaQuickRevive() && !hooks::ArenaRageReady()) return false;  // only a partner can revive it (or Quick Revive, or the rage dose)
     if (RevivesLeft() <= 0) {
         ui::TheChat().AddSystem(TR("Вас уже откачивали дважды за 6 минут: в этот раз не повезло.",
                                    "You were revived twice in 6 minutes already: no luck this time."));
@@ -566,7 +566,7 @@ public:
         if (g_rescuer == id) g_rescuer = -1;
     }
     void OnPostProcess() override {
-        if (!Net().Online() || !core::IsPlayerReady()) {
+        if ((!Net().Online() && !hooks::ArenaOn()) || !core::IsPlayerReady()) {  // the arena alone: it can lie wounded too (the rage dose)
             if (g_down || g_target >= 0) ResetAll();
             if (g_wantFall && core::IsPlayerReady()) g_wantFall = false, hooks::ArenaFall();  // the arena alone: it watches
             return;
@@ -585,7 +585,7 @@ struct Reg {
 }  // namespace
 
 std::string ReviveText(std::string& hint) {
-    if (!Net().Online() || !core::IsPlayerReady()) return {};
+    if ((!Net().Online() && !hooks::ArenaOn()) || !core::IsPlayerReady()) return {};
     if (g_down) {
         uint64_t now = NowMs();
         int secs = (int)((std::max(g_downEnd, now) - now + 999) / 1000);
@@ -593,6 +593,8 @@ std::string ReviveText(std::string& hint) {
             hint = Format(TR("%s откачивает вас", "%s is reviving you"), Name(g_rescuer).c_str());
         } else if (g_kicker.handle >= 0 && g_kicker.stage == 1) {
             hint = TR("Вас добивают ногами!", "You are being kicked to death!");
+        } else if (hooks::ArenaRageReady()) {
+            hint = TR("[X] Рейдж-доза: встать", "[X] The rage dose: get up");
         } else {
             hint = Format(TR("Держите [%s], чтобы сдаться", "Hold [%s] to give up"), Key().c_str());
         }
@@ -613,7 +615,7 @@ std::string ReviveText(std::string& hint) {
 void KnockDown() {
     CPlayerPed* me = core::IsPlayerReady() ? FindPlayerPed(0) : nullptr;
     if (!me || me->Health() <= 0.0f || g_down || g_wantDown || g_dyingMs) return;
-    if (Net().Online() && CanGoDown(me, 0)) {
+    if ((Net().Online() || hooks::ArenaRageReady()) && CanGoDown(me, 0)) {
         me->Health() = 1.0f;
         g_wantDown = true;
         return;
@@ -633,7 +635,7 @@ void ArenaWound() {
     CPlayerPed* me = core::IsPlayerReady() ? FindPlayerPed(0) : nullptr;
     if (!me || g_down || g_wantDown || g_dyingMs) return;
     me->Health() = std::max(me->Health(), 1.0f);
-    if (Net().Online() && CanGoDown(me, 0)) g_wantDown = true;
+    if ((Net().Online() || hooks::ArenaRageReady()) && CanGoDown(me, 0)) g_wantDown = true;
     else g_wantFall = true;  // nobody to revive it: it watches till the next wave
 }
 

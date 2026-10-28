@@ -17,6 +17,7 @@ bool Spectating();         // this player fell in the arena and watches a team m
 void Fall();               // ... it falls now (instead of dying: no hospital)
 bool QuickRevive();        // this player drank Quick Revive: it gets up by itself, and revives the others twice as fast
 void UseQuickRevive();     // it got up by itself: the perk is gone
+bool RageReady();          // the rage dose bought and ready now: a wounded player alone waits on the floor for it (X)
 float ReloadFactor();      // Speed Cola: reloads take this part of their time (1: no perk)
 
 // this game's player hit a ped / killed one (points for the enemies of the arena)

@@ -21,6 +21,7 @@ struct Table {
     bool (*arenaSpectating)() = nullptr;
     void (*arenaFall)() = nullptr;
     bool (*arenaQuickRevive)() = nullptr;
+    bool (*arenaRageReady)() = nullptr;  // the rage dose can be taken now (it gets a wounded one up)
     void (*arenaUseQuickRevive)() = nullptr;
     void (*arenaOnLocalHit)(game::CPed*, int, int, int) = nullptr;
     void (*arenaOnLocalKill)(game::CPed*, int, bool) = nullptr;
@@ -51,6 +52,7 @@ inline bool ArenaUnlimitedRevives() { return Get().arenaUnlimitedRevives && Get(
 inline bool ArenaSpectating() { return Get().arenaSpectating && Get().arenaSpectating(); }
 inline void ArenaFall() { if (Get().arenaFall) Get().arenaFall(); }
 inline bool ArenaQuickRevive() { return Get().arenaQuickRevive && Get().arenaQuickRevive(); }
+inline bool ArenaRageReady() { return Get().arenaRageReady && Get().arenaRageReady(); }
 inline void ArenaUseQuickRevive() { if (Get().arenaUseQuickRevive) Get().arenaUseQuickRevive(); }
 inline void ArenaOnLocalHit(game::CPed* v, int weapon, int damage, int piece) { if (Get().arenaOnLocalHit) Get().arenaOnLocalHit(v, weapon, damage, piece); }
 inline void ArenaOnLocalKill(game::CPed* v, int weapon, bool headshot) { if (Get().arenaOnLocalKill) Get().arenaOnLocalKill(v, weapon, headshot); }
