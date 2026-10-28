@@ -364,6 +364,7 @@ uint64_t g_rageStunUntil = 0, g_rageUntil = 0, g_rageTextUntil = 0;
 int g_shahedCharges = 0, g_scrap = 0;
 uint64_t g_shahedSince = 0;
 float g_shahedSpeed = 0.0f;
+uint64_t g_shahedCamBackAt = 0;  // the blast's camera till then
 float g_shYaw = 0, g_shPitch = 0;  // where the Shahed looks (the mouse turns it)
 bool g_shopOpen = false;
 struct ShopItem {
@@ -377,7 +378,7 @@ const ShopItem kShop[] = {
     {0, 1, 1200, TRP("Броня Джаггернаута", "The Juggernaut's armour"), TRP("броня держит на 50% больше, обоймы больше, чуть медленнее", "armour takes 50% more, bigger clips, a little slower")},
     {0, 2, 1300, TRP("Броня Поджигателя", "The Firestarter's armour"), TRP("огонь не жжёт, +2 молотова и +200 к огнемёту каждую волну, медленнее", "fire does not burn, +2 molotovs and +200 flamethrower ammo a wave, slower")},
     {0, 3, 1000, TRP("Броня Солдата", "The Soldier's armour"), TRP("быстрее, оружие точнее и дальше, броня держит на 25% меньше", "faster, guns more accurate and farther, armour takes 25% less")},
-    {1, 1, 3000, TRP("Визор копа", "The cop's visor"), TRP("[X] враги видны сквозь стены, все пули — в голову ближайшего; заряд 3%/с, +3% за убийство", "[X] enemies seen through walls, every bullet into the nearest one's head; 3% charge a second, +3% a kill")},
+    {1, 1, 3000, TRP("Визор копа", "The cop's visor"), TRP("[X] враги видны сквозь стены, летающие цели в рамках; заряд 3%/с, +3% за убийство", "[X] enemies seen through walls, the flying ones boxed; 3% charge a second, +3% a kill")},
     {1, 2, 1300, TRP("Рейдж-доза", "The rage dose"), TRP("[X] укол, 3 с судорог, потом RAMPAGE: 200 HP, быстрее, точнее, сильнее; раз в 2 волны, и лёжа раненым", "[X] a shot, 3 s of fits, then RAMPAGE: 200 HP, faster, more accurate, harder; once in 2 waves, wounded too")},
     {1, 3, 700, TRP("Пульт «Shahed»", "The Shahed's remote"), TRP("[X] свой вертолётик-камикадзе; новый заряд из 2 груд хлама со сбитых дронов", "[X] your own kamikaze helicopter; a new charge from 2 heaps of scrap off downed drones")},
     {2, 1, 500, TRP("Подствольный гранатомёт", "An underbarrel launcher"), TRP("[N] на любом оружии, заряжается гранатой", "[N] on any gun, loads with a grenade")},
@@ -1039,13 +1040,20 @@ CVector MemberSpot(const CVector& anchor, int k) {
     return anchor + CVector{0.6f * (float)(k % 2 ? 1 : -1), 0.6f * (float)(k / 2), 0.0f};
 }
 
-// the nearest live player ped (this game's own or a copy) in the place
+// a player lying wounded (this game's own, or a copy by its state): the enemies leave it alone
+bool DownedPlayer(CPed* ped) {
+    if (!ped) return false;
+    if (ped == FindPlayerPed(0)) return Players::Instance().LocalDowned();
+    if (const RemotePlayer* rp = Players::Instance().FindByPed(ped)) return rp->hasState && (rp->state.flags & OnFootState::F_DOWNED);
+    return false;
+}
+// the nearest live player ped (this game's own or a copy) in the place, not one lying wounded
 CPed* NearestPlayer(const CVector& at) {
     CPed* best = nullptr;
     float bestD = 1e9f;
     int area = kPlaces[g_arena.place].area;
     auto consider = [&](CPed* ped) {
-        if (!ped || ped->Health() <= 0.0f || ped->AreaCode() != area) return;
+        if (!ped || ped->Health() <= 0.0f || ped->AreaCode() != area || DownedPlayer(ped)) return;
         float d = (ped->GetPosition() - at).Length();
         if (d < bestD) bestD = d, best = ped;
     };
@@ -3589,9 +3597,21 @@ void SaveSpot(const std::string& what) {
 // the drinks machines: this player twice a minute at most, 20% of its health a drink
 std::vector<uint64_t> g_sodaUses;
 uint64_t g_sodaHealAt = 0, g_sodaDrinkAt = 0;
+constexpr int kSodaSlot = 4;     // the mission audio slot of the machine's sound
+uint64_t g_sodaSoundUntil = 0;   // its sound to play once it is in (given up then)
+CVector g_sodaSoundAt;
 float MaxHealth();
 bool EnsureBlock(const char* block);
 void SodaFrame(uint64_t now) {
+    if (g_sodaSoundUntil) {
+        if (now > g_sodaSoundUntil) {
+            g_sodaSoundUntil = 0;
+        } else if (Cmd(0x03D0).I(kSodaSlot).Run()) {  // HAS_MISSION_AUDIO_LOADED
+            g_sodaSoundUntil = 0;
+            Cmd(0x03D7).I(kSodaSlot).F(g_sodaSoundAt.x).F(g_sodaSoundAt.y).F(g_sodaSoundAt.z).Run();  // SET_MISSION_AUDIO_POSITION
+            Cmd(0x03D1).I(kSodaSlot).Run();                                                             // PLAY_MISSION_AUDIO
+        }
+    }
     if (g_sodaDrinkAt && now >= g_sodaDrinkAt) {
         g_sodaDrinkAt = 0;
         if (CPlayerPed* me = FindPlayerPed(0); me && me->Health() > 0.0f && EnsureBlock("VENDING"))
@@ -5998,6 +6018,12 @@ void Tactics() {
         // its player, or a nearer one by 5 m (no going back and forth between two)
         CPed* t = e.after && IsPedValid(e.after) && e.after->Health() > 0.0f && e.after->AreaCode() == p->AreaCode() ? e.after : nullptr;
         CPed* n = NearestPlayer(p->GetPosition());
+        if (t && DownedPlayer(t)) {  // its player lies wounded: it is left alone, the fight goes on with another one
+            Cmd(0x0687).I(h).Run();  // CLEAR_CHAR_TASKS: no more shots at it
+            e.after = nullptr, e.routing = false;
+            t = nullptr;
+            if (n && e.role != R_KNIFE) SetOn(p, e, n);
+        }
         if (!t || (n && (n->GetPosition() - p->GetPosition()).Length() + 5.0f < (t->GetPosition() - p->GetPosition()).Length())) t = n;
         if (!t) continue;
         float d = (t->GetPosition() - p->GetPosition()).Length();
@@ -6897,6 +6923,13 @@ void DrawShop() {
             }
             py += 6 * s;
         }
+        if (it.kind == 1 && it.which == 1 && RcPlace()) {  // the visor on the RC field
+            for (auto& line : g.Wrap(ui::FONT_SMALL, ui::Widen(TR("Пули сбивают летающие цели сами.", "The bullets bring the flying ones down by themselves.")), cw - 32 * s)) {
+                g.TextW(ui::FONT_SMALL, cx + cw * 0.5f, py, line, 0xFF60FF60, ui::TEXT_CENTER | ui::TEXT_SHADOW);
+                py += g.LineHeight(ui::FONT_SMALL);
+            }
+            py += 6 * s;
+        }
         for (auto& line : g.Wrap(ui::FONT_SMALL, ui::Widen(it.what[Lang()]), cw - 32 * s)) {
             g.TextW(ui::FONT_SMALL, cx + 16 * s, py, line, 0xFFC8C8C8, ui::TEXT_SHADOW);
             py += g.LineHeight(ui::FONT_SMALL);
@@ -7005,6 +7038,7 @@ void UseGadget() {
             return;
         }
         g_visorOn = !g_visorOn;
+        if (g_visorOn && RcPlace()) ShowHelp(TR("Пули сбивают летающие цели сами.", "The bullets bring the flying ones down by themselves."), 4000);
         CallMethod<0x506EA0>((void*)0xB6BC90, 1, 0.0f, 1.0f);
         return;
     }
@@ -7066,13 +7100,20 @@ void ShahedBoom(CVehicle* rc) {
     Call<0x45AE80>(false);  // CRemote::TakeRemoteControlledCarFromPlayer: the control back to CJ
     Ref<CVehicle*>((uintptr_t)&PlayerInfos()[0] + 0xB0) = nullptr;
     if (vh >= 0 && GetVehicle(vh)) Cmd(0x00A6).I(vh).Run();  // DELETE_CAR
+    // the camera stays where it was, on the blast, 1.3 s; then it and the control go back to CJ (ShahedCamBack)
+    Cmd(0x0160).F(at.x).F(at.y).F(at.z).I(2).Run();  // POINT_CAMERA_AT_POINT: the blast
+    g_shahedCamBackAt = NowMs() + 1300;
+    Call<0x736A50>((CEntity*)nullptr, (CEntity*)FindPlayerPed(0), 2 /* EXPLOSION_ROCKET */, at, (uint32_t)0, (uint8_t)1, -1.0f, (uint8_t)0);  // AddExplosion: his
+}
+void ShahedCamBack(uint64_t now) {  // the blast seen: the camera and the control back to CJ
+    if (!g_shahedCamBackAt || now < g_shahedCamBackAt) return;
+    g_shahedCamBackAt = 0;
     if (CPlayerPed* me = FindPlayerPed(0)) {
         Cmd(0x04D7).I(GetPedRef(me)).I(0).Run();  // FREEZE_CHAR_POSITION off
         Cmd(0x01B4).I(0).I(1).Run();             // SET_PLAYER_CONTROL on: the mouse and the keys his again
     }
     Cmd(0x02EB).Run();  // RESTORE_CAMERA_JUMPCUT: the camera back on CJ
     Cmd(0x0373).Run();  // SET_CAMERA_BEHIND_PLAYER
-    Call<0x736A50>((CEntity*)nullptr, (CEntity*)FindPlayerPed(0), 2 /* EXPLOSION_ROCKET */, at, (uint32_t)0, (uint8_t)1, -1.0f, (uint8_t)0);  // AddExplosion: his
 }
 // every frame while it flies: its own camera behind it (the game's stayed on CJ), the mouse turns it (left-right,
 // up-down), W flies on, S back, nothing held: it hangs in the air. Armed after 0.6 s: then flying into a wall or the
@@ -7119,8 +7160,22 @@ void ShahedFly(CVehicle* rc, uint64_t now, float dt) {
     }
     if (boom) ShahedBoom(rc);
 }
-// the visor on: each shot of this player's goes into the head of the nearest enemy it can see (the game's own damage
-// with the head as the piece hit: a headshot; the hit goes to the man's own game as any other)
+// the drones (the RC field's helicopters) here: this game's own and the copies
+std::vector<CVehicle*> DronesHere() {
+    std::vector<CVehicle*> out;
+    CPoolHeader* pool = VehiclePool();
+    if (!pool || !g_arena.taken) return out;
+    int area = kPlaces[g_arena.place].area;
+    CVehicle* mine = Ref<CVehicle*>((uintptr_t)&PlayerInfos()[0] + 0xB0);  // not this player's Shahed
+    for (int i = 0; i < pool->size; ++i) {
+        if (pool->byteMap[i] < 0) continue;
+        auto* v = (CVehicle*)(pool->objects + (size_t)i * kVehiclePoolElemSize);
+        if (v != mine && IsDroneModel(v->ModelIndex()) && v->AreaCode() == area && v->Health() > 0.0f) out.push_back(v);
+    }
+    return out;
+}
+// the visor on: each shot of this player's goes into the nearest flying one it can see, aimed or not (its hit as any
+// other: the host's helicopters count it, a copy's goes to the host). Men are hit only where they are aimed at.
 void VisorShots() {
     static int lastType = -1, lastClip = 0;
     CPlayerPed* me = FindPlayerPed(0);
@@ -7130,20 +7185,16 @@ void VisorShots() {
     lastType = w.type, lastClip = w.ammoInClip;
     if (!shot || !g_visorOn) return;
     CVector eye = me->GetPosition() + CVector{0, 0, 0.6f};
-    CPed* best = nullptr;
+    CVehicle* best = nullptr;
     float bestD = 80.0f;
-    CPoolHeader* pool = PedPool();
-    for (int i = 0; pool && i < pool->size; ++i) {
-        if (pool->byteMap[i] < 0) continue;
-        auto* q = (CPed*)(pool->objects + (size_t)i * kPedPoolElemSize);
-        if (q->IsPlayer() || q->Health() <= 0.0f || !arena::IsEnemy(q) || q == g_merchant.ped) continue;
-        float d = (q->GetPosition() - me->GetPosition()).Length();
-        if (d < bestD && Clear(eye, q->GetPosition() + CVector{0, 0, 0.65f})) bestD = d, best = q;
+    for (CVehicle* v : DronesHere()) {
+        float d = (v->GetPosition() - me->GetPosition()).Length();
+        if (d < bestD && Clear(eye, v->GetPosition())) bestD = d, best = v;
     }
     if (!best) return;
     void* info = Call<0x743C60, void*>(w.type, (uint8_t)0);  // CWeaponInfo::GetWeaponInfo
     int damage = info ? std::max<int>(1, Field<int16_t>(info, 0x22)) : 25;
-    Call<0x73A530, bool>(best, (CEntity*)me, w.type, damage, 9 /* PED_PIECE_HEAD */, 0);  // CWeapon::GenerateDamageEvent
+    best->Health() -= (float)damage;  // DronesFrame / DroneCopies take it from there
 }
 void GadgetFrame(uint64_t now) {
     VisorShots();
@@ -7167,6 +7218,7 @@ void GadgetFrame(uint64_t now) {
         Cmd(0x01B4).I(0).I(1).Run();             // SET_PLAYER_CONTROL on
         Cmd(0x02EB).Run();                        // RESTORE_CAMERA_JUMPCUT
     }
+    ShahedCamBack(now);
     if (CVehicle* rc = Ref<CVehicle*>((uintptr_t)&PlayerInfos()[0] + 0xB0); rc && g_shahedSince)  // the Shahed: flown by hand
         ShahedFly(rc, now, std::max(dt, 0.001f));
     // the armour's effects while it is on (and the rage's)
@@ -7212,6 +7264,14 @@ void DrawGadgets(uint64_t now) {
             if (!q->IsPlayer() && q->Health() > 0.0f && arena::IsEnemy(q) && q != g_merchant.ped) at.push_back(q->GetPosition());
         }
         ui::DrawWorldMarks(at, 0xE060FF60);
+        CPlayerPed* me = FindPlayerPed(0);
+        for (CVehicle* v : DronesHere()) {  // the flying ones in a square each
+            float x, y, depth;
+            if (!WorldToScreen(v->GetPosition(), x, y, depth)) continue;
+            float dist = me ? std::max(1.0f, (v->GetPosition() - me->GetPosition()).Length()) : 10.0f;
+            float half = std::clamp(900.0f / dist, 14.0f, 90.0f) * s;
+            g.RectOutline(x - half, y - half, half * 2, half * 2, 0xFF60FF60, std::max(1.5f, 2.0f * s));
+        }
     }
     if (g_rageStunUntil) g.Rect(0, 0, g.Width(), g.Height(), 0x40FF0000);
     if (now < g_rageTextUntil) {  // RAMPAGE over the whole screen
@@ -9370,13 +9430,11 @@ bool KeyDown(int vk, bool repeat) {
             Cmd(0x0605).I(h).S("VEND_Use").S("VENDING").F(4.0f).I(0).I(0).I(0).I(0).I(-1).Run();  // TASK_PLAY_ANIM
             g_sodaDrinkAt = NowMs() + 1200;
         }
-        CallMethod<0x506EA0>((void*)0xB6BC90, 40 /* AE_FRONTEND_PURCHASE_WEAPON: the coin */, 0.0f, 1.0f);
-        {
-            CVector at = me->GetPosition();
-            Cmd(0x018C).F(at.x).F(at.y).F(at.z).I(1054).Run();  // ADD_ONE_OFF_SOUND: SOUND_BUY (the coin in)
-        }
+        // the sound of the game's own machines: its script bank (SND_BANK_SCRIPT_VENDING), the can (SodaFrame plays it)
+        Cmd(0x03CF).I(kSodaSlot).I(42600).Run();  // LOAD_MISSION_AUDIO: AE_SCRIPT_SLOT_DRINKS_CAN
+        g_sodaSoundAt = me->GetPosition();
+        g_sodaSoundUntil = NowMs() + 3000;
         g_sodaHealAt = NowMs() + 2800;
-        CallMethod<0x506EA0>((void*)0xB6BC90, 40 /* AE_FRONTEND_PURCHASE_WEAPON */, 0.0f, 1.0f);
         return true;
     }
     if (g_nearKind == N_GUN) {  // a team mate's weapon for the one in hand of its kind
