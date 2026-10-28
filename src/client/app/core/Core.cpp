@@ -17,6 +17,9 @@
 #include "entities/session/Flow.h"
 #include "features/revive/Revive.h"
 #include "features/arena/Arena.h"
+#include "features/progress/SkinChoice.h"
+#include "features/throw/Throw.h"
+#include "shared/hooks/Hooks.h"
 #include "features/gang-war/GangWar.h"
 #include "features/shops/Shops.h"
 #include "features/story/missions/Missions.h"
@@ -612,7 +615,39 @@ bool SaveWorldSnapshot(std::vector<uint8_t>& out) {
     return ReadFileBytes(tmp, out) && out.size() > 1024;
 }
 
+// what the slices need of each other, set here (shared/hooks): none of them includes another's header
+void WireHooks() {
+    auto& h = hooks::Get();
+    h.arenaOn = &arena::On;
+    h.arenaRunning = &arena::Running;
+    h.arenaUnlimitedRevives = &arena::UnlimitedRevives;
+    h.arenaSpectating = &arena::Spectating;
+    h.arenaFall = &arena::Fall;
+    h.arenaQuickRevive = &arena::QuickRevive;
+    h.arenaUseQuickRevive = &arena::UseQuickRevive;
+    h.arenaOnLocalHit = &arena::OnLocalHit;
+    h.arenaOnLocalKill = &arena::OnLocalKill;
+    h.arenaIncomingDamage = &arena::IncomingDamage;
+    h.arenaOutgoingDamage = &arena::OutgoingDamage;
+    h.arenaIsEnemy = &arena::IsArenaEnemy;
+    h.arenaBarricadeBlast = &arena::BarricadeBlast;
+    h.reviveText = &ReviveText;
+    h.knockDown = &KnockDown;
+    h.arenaWound = &ArenaWound;
+    h.cancelDown = &CancelDown;
+    h.explosionBehindWall = &ExplosionBehindWall;
+    h.skinPicked = &skin::Picked;
+    h.skinChosenModel = []() -> uint16_t {
+        int count = 0;
+        const skin::Choice* list = skin::Choices(count);
+        if (!list || count <= 0) return 0;
+        return list[std::clamp(skin::ChosenIndex(), 0, count - 1)].model;
+    };
+    h.skinWear = &skin::Wear;
+}
+
 void Init(void* hModule) {
+    WireHooks();
     auto& cfg = Cfg();
     std::wstring coopDir = CoopDirFromModule(hModule);
     EnsureDirectory(coopDir);

@@ -11,7 +11,7 @@
 #include "common/lib/util/Util.h"
 #include "entities/ped/Peds.h"
 #include "entities/player/Players.h"
-#include "features/arena/Arena.h"
+#include "shared/hooks/Hooks.h"
 #include "shared/api/net-session/Session.h"
 #include "shared/config/Config.h"
 #include "shared/game/Game.h"
@@ -28,7 +28,7 @@ using game::script::Cmd;
 
 constexpr uint64_t kDownMs = 30000;              // how long a wounded player waits for help
 constexpr uint64_t kCprBaseMs = 5000;            // how long the CPR takes (half of it with Quick Revive in the arena)
-uint64_t CprMs() { return arena::QuickRevive() ? kCprBaseMs / 2 : kCprBaseMs; }
+uint64_t CprMs() { return hooks::ArenaQuickRevive() ? kCprBaseMs / 2 : kCprBaseMs; }
 constexpr uint64_t kSelfReviveMs = 8000;         // Quick Revive: the wounded one gets up by itself after this
 constexpr uint64_t kWindowMs = 6 * 60 * 1000;    // revives are counted over this time
 constexpr int kMaxRevives = 2;                   // ... and this many are allowed in it
@@ -73,7 +73,7 @@ std::string Key() {  // the revive key as the player knows it: a letter, a digit
 std::string Name(int id) { return Net().PeerName((uint8_t)id); }
 
 int RevivesLeft() {
-    if (arena::UnlimitedRevives()) return 99;  // the arena: no limit, no 6 minutes
+    if (hooks::ArenaUnlimitedRevives()) return 99;  // the arena: no limit, no 6 minutes
     uint64_t now = NowMs();
     while (!g_revives.empty() && now - g_revives.front() > kWindowMs) g_revives.pop_front();
     return kMaxRevives - (int)g_revives.size();
@@ -138,7 +138,7 @@ CPed* NearestRival(CPlayerPed* me) {
 bool CanGoDown(CPlayerPed* me, int weapon) {
     if (weapon == WEAPON_DROWNING || me->InVehicle() || (me->PhysicalFlags() & kSubmerged) || Ref<uint8_t>(kCutsceneRunning))
         return false;
-    if (!HelpNear(me) && !arena::QuickRevive()) return false;  // only a partner can revive it (or Quick Revive)
+    if (!HelpNear(me) && !hooks::ArenaQuickRevive()) return false;  // only a partner can revive it (or Quick Revive)
     if (RevivesLeft() <= 0) {
         ui::TheChat().AddSystem(TR("Вас уже откачивали дважды за 6 минут: в этот раз не повезло.",
                                    "You were revived twice in 6 minutes already: no luck this time."));
@@ -163,16 +163,16 @@ using WillKillFn = void(__fastcall*)(void*, void*, CPed*, uint8_t*, bool);
 WillKillFn g_origWillKill = nullptr;
 void __fastcall HookWillKill(void* calc, void* edx, CPed* ped, uint8_t* rsp, bool speak) {
     g_origWillKill(calc, edx, ped, rsp, speak);
-    if (!rsp[8] || (!Net().Online() && !arena::On()) || g_dyingMs) return;
+    if (!rsp[8] || (!Net().Online() && !hooks::ArenaOn()) || g_dyingMs) return;
     CPlayerPed* me = FindPlayerPed(0);
     if (ped != me) return;
-    if (arena::Spectating()) {  // watching: nothing hurts it
+    if (hooks::ArenaSpectating()) {  // watching: nothing hurts it
         ped->Health() = 100.0f;
         rsp[8] = rsp[9] = 0;
         return;
     }
     if (!g_down && !g_wantDown && !CanGoDown(me, Field<int32_t>(calc, 0x0C))) {
-        if (!arena::On()) return;
+        if (!hooks::ArenaOn()) return;
         ped->Health() = 1.0f;  // the arena: no death, no hospital: it watches till the next wave
         rsp[8] = rsp[9] = 0;
         g_wantFall = true;
@@ -247,8 +247,8 @@ void KillNow(CPlayerPed* me) {
 
 void Die(CPlayerPed* me, const char* why) {
     EndDown(me);
-    if (arena::On()) {  // the arena: no death, it watches till the next wave
-        arena::Fall();
+    if (hooks::ArenaOn()) {  // the arena: no death, it watches till the next wave
+        hooks::ArenaFall();
         LOGI("Wounded: out of the arena's wave (%s)", why);
         return;
     }
@@ -285,7 +285,7 @@ void Revive(CPlayerPed* me, const std::string& who) {
     me->Health() = maxHealth * 0.5f;
     g_revives.push_back(NowMs());
     int left = RevivesLeft();
-    if (arena::UnlimitedRevives())
+    if (hooks::ArenaUnlimitedRevives())
         ui::TheChat().AddSystem(Format(TR("Вас откачал %s.", "%s revived you."), who.c_str()));
     else
         ui::TheChat().AddSystem(Format(TR("Вас откачал %s. Ещё возрождений в ближайшие 6 минут: %d.",
@@ -440,7 +440,7 @@ void UpdateDowned(CPlayerPed* me) {
     }
     if (g_wantFall) {
         g_wantFall = false;
-        arena::Fall();
+        hooks::ArenaFall();
     }
     UpdateDying(me);
     if (g_dyingMs) g_wantDown = false;
@@ -474,8 +474,8 @@ void UpdateDowned(CPlayerPed* me) {
         return;
     }
     // Quick Revive (the arena's perk): up by itself after a while, once
-    if (g_rescuer < 0 && arena::QuickRevive() && now + kDownMs - g_downEnd >= kSelfReviveMs) {
-        arena::UseQuickRevive();
+    if (g_rescuer < 0 && hooks::ArenaQuickRevive() && now + kDownMs - g_downEnd >= kSelfReviveMs) {
+        hooks::ArenaUseQuickRevive();
         Revive(me, TR("«Быстрое оживление»", "Quick Revive"));
         return;
     }
@@ -568,7 +568,7 @@ public:
     void OnPostProcess() override {
         if (!Net().Online() || !core::IsPlayerReady()) {
             if (g_down || g_target >= 0) ResetAll();
-            if (g_wantFall && core::IsPlayerReady()) g_wantFall = false, arena::Fall();  // the arena alone: it watches
+            if (g_wantFall && core::IsPlayerReady()) g_wantFall = false, hooks::ArenaFall();  // the arena alone: it watches
             return;
         }
         CPlayerPed* me = FindPlayerPed(0);

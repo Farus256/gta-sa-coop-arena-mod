@@ -12,10 +12,10 @@
 #include "common/lib/log/Log.h"
 #include "common/lib/util/Util.h"
 #include "entities/mission/Mission.h"
-#include "features/arena/Arena.h"
 #include "entities/ped/Peds.h"
 #include "entities/player/Players.h"
 #include "entities/vehicle/Vehicles.h"
+#include "shared/hooks/Hooks.h"
 #include "shared/api/net-session/Session.h"
 #include "shared/game/Challenge.h"
 #include "shared/game/Game.h"
@@ -250,7 +250,7 @@ void __cdecl HookAddExplosion(CEntity* victim, CEntity* creator, int type, CVect
         Net().Send(proto::CH_RELIABLE, w);
     }
     g_origAddExplosion(victim, creator, type, pos, lifetime, sound, shake, visible);
-    if (IsBlast(type) && core::IsPlayerReady()) arena::BarricadeBlast(pos);
+    if (IsBlast(type) && core::IsPlayerReady()) hooks::ArenaBarricadeBlast(pos);
 }
 
 void DropCharges(CEntity* creator, const CVector& at, float within);

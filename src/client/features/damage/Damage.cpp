@@ -30,8 +30,7 @@
 #include "entities/ped/Peds.h"
 #include "entities/player/Players.h"
 #include "entities/vehicle/Vehicles.h"
-#include "features/arena/Arena.h"
-#include "features/throw/Throw.h"
+#include "shared/hooks/Hooks.h"
 #include "shared/api/net-session/Session.h"
 #include "shared/game/Game.h"
 #include "shared/game/Script.h"
@@ -174,13 +173,13 @@ GenerateDamageFn g_origGenerateDamage = nullptr;
 // hit): one decided in the other game still does here.
 bool __cdecl HookGenerateDamageEvent(CPed* victim, CEntity* creator, int weapon, int damage, int piece, int dir) {
     if (victim && creator && core::IsPlayerReady() && IsLocalPlayerEntity(creator) && victim != FindPlayerPed(0))
-        damage = arena::OutgoingDamage(creator, weapon, damage);  // the arena's rage: harder blows
+        damage = hooks::ArenaOutgoingDamage(creator, weapon, damage);  // the arena's rage: harder blows
     if (victim && creator && core::IsPlayerReady() && IsLocalPlayerEntity(creator) && victim != FindPlayerPed(0))
-        arena::OnLocalHit(victim, weapon, damage, piece);  // the arena's points for a hit
+        hooks::ArenaOnLocalHit(victim, weapon, damage, piece);  // the arena's points for a hit
     if (victim && victim == FindPlayerPed(0) && core::IsPlayerReady()) {
         bool blast = weapon == WEAPON_EXPLOSION || weapon == 16 || weapon == 19 || weapon == 20 || weapon == 39;
-        if (blast && ExplosionBehindWall(victim)) return true;  // a grenade on the other side of a wall: dropped
-        damage = arena::IncomingDamage(creator, weapon, damage);
+        if (blast && hooks::ExplosionBehindWall(victim)) return true;  // a grenade on the other side of a wall: dropped
+        damage = hooks::ArenaIncomingDamage(creator, weapon, damage);
     }
     if (Net().Online() && victim && core::IsPlayerReady()) {
         // a copy dies of the hit that killed it in its owner's game: the game picks its fall (Peds::ApplyMirror)
@@ -312,7 +311,7 @@ RegisterKillFn g_origRegisterKill = nullptr;
 // player is credited to that player's game and counts here as killed by somebody else (see the top of the file).
 void __cdecl HookRegisterKill(CPed* ped, CEntity* killer, int weapon, bool headshot) {
     CPlayerPed* me = FindPlayerPed(0);
-    if (ped && killer && killer == me && core::IsPlayerReady()) arena::OnLocalKill(ped, weapon, headshot);  // the arena's points
+    if (ped && killer && killer == me && core::IsPlayerReady()) hooks::ArenaOnLocalKill(ped, weapon, headshot);  // the arena's points
     if (Net().Online() && ped && killer && killer->IsPed() && core::IsPlayerReady()) {
         if (RemotePlayer* rp = Players::Instance().FindByPed((CPed*)killer)) {
             if (NetPed* np = Peds::Instance().Find(ped); np && np->owner == Net().MyId())

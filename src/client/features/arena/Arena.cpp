@@ -50,11 +50,9 @@
 #include "entities/radar-icons/RadarIcons.h"
 #include "entities/stealth-knife/StealthKnife.h"
 #include "entities/vehicle/Vehicles.h"
-#include "features/progress/SkinChoice.h"
-#include "features/revive/Revive.h"
 #include "entities/session/Flow.h"
-#include "pages/connect-menu/ConnectMenu.h"
 #include "shared/api/net-session/Session.h"
+#include "shared/hooks/Hooks.h"
 #include "shared/config/Config.h"
 #include "shared/game/Challenge.h"
 #include "shared/game/Game.h"
@@ -182,6 +180,11 @@ bool Matches(const std::string& word, const char* const (&keys)[2][2]) {
     return false;
 }
 bool Matches(const std::string& word, const char* const (&pair)[2]) { return word == pair[0] || word == pair[1]; }
+bool IsWord(const std::string& word, std::initializer_list<const char*> words) {  // a command's word, Russian or English
+    for (const char* w : words)
+        if (word == w) return true;
+    return false;
+}
 // the commands' words
 const char* const kWordList[2] = TRP("список", "list");
 const char* const kWordStop[2] = TRP("стоп", "stop");
@@ -5572,7 +5575,7 @@ void SawFrame(uint64_t now) {
             e.sawHit.insert(q);
             return true;
         };
-        if (struck(FindPlayerPed(0))) KnockDown();
+        if (struck(FindPlayerPed(0))) hooks::KnockDown();
         for (auto& [id, rp] : Players::Instance().All())
             if (rp.ped && struck(rp.ped)) SendHit(id);
         if (now >= e.sawUntil) {  // ran out of breath
@@ -6417,7 +6420,7 @@ void End(bool tell) {
     Clear();
     bool was = g_arena.taken;
     EndSpectate(false);
-    CancelDown();
+    hooks::CancelDown();
     StopOwnMoves();
     HoldWorld(false);
     PlayerGuns(false, false);
@@ -7011,7 +7014,7 @@ void UseGadget() {
             return;
         }
         g_rageReadyWave = g_arena.wave + 2;
-        if (Players::Instance().LocalDowned()) CancelDown();  // wounded on the floor: it gets him up
+        if (Players::Instance().LocalDowned()) hooks::CancelDown();  // wounded on the floor: it gets him up
         Cmd(0x01B4).I(0).I(0).Run();  // SET_PLAYER_CONTROL off: the fits
         if (EnsureBlock("CRACK")) Cmd(0x0605).I(h).S("crckdeth2").S("CRACK").F(4.0f).I(1).I(0).I(0).I(0).I(3000).Run();  // on the floor, shaking
         g_rageStunUntil = now + 3000;
@@ -7552,7 +7555,7 @@ void Handle(uint8_t from, Reader& r) {
             ui::TheChat().AddSystem(Format(TR("Смена арены: %d из %d (/arena смена)", "Another arena: %d of %d (/arena change)"), (int)m, std::max<int>(1, n)));
         g_voteCount = c, g_voteNeed = std::max<int>(1, n), g_mapVoteCount = m;
     } else if (op == A_HIT) {
-        KnockDown();  // the Butcher's charge ran into this player
+        hooks::KnockDown();  // the Butcher's charge ran into this player
     } else if (op == A_SHELL) {
         Vec3 f = r.Vec(), v = r.Vec();
         if (r.Ok()) AddShell({f.x, f.y, f.z}, {v.x, v.y, v.z}, nullptr, false);  // a copy to see: the blast comes from its game
@@ -8706,11 +8709,8 @@ uint64_t g_modeReadyMs = 0, g_modeNextMs = 0;
 // After a lost arena in this mode everyone is back in the lobby (the F9 window opens with it): the host picks the
 // enemies, the place and the waves again and starts the next one, each player may pick another character there
 void WearPicked() {
-    if (!skin::Picked()) return;
-    int count = 0;
-    const skin::Choice* list = skin::Choices(count);
-    int k = std::clamp(skin::ChosenIndex(), 0, count - 1);
-    skin::Wear(list[k].model);
+    if (!hooks::SkinPicked()) return;
+    hooks::SkinWear(hooks::SkinChosenModel());
 }
 // After a lost arena in this mode everyone is back in the co-op lobby (the F9 window, as before the game): ready / the
 // host's start, the characters, the next arena's choices; the host's start goes on in the same game (flow::ReturnToLobby)
@@ -8725,13 +8725,10 @@ void OpenLobby(bool open) {
 // this player becomes the character it picked in the lobby (not the one of the save or the profile)
 void WearChosen() {
     if (g_modeOn || (Net().Online() && Net().IsHost() && Cfg().gameMode == 2)) {  // the arena mode: CJ, the wardrobe dresses him
-        skin::Wear(0);
+        hooks::SkinWear(0);
         return;
     }
-    int count = 0;
-    const skin::Choice* list = skin::Choices(count);
-    int k = std::clamp(skin::ChosenIndex(), 0, count - 1);
-    skin::Wear(list[k].model);
+    hooks::SkinWear(hooks::SkinChosenModel());
 }
 // The arena mode always plays a new game: its prologue ("intro", a mission) ends as it begins, everything it took given
 // back, its people gone, and the partners get the world then (as the gang war does)
@@ -9000,16 +8997,16 @@ public:
     }
     bool OnCommand(const std::string& cmd, const std::vector<std::string>& args) override {
         std::string c = LowerRu(cmd);
-        if (c == "торговец" || c == "setmerchant" || c == "merchant") {  // /торговец: where he comes in; /торговец цель: where he goes
+        if (IsWord(c, TRP("торговец", "setmerchant")) || c == "setmerchant" || c == "merchant") {  // /торговец: where he comes in; /торговец цель: where he goes
             std::string a1 = args.empty() ? "" : LowerRu(args[0]);
-            bool to = a1 == "цель" || a1 == "куда" || a1 == "to";
-            bool reset = a1 == "сброс" || a1 == "reset";
+            bool to = IsWord(a1, TRP("цель", "to")) || IsWord(a1, TRP("куда", "to")) || a1 == "to";
+            bool reset = IsWord(a1, TRP("сброс", "reset")) || a1 == "reset";
             if (!g_arena.on || !g_arena.taken) ui::TheChat().AddError(TR("Сначала начните арену в этом месте.", "Start an arena at that place first."));
             else if (reset) SaveSpot("merchantreset"), SaveSpot("merchanttoreset");
             else SaveSpot(to ? "merchantto" : "merchant");
             return true;
         }
-        if (c == "spawnmerchant" || c == "вызватьторговца") {  // the merchant now (a test; the host)
+        if (c == "spawnmerchant" || IsWord(c, TRP("вызватьторговца", "spawnmerchant"))) {  // the merchant now (a test; the host)
             if (!g_arena.on || !g_arena.host) ui::TheChat().AddError(TR("Только хост во время арены.", "Only the host, in an arena."));
             else if (!g_merchant.on) {
                 StartMerchant();
@@ -9018,7 +9015,7 @@ public:
             }
             return true;
         }
-        if (c == "подсказки" || c == "tips") {  // the arena's hints on and off (F9 too)
+        if (IsWord(c, TRP("подсказки", "tips")) || c == "tips") {  // the arena's hints on and off (F9 too)
             Cfg().tips = !Cfg().tips;
             flow::SaveConnectSettings();
             ui::TheChat().AddSystem(Cfg().tips ? TR("Подсказки включены.", "Hints on.") : TR("Подсказки выключены.", "Hints off."));
@@ -9037,7 +9034,7 @@ public:
             else Send(A_SKIP);
             return true;
         }
-        if (a0 == "смена" || a0 == "сменить" || a0 == "change") {  // the vote for another arena, between the waves
+        if (IsWord(a0, TRP("смена", "change")) || IsWord(a0, TRP("сменить", "change")) || a0 == "change") {  // the vote for another arena, between the waves
             if (!g_arena.on || !g_break || !g_arena.taken) {
                 ui::TheChat().AddError(TR("Сменить арену можно только между волнами.", "The arena can be changed between the waves only."));
             } else if (!g_iMapVoted) {
@@ -9061,13 +9058,13 @@ public:
             }
             return true;
         }
-        if (a0 == "тибон" || a0 == "тибоун" || a0 == "tbone") {  // a test: T-Bone now
+        if (IsWord(a0, TRP("тибон", "tbone")) || IsWord(a0, TRP("тибоун", "tbone")) || a0 == "tbone") {  // a test: T-Bone now
             if (!g_arena.on || !g_arena.taken) ui::TheChat().AddError(TR("Сначала начните арену.", "Start an arena first."));
             else SpawnTBone();
             return true;
         }
         // the host's own spots for this place: where it stands now
-        if (a0 == "где" || a0 == "pos" || a0 == "where") {  // where this player stands
+        if (IsWord(a0, TRP("где", "pos")) || a0 == "pos" || a0 == "where") {  // where this player stands
             if (CPlayerPed* me = FindPlayerPed(0)) {
                 CVector p = me->GetPosition();
                 ui::TheChat().AddSystem(Format(TR("Вы стоите: %.2f %.2f %.2f, поворот %.1f, интерьер %d", "You stand at: %.2f %.2f %.2f, heading %.1f, interior %d"),
@@ -9076,22 +9073,22 @@ public:
             }
             return true;
         }
-        const char* spot = a0 == "ящик" || a0 == "box"               ? "box"
-                           : a0 == "спавн" || a0 == "spawn"         ? "spawn"
-                           : a0 == "торговец" || a0 == "merchant"   ? "merchant"
-                           : a0 == "враги" || a0 == "enemy"         ? "enemy"
-                           : a0 == "зона" || a0 == "zone"           ? "zone"
-                           : a0 == "радио" || a0 == "radio"         ? "radio"
-                           : a0 == "газировка" || a0 == "автомат" || a0 == "soda" ? "soda"
-                           : a0 == "баррикада" || a0 == "barricade" ? "bar"
-                           : a0 == "стройка" || a0 == "строитель" || a0 == "build" ? "build"
-                           : a0 == "стена" || a0 == "wall"          ? "wall"
-                           : a0 == "сброс" || a0 == "reset"         ? "reset"
+        const char* spot = IsWord(a0, TRP("ящик", "box")) || a0 == "box"               ? "box"
+                           : IsWord(a0, TRP("спавн", "spawn")) || a0 == "spawn"         ? "spawn"
+                           : IsWord(a0, TRP("торговец", "merchant")) || a0 == "merchant"   ? "merchant"
+                           : IsWord(a0, TRP("враги", "enemy")) || a0 == "enemy"         ? "enemy"
+                           : IsWord(a0, TRP("зона", "zone")) || a0 == "zone"           ? "zone"
+                           : IsWord(a0, TRP("радио", "radio")) || a0 == "radio"         ? "radio"
+                           : IsWord(a0, TRP("газировка", "soda")) || IsWord(a0, TRP("автомат", "soda")) || a0 == "soda" ? "soda"
+                           : IsWord(a0, TRP("баррикада", "barricade")) || a0 == "barricade" ? "bar"
+                           : IsWord(a0, TRP("стройка", "build")) || IsWord(a0, TRP("строитель", "build")) || a0 == "build" ? "build"
+                           : IsWord(a0, TRP("стена", "wall")) || a0 == "wall"          ? "wall"
+                           : IsWord(a0, TRP("сброс", "reset")) || a0 == "reset"         ? "reset"
                                                                     : nullptr;
         std::string what = spot ? spot : "";
         if (spot && what != "reset" && what != "wall" && args.size() > 1) {  // /arena газировка сброс: that kind alone
             std::string a1 = LowerRu(args[1]);
-            if (a1 == "сброс" || a1 == "reset") what += "reset";
+            if (IsWord(a1, TRP("сброс", "reset")) || a1 == "reset") what += "reset";
         }
         if (spot) {
             if (!g_arena.on || !g_arena.taken) ui::TheChat().AddError(TR("Сначала начните арену в этом месте.", "Start an arena at that place first."));
@@ -9289,7 +9286,7 @@ bool KeyDown(int vk, bool repeat) {
         if (!repeat) UseGadget();
         return true;
     }
-    if (!On() || !ReviveText(hint).empty()) return false;
+    if (!On() || !hooks::ReviveText(hint).empty()) return false;
     if (g_shopOpen || g_wardOpen) return true;  // the merchant's and the wardrobe's screens read their keys themselves
     if (vk == 'E' && NearMerchant()) {
         if (!repeat) SetShopOpen(true);

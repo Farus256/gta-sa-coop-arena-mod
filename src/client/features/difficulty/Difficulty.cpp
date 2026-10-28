@@ -24,9 +24,9 @@
 #include "common/lib/log/Log.h"
 #include "common/lib/util/Util.h"
 #include "entities/mission/Mission.h"
-#include "features/arena/Arena.h"
 #include "entities/ped/Peds.h"
 #include "entities/player/Players.h"
+#include "shared/hooks/Hooks.h"
 #include "shared/api/net-session/Session.h"
 #include "shared/game/Game.h"
 #include "shared/game/Script.h"
@@ -96,7 +96,7 @@ void Elite() {
         auto* p = (CPed*)(pool->objects + (size_t)i * kPedPoolElemSize);
         int model = p->ModelIndex();
         if ((model != 285 && model != 286) || p->IsPlayer() || p->Health() <= 0.0f) continue;
-        if (arena::Running() && arena::IsArenaEnemy(p)) continue;  // the arena's SWAT are as tough as its other enemies
+        if (hooks::ArenaRunning() && hooks::ArenaIsEnemy(p)) continue;  // the arena's SWAT are as tough as its other enemies
         if (NetPed* np = Peds::Instance().Find(p); np && np->owner != Net().MyId() && Net().Online()) continue;  // a copy
         int h = GetPedRef(p);
         if (!g_elite.insert(h).second) continue;
